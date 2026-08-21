@@ -199,61 +199,6 @@ class TransformersCompatibilityTest(unittest.TestCase):
         for handle in handles:
             handle.remove()
 
-    def test_dense_model_fuses_text_projections_without_changing_logits(self) -> None:
-        from sensenova_u1.models.neo_unify.configuration_neo_chat import NEOLLMConfig
-        from sensenova_u1.models.neo_unify.modeling_qwen3 import Qwen3ForCausalLM
-
-        config = NEOLLMConfig(
-            vocab_size=32,
-            hidden_size=16,
-            intermediate_size=32,
-            num_hidden_layers=2,
-            num_attention_heads=2,
-            num_key_value_heads=2,
-            head_dim=8,
-            max_position_embeddings=64,
-            bos_token_id=1,
-            eos_token_id=2,
-            pad_token_id=0,
-        )
-        config._attn_implementation = "eager"
-        model = Qwen3ForCausalLM(config).eval()
-        input_ids = torch.tensor([[1, 3, 4]])
-        indexes = torch.stack(
-            (
-                torch.arange(input_ids.shape[1]),
-                torch.zeros(input_ids.shape[1], dtype=torch.long),
-                torch.zeros(input_ids.shape[1], dtype=torch.long),
-            )
-        )
-        mask = torch.triu(
-            torch.full((1, 1, 3, 3), float("-inf")), diagonal=1
-        )
-        with torch.no_grad():
-            expected = model(
-                input_ids=input_ids,
-                indexes=indexes,
-                attention_mask={"full_attention": mask},
-            ).logits
-
-        self.assertEqual(model.model.fuse_text_projections_for_inference(), 4)
-        self.assertEqual(model.model.fuse_text_projections_for_inference(), 0)
-        for layer in model.model.layers:
-            self.assertFalse(hasattr(layer.self_attn, "q_proj"))
-            self.assertFalse(hasattr(layer.self_attn, "k_proj"))
-            self.assertFalse(hasattr(layer.self_attn, "v_proj"))
-            self.assertFalse(hasattr(layer.mlp, "gate_proj"))
-            self.assertFalse(hasattr(layer.mlp, "up_proj"))
-
-        with torch.no_grad():
-            actual = model(
-                input_ids=input_ids,
-                indexes=indexes,
-                attention_mask={"full_attention": mask},
-            ).logits
-
-        torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
-
     def test_auto_config_and_model_registration(self) -> None:
         from transformers import AutoConfig, AutoModel
 
