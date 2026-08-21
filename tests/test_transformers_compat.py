@@ -120,6 +120,85 @@ class TransformersCompatibilityTest(unittest.TestCase):
 
         self.assert_base_model_output_controls(Qwen3Model(config), num_hidden_layers=2)
 
+    def test_dense_model_shares_rope_and_skips_zero_spatial_decode(self) -> None:
+        from sensenova_u1.models.neo_unify.configuration_neo_chat import NEOLLMConfig
+        from sensenova_u1.models.neo_unify.modeling_qwen3 import Qwen3ForCausalLM
+
+        config = NEOLLMConfig(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            head_dim=8,
+            max_position_embeddings=64,
+            bos_token_id=1,
+            eos_token_id=2,
+            pad_token_id=0,
+        )
+        config._attn_implementation = "eager"
+        model = Qwen3ForCausalLM(config).eval()
+        calls = {
+            (layer_index, axis): 0
+            for layer_index in range(config.num_hidden_layers)
+            for axis in ("t", "hw")
+        }
+        handles = []
+        for layer_index, layer in enumerate(model.model.layers):
+            for axis, module in (
+                ("t", layer.self_attn.rotary_emb),
+                ("hw", layer.self_attn.rotary_emb_hw),
+            ):
+                handles.append(
+                    module.register_forward_hook(
+                        lambda _module, _inputs, _output, key=(layer_index, axis): calls.__setitem__(
+                            key, calls[key] + 1
+                        )
+                    )
+                )
+
+        input_ids = torch.tensor([[1, 3, 4]])
+        indexes = torch.stack(
+            (
+                torch.arange(input_ids.shape[1]),
+                torch.zeros(input_ids.shape[1], dtype=torch.long),
+                torch.zeros(input_ids.shape[1], dtype=torch.long),
+            )
+        )
+        mask = torch.full((1, 1, 3, 3), float("-inf"))
+        mask = torch.triu(mask, diagonal=1)
+        with torch.no_grad():
+            prefill = model(
+                input_ids=input_ids,
+                indexes=indexes,
+                attention_mask={"full_attention": mask},
+                use_cache=True,
+            )
+
+        self.assertEqual(calls[(0, "t")], 1)
+        self.assertEqual(calls[(0, "hw")], 2)
+        self.assertEqual(calls[(1, "t")], 0)
+        self.assertEqual(calls[(1, "hw")], 0)
+
+        for key in calls:
+            calls[key] = 0
+        model.model.current_index = int(indexes[0].max())
+        with torch.no_grad():
+            decode = model(
+                input_ids=torch.tensor([[5]]),
+                past_key_values=prefill.past_key_values,
+                use_cache=True,
+            )
+
+        self.assertEqual(decode.past_key_values.get_seq_length(), 4)
+        self.assertEqual(calls[(0, "t")], 1)
+        self.assertEqual(calls[(0, "hw")], 0)
+        self.assertEqual(calls[(1, "t")], 0)
+        self.assertEqual(calls[(1, "hw")], 0)
+        for handle in handles:
+            handle.remove()
+
     def test_auto_config_and_model_registration(self) -> None:
         from transformers import AutoConfig, AutoModel
 

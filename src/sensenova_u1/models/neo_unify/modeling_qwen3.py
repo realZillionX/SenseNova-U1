@@ -435,6 +435,10 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings_t: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        position_embeddings_h: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        position_embeddings_w: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        skip_spatial_rope: bool = False,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         assert self.config._attn_implementation == "eager"
@@ -455,14 +459,31 @@ class Qwen3Attention(nn.Module):
 
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        cos_t, sin_t = self.rotary_emb(hidden_states, indexes[0].unsqueeze(0))
+        if position_embeddings_t is None:
+            position_embeddings_t = self.rotary_emb(
+                hidden_states, indexes[0].unsqueeze(0)
+            )
+        cos_t, sin_t = position_embeddings_t
         query_states_t, key_states_t = apply_rotary_pos_emb(query_states_t, key_states_t, cos_t, sin_t)
 
-        cos_h, sin_h = self.rotary_emb_hw(hidden_states, indexes[1].unsqueeze(0))
-        query_states_h, key_states_h = apply_rotary_pos_emb(query_states_h, key_states_h, cos_h, sin_h)
+        if not skip_spatial_rope:
+            if position_embeddings_h is None:
+                position_embeddings_h = self.rotary_emb_hw(
+                    hidden_states, indexes[1].unsqueeze(0)
+                )
+            cos_h, sin_h = position_embeddings_h
+            query_states_h, key_states_h = apply_rotary_pos_emb(
+                query_states_h, key_states_h, cos_h, sin_h
+            )
 
-        cos_w, sin_w = self.rotary_emb_hw(hidden_states, indexes[2].unsqueeze(0))
-        query_states_w, key_states_w = apply_rotary_pos_emb(query_states_w, key_states_w, cos_w, sin_w)
+            if position_embeddings_w is None:
+                position_embeddings_w = self.rotary_emb_hw(
+                    hidden_states, indexes[2].unsqueeze(0)
+                )
+            cos_w, sin_w = position_embeddings_w
+            query_states_w, key_states_w = apply_rotary_pos_emb(
+                query_states_w, key_states_w, cos_w, sin_w
+            )
 
         query_states = torch.cat([query_states_t, query_states_h, query_states_w], dim=-1)
         key_states = torch.cat([key_states_t, key_states_h, key_states_w], dim=-1)
@@ -587,6 +608,10 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings_t: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        position_embeddings_h: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        position_embeddings_w: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        skip_spatial_rope: bool = False,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
@@ -614,14 +639,31 @@ class Qwen3Attention(nn.Module):
         value_states = self.v_proj_mot_gen(hidden_states).view(hidden_shape).transpose(1, 2)  # [B,H,S,D]
 
         # RoPE
-        cos_t, sin_t = self.rotary_emb(hidden_states, indexes[0].unsqueeze(0))
+        if position_embeddings_t is None:
+            position_embeddings_t = self.rotary_emb(
+                hidden_states, indexes[0].unsqueeze(0)
+            )
+        cos_t, sin_t = position_embeddings_t
         query_states_t, key_states_t = apply_rotary_pos_emb(query_states_t, key_states_t, cos_t, sin_t)
 
-        cos_h, sin_h = self.rotary_emb_hw(hidden_states, indexes[1].unsqueeze(0))
-        query_states_h, key_states_h = apply_rotary_pos_emb(query_states_h, key_states_h, cos_h, sin_h)
+        if not skip_spatial_rope:
+            if position_embeddings_h is None:
+                position_embeddings_h = self.rotary_emb_hw(
+                    hidden_states, indexes[1].unsqueeze(0)
+                )
+            cos_h, sin_h = position_embeddings_h
+            query_states_h, key_states_h = apply_rotary_pos_emb(
+                query_states_h, key_states_h, cos_h, sin_h
+            )
 
-        cos_w, sin_w = self.rotary_emb_hw(hidden_states, indexes[2].unsqueeze(0))
-        query_states_w, key_states_w = apply_rotary_pos_emb(query_states_w, key_states_w, cos_w, sin_w)
+            if position_embeddings_w is None:
+                position_embeddings_w = self.rotary_emb_hw(
+                    hidden_states, indexes[2].unsqueeze(0)
+                )
+            cos_w, sin_w = position_embeddings_w
+            query_states_w, key_states_w = apply_rotary_pos_emb(
+                query_states_w, key_states_w, cos_w, sin_w
+            )
 
         # concat along head_dim
         # query/key current layout: [B, H, S, D]
@@ -1122,8 +1164,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
 
+        past_seen_tokens = (
+            past_key_values.get_seq_length() if past_key_values is not None else 0
+        )
         if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -1131,25 +1175,42 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        # It may already have been prepared by e.g. `generate`
+        is_single_text_decode = (
+            input_ids is not None
+            and inputs_embeds.shape[0] == 1
+            and inputs_embeds.shape[1] == 1
+            and past_seen_tokens > 0
+            and image_gen_indicators is None
+        )
+
+        # It may already have been prepared by e.g. `generate`.
         if not isinstance(causal_mask_mapping := attention_mask, dict):
             # Prepare mask arguments
             if input_ids is not None:
-                mask_kwargs = causal_mask_kwargs(
-                    create_causal_mask,
-                    config=self.config,
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    cache_position=cache_position,
-                    past_key_values=past_key_values,
-                    position_ids=position_ids,
-                )
-                # Create the masks
-                causal_mask_mapping = {
-                    "full_attention": create_causal_mask(**mask_kwargs),
-                }
                 self.current_index += 1
-                indexes = torch.LongTensor([[self.current_index], [0], [0]]).to(input_ids.device)
+                indexes = torch.tensor(
+                    [[self.current_index], [0], [0]],
+                    dtype=torch.long,
+                    device=input_ids.device,
+                )
+                if is_single_text_decode and attention_mask is None:
+                    # The only query is the newest token, so it has no future
+                    # positions to mask. Avoid rebuilding an all-zero dense
+                    # mask on every autoregressive step.
+                    causal_mask_mapping = {"full_attention": None}
+                else:
+                    mask_kwargs = causal_mask_kwargs(
+                        create_causal_mask,
+                        config=self.config,
+                        inputs_embeds=inputs_embeds,
+                        attention_mask=attention_mask,
+                        cache_position=cache_position,
+                        past_key_values=past_key_values,
+                        position_ids=position_ids,
+                    )
+                    causal_mask_mapping = {
+                        "full_attention": create_causal_mask(**mask_kwargs),
+                    }
             else:
                 causal_mask_mapping = {
                     "full_attention": create_block_causal_mask(indexes[0]),
@@ -1164,6 +1225,28 @@ class Qwen3Model(Qwen3PreTrainedModel):
             #     causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_kwargs)
 
         hidden_states = inputs_embeds
+        first_attention = self.layers[0].self_attn
+        layer_kwargs = dict(kwargs)
+        layer_kwargs["skip_spatial_rope"] = is_single_text_decode
+        single_device = all(
+            layer.self_attn.q_proj.weight.device == hidden_states.device
+            for layer in self.layers[: self.config.num_hidden_layers]
+        )
+        if single_device:
+            # Every layer has the same parameter-free RoPE definition. Reusing
+            # one result removes 41 repeated trigonometric launches per axis.
+            # Device-mapped models keep the per-layer fallback because their
+            # hidden states migrate between devices.
+            layer_kwargs["position_embeddings_t"] = first_attention.rotary_emb(
+                hidden_states, indexes[0].unsqueeze(0)
+            )
+            if not is_single_text_decode:
+                layer_kwargs["position_embeddings_h"] = first_attention.rotary_emb_hw(
+                    hidden_states, indexes[1].unsqueeze(0)
+                )
+                layer_kwargs["position_embeddings_w"] = first_attention.rotary_emb_hw(
+                    hidden_states, indexes[2].unsqueeze(0)
+                )
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -1177,7 +1260,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
-                **kwargs,
+                **layer_kwargs,
             )
         if not exist_image_gen_tokens:
             hidden_states = self.norm(hidden_states)
