@@ -29,11 +29,12 @@ from transformers import Qwen3Config
 from .transformers_compat import causal_mask_kwargs, model_input_compat, tied_weights_keys
 
 try:
-    from flash_attn import flash_attn_func  # type: ignore
+    from flash_attn import flash_attn_func, flash_attn_with_kvcache  # type: ignore
 
     _HAS_FLASH_ATTN = True
 except ImportError:  # pragma: no cover - exercised only in CPU-only / no-flash envs
     flash_attn_func = None  # type: ignore
+    flash_attn_with_kvcache = None  # type: ignore
     _HAS_FLASH_ATTN = False
 
 
@@ -487,6 +488,34 @@ class Qwen3Attention(nn.Module):
 
         query_states = torch.cat([query_states_t, query_states_h, query_states_w], dim=-1)
         key_states = torch.cat([key_states_t, key_states_h, key_states_w], dim=-1)
+
+        if (
+            input_shape[-1] == 1
+            and attention_mask is None
+            and past_key_values is not None
+            and kwargs.get("update_cache", True)
+            and effective_attn_backend() == "flash"
+        ):
+            layer = past_key_values.layers[self.layer_idx]
+            k_cache = getattr(layer, "flash_decode_k_cache", None)
+            v_cache = getattr(layer, "flash_decode_v_cache", None)
+            cache_seqlens = getattr(layer, "flash_decode_seqlens", None)
+            if k_cache is not None and v_cache is not None and cache_seqlens is not None:
+                q = query_states.transpose(1, 2).contiguous()
+                k = key_states.transpose(1, 2).contiguous()
+                v = value_states.transpose(1, 2).contiguous()
+                attn_output = flash_attn_with_kvcache(
+                    q,
+                    k_cache,
+                    v_cache,
+                    k=k,
+                    v=v,
+                    cache_seqlens=cache_seqlens,
+                    softmax_scale=self.scaling,
+                    causal=False,
+                )
+                attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+                return self.o_proj(attn_output), None
 
 
         if past_key_values is not None:
