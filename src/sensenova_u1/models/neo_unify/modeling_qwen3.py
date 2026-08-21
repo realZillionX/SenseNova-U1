@@ -212,8 +212,41 @@ class Qwen3MLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        gate_up_proj = getattr(self, "gate_up_proj", None)
+        if gate_up_proj is None:
+            gate = self.gate_proj(x)
+            up = self.up_proj(x)
+        else:
+            gate, up = gate_up_proj(x).chunk(2, dim=-1)
+        down_proj = self.down_proj(self.act_fn(gate) * up)
         return down_proj
+
+    def fuse_text_projections_for_inference(self) -> bool:
+        """Join gate/up weights into one GEMM, releasing the originals."""
+
+        if hasattr(self, "gate_up_proj"):
+            return False
+        if self.training:
+            raise RuntimeError("text projection fusion requires eval mode")
+        gate = self.gate_proj
+        up = self.up_proj
+        if gate.bias is not None or up.bias is not None:
+            raise ValueError("Qwen3 gate/up projection fusion expects bias-free linears")
+        fused = nn.Linear(
+            gate.in_features,
+            gate.out_features + up.out_features,
+            bias=False,
+            device="meta",
+            dtype=gate.weight.dtype,
+        )
+        fused.weight = nn.Parameter(
+            torch.cat((gate.weight, up.weight), dim=0), requires_grad=False
+        )
+        fused.train(False)
+        self.gate_up_proj = fused
+        del self.gate_proj
+        del self.up_proj
+        return True
 
 
 def rotate_half(x):
@@ -427,6 +460,54 @@ class Qwen3Attention(nn.Module):
             hw_config.rope_parameters = {**hw_config.rope_parameters, "rope_theta": config.rope_theta_hw}
         hw_config.max_position_embeddings = config.max_position_embeddings_hw
         self.rotary_emb_hw = Qwen3RotaryEmbedding(config=hw_config)
+
+    def text_projection_device(self) -> torch.device:
+        fused = getattr(self, "qkv_proj", None)
+        if fused is not None:
+            return fused.weight.device
+        return self.q_proj.weight.device
+
+    def fuse_text_projections_for_inference(self) -> bool:
+        """Join understanding Q/K/V weights into one GEMM.
+
+        The MoT generation projections remain separate. This is an irreversible
+        runtime transform for inference-only instances and is intentionally not
+        used by training or checkpoint serialization.
+        """
+
+        if hasattr(self, "qkv_proj"):
+            return False
+        if self.training:
+            raise RuntimeError("text projection fusion requires eval mode")
+        projections = (self.q_proj, self.k_proj, self.v_proj)
+        has_bias = projections[0].bias is not None
+        if any((projection.bias is not None) != has_bias for projection in projections):
+            raise ValueError("Qwen3 Q/K/V projections disagree about bias")
+        self.q_size = projections[0].out_features
+        self.k_size = projections[1].out_features
+        self.v_size = projections[2].out_features
+        fused = nn.Linear(
+            projections[0].in_features,
+            self.q_size + self.k_size + self.v_size,
+            bias=has_bias,
+            device="meta",
+            dtype=projections[0].weight.dtype,
+        )
+        fused.weight = nn.Parameter(
+            torch.cat(tuple(projection.weight for projection in projections), dim=0),
+            requires_grad=False,
+        )
+        if has_bias:
+            fused.bias = nn.Parameter(
+                torch.cat(tuple(projection.bias for projection in projections), dim=0),
+                requires_grad=False,
+            )
+        fused.train(False)
+        self.qkv_proj = fused
+        del self.q_proj
+        del self.k_proj
+        del self.v_proj
+        return True
     
     def forward_und(
         self,
@@ -445,19 +526,30 @@ class Qwen3Attention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
+        qkv_proj = getattr(self, "qkv_proj", None)
+        if qkv_proj is None:
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+        else:
+            query_states, key_states, value_states = qkv_proj(hidden_states).split(
+                (self.q_size, self.k_size, self.v_size), dim=-1
+            )
+        query_states = query_states.view(hidden_shape)
         query_states_t, query_states_hw = query_states.chunk(2, dim=-1)
         query_states_t = self.q_norm(query_states_t).transpose(1, 2)
         query_states_hw = self.q_norm_hw(query_states_hw).transpose(1, 2)
         query_states_h, query_states_w = query_states_hw.chunk(2, dim=-1)
 
-        key_states = self.k_proj(hidden_states).view(hidden_shape)
+        key_states = key_states.view(*input_shape, -1, self.head_dim)
         key_states_t, key_states_hw = key_states.chunk(2, dim=-1)
         key_states_t = self.k_norm(key_states_t).transpose(1, 2)
         key_states_hw = self.k_norm_hw(key_states_hw).transpose(1, 2)
         key_states_h, key_states_w = key_states_hw.chunk(2, dim=-1)
 
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = value_states.view(
+            *input_shape, -1, self.head_dim
+        ).transpose(1, 2)
 
         if position_embeddings_t is None:
             position_embeddings_t = self.rotary_emb(
@@ -1125,6 +1217,17 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    def fuse_text_projections_for_inference(self) -> int:
+        """Fuse Q/K/V and gate/up projections in every text decoder layer."""
+
+        if self.training:
+            raise RuntimeError("text projection fusion requires eval mode")
+        fused = 0
+        for layer in self.layers[: self.config.num_hidden_layers]:
+            fused += int(layer.self_attn.fuse_text_projections_for_inference())
+            fused += int(layer.mlp.fuse_text_projections_for_inference())
+        return fused
+
     @model_input_compat
     def forward(
         self,
@@ -1229,7 +1332,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         layer_kwargs = dict(kwargs)
         layer_kwargs["skip_spatial_rope"] = is_single_text_decode
         single_device = all(
-            layer.self_attn.q_proj.weight.device == hidden_states.device
+            layer.self_attn.text_projection_device() == hidden_states.device
             for layer in self.layers[: self.config.num_hidden_layers]
         )
         if single_device:
