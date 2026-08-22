@@ -36,14 +36,18 @@ def empty_cache_and_diag(batch_count, bcast_sumbit_hook, interval=50):
     if interval <= 0:
         interval = 50
 
-    cuda_memory_analyze(batch_count, batch_count % int(interval) == 0 or batch_count <= 5)
+    interval = int(interval)
+    should_diagnose = batch_count <= 5 or batch_count % interval == 0
+    if should_diagnose:
+        cuda_memory_analyze(batch_count, print_mm_suage=True)
 
-    if batch_count % int(interval) == 0:
+    # Step zero runs immediately after model/optimizer construction. Flushing the
+    # caching allocator there discards the reusable blocks that construction just
+    # established and makes the first measured step pay to rebuild them.
+    if batch_count > 0 and batch_count % interval == 0:
         bcast_sumbit_hook(manual_submit_count=8)
-        # there is no need to do diag on the first batch
-        if batch_count > 0:
-            if gpc.is_rank_for_log():
-                logger.info("Empty Cache and Diagnosis GPU/NCCL/Timer ...")
+        if gpc.is_rank_for_log():
+            logger.info("Empty Cache and Diagnosis GPU/NCCL/Timer ...")
         # do empty_cache after the bench
         sensenovalm_accelerator.empty_cache()
         # do garbage collection

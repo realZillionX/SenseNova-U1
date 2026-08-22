@@ -455,6 +455,11 @@ class TrainerBuilder(Trainer):
         Run InternEvo training loop.
         """
         self.train()
+        # This validates process-wide CUDA/NCCL settings. Repeating it for every
+        # batch only re-reads environment variables, reassigns backend flags and
+        # can emit the same warning indefinitely; none of those settings are
+        # allowed to change during a training run.
+        check_cuda_env()
         train_iter = iter(self.train_dl)
         self.train_start_time = time.perf_counter()
 
@@ -531,7 +536,6 @@ class TrainerBuilder(Trainer):
             bcast_sumbit_hook=self.optimizer.submit_bcast_async,
             interval=gpc.config.data.empty_cache_and_diag_interval,
         )
-        check_cuda_env()
         start_time = time.time()
         step_start_time = time.perf_counter()
         timer("one-batch").start()

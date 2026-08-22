@@ -347,7 +347,8 @@ def record_current_batch_training_metrics(
     if moe_monitor_cfg.get("drop_ratio", False):
         gpc.metric["moe_drop_ratio"] = []
 
-    if gpc.is_no_pp_or_last_stage():
+    acc_perplex = {}
+    if gpc.is_no_pp_or_last_stage() and metric.should_collect(batch_count):
         acc_perplex = metric.get_metric()
 
     if batch_count != 0 and batch_count % writer.queue_max_length == 0:

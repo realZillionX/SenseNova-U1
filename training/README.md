@@ -128,6 +128,13 @@ flow-matching schedule, CFG drop probabilities, ...) are also env-var
 overrideable. See [`configs/sensenovavl_qwen3_gen/`][configs] for the full
 list of consumers.
 
+U1.5 records the inexpensive loss/throughput counters every step and samples
+the duplicate full-vocabulary accuracy/perplexity monitor every 10 steps by
+default. Set `metric_interval_steps=1` to restore per-step monitoring or use a
+larger positive interval when profiling compute throughput. Allocator memory
+diagnostics follow `data.empty_cache_and_diag_interval`; the framework does not
+flush the CUDA caching allocator at step zero.
+
 [configs]: configs/sensenovavl_qwen3_gen/
 
 ### Launch a training run

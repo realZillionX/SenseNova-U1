@@ -116,6 +116,22 @@ class AccPerplex:
 
         self.loss_with_type_id = LossWithTypeId(device, dp_pg, dataset_types)
         self.scatter_sum = scatter_sum_impl
+        self.interval_steps = int(gpc.config.get("metric_interval_steps", 1))
+        if self.interval_steps < 1:
+            raise ValueError("metric_interval_steps must be a positive integer")
+
+    def should_collect(self, step: int | None = None) -> bool:
+        """Whether this step should pay for full-vocabulary monitoring metrics.
+
+        Accuracy and perplexity are observability signals, not training inputs.
+        Computing them duplicates a full-vocabulary cross entropy path after the
+        real criterion and introduces several collectives. Sparse sampling keeps
+        the signals while leaving forward/backward/optimizer semantics unchanged.
+        """
+
+        if step is None:
+            step = int(gpc.config.get("batch_count", 0))
+        return step % self.interval_steps == 0
 
     def set_current_type_ids(self, type_ids: torch.Tensor):
         self.batch_shift = 0
@@ -125,6 +141,8 @@ class AccPerplex:
         self.cu_seqlens = cu_seqlens
 
     def __call__(self, logits, labels):
+        if not self.should_collect():
+            return None
         return self.update(logits, labels, type_ids=self.type_ids)
 
     def update(self, logits, labels, type_ids=None):

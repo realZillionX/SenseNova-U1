@@ -58,6 +58,9 @@ lr_scheduler_type = os.environ.get('lr_scheduler_type', 'cosine')
 lr_scheduler_offset = int(os.environ.get('lr_scheduler_offset', 0))
 load_optimizer = os.environ.get('load_optimizer', None)
 ce_loss_weight = float(os.environ.get('ce_loss_weight', 1.0))
+metric_interval_steps = int(os.environ.get('metric_interval_steps', '10'))
+if metric_interval_steps < 1:
+    raise ValueError('metric_interval_steps must be a positive integer')
 
 
 # -----------------------------------------------------------------------------
