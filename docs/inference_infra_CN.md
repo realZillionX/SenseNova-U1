@@ -72,7 +72,7 @@ NEO-Unify 的 prefill 注意力并非标准因果注意力：文本 token 仍保
 
 仓库原生 PyTorch runtime 始终加载并执行完整统一模型：视觉编码、自回归文本、MoT 图像去噪、pixel head 解码、生成图重新编码，以及每张图后的文本续写；它不是 text-only 部署。单 token CUDA 推理时，`Qwen3Attention.forward_und` 可消费由调用方持有的 cache layer，其中连续张量 `flash_decode_k_cache`、`flash_decode_v_cache` 与 int32 `flash_decode_seqlens` 会启用 FlashAttention 原地 KV-cache 内核，同时保留图像状态切换所需的普通 cache view。capacity 规划、CUDA Graph capture、请求间 reset/reload，以及统一模型可变 session 的串行访问都由调用方负责。
 
-当全部 decoder layer 位于同一设备时，时间与空间 rotary embedding 每次 model forward 只计算一次并跨层复用；单 token 文本解码的两个空间索引均为零，因此跳过空间旋转。多设备放置继续使用逐层 fallback。`set_fused_rms_norm(True)` 可在 CUDA eval mode 下启用 FlashAttention Triton RMSNorm，但默认关闭，因为 kernel 数值差异可能改变自回归轨迹；启用它的部署必须把该设置视为模型服务身份并重新运行任务 scorer。这些原生控制用于补充 LightLLM + LightX2V 生产栈，而不替代后者的 continuous batching 与解耦调度。
+当全部 decoder layer 位于同一设备时，时间与空间 rotary embedding 每次 model forward 只计算一次并跨层复用。使用 default RoPE scaling 时，`Qwen3Model.prepare_rotary_inference_cache(...)` 可在 CUDA Graph capture 前按封存的时间与空间范围生成 device/dtype 精确匹配的查找表，使后续文本和图像步骤只索引这些表；调用方必须覆盖所有可达位置。单 token 文本解码的两个空间索引均为零，因此跳过空间旋转。多设备放置继续使用逐层 fallback。`set_fused_rms_norm(True)` 可在 CUDA eval mode 下启用 FlashAttention Triton RMSNorm，但默认关闭，因为 kernel 数值差异可能改变自回归轨迹；启用它的部署必须把该设置视为模型服务身份并重新运行任务 scorer。这些原生控制用于补充 LightLLM + LightX2V 生产栈，而不替代后者的 continuous batching 与解耦调度。
 
 
 ### 部署
