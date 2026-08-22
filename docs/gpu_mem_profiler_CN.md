@@ -2,6 +2,8 @@
 
 本文档记录了 SenseNova-U1-8B-MoT 模型在不同推理任务下的显存占用与性能基准数据。所有测试均通过 `--profile` 参数启用，运行环境为单张 NVIDIA H100 80G GPU。
 
+> **指标定义：**本文所有 `throughput` 都是图像 patch token 吞吐，计算方式为 `(width // patch_size) × (height // patch_size) × 图像数 / 生成墙钟时间`，不是语言模型自回归文本 token/s。例如图文交错结果 `46.68 tok/s` 等于 `2304 个 image tokens / 49.353 s`；分子不包含模型生成的文本 token，文本吞吐必须单独测量。
+
 ---
 
 ## 文生图

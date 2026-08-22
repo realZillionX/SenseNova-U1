@@ -2,6 +2,8 @@
 
 This document records VRAM usage and performance benchmarks for the SenseNova-U1-8B-MoT model across different inference tasks. All tests are run with the `--profile` flag on a single NVIDIA H100 80G GPU.
 
+> **Metric definition:** every `throughput` value in this document is image patch-token throughput, computed as `(width // patch_size) × (height // patch_size) × images / generation wall time`. It is not autoregressive language-model text tokens per second. For example, the interleaved result `46.68 tok/s` is `2304 image tokens / 49.353 s`; generated text tokens are not included in that numerator and must be benchmarked separately.
+
 ---
 
 ## Text-to-Image
