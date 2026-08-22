@@ -379,10 +379,10 @@ class Qwen3RotaryEmbedding(nn.Module):
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
+        self._inference_cos_cache: Optional[torch.Tensor] = None
+        self._inference_sin_cache: Optional[torch.Tensor] = None
 
-    @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
+    def _compute_cos_sin(self, x: torch.Tensor, position_ids: torch.Tensor):
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
 
@@ -394,6 +394,46 @@ class Qwen3RotaryEmbedding(nn.Module):
             sin = emb.sin() * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
+    @torch.no_grad()
+    def prepare_inference_cache(
+        self,
+        *,
+        max_position: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        if self.rope_type not in {None, "default"}:
+            raise ValueError("inference RoPE cache supports only default scaling")
+        if type(max_position) is not int or max_position < 1:
+            raise ValueError("inference RoPE cache needs a positive max_position")
+        current = self._inference_cos_cache
+        if (
+            current is not None
+            and current.shape[0] >= max_position
+            and current.device == device
+            and current.dtype == dtype
+        ):
+            return
+        positions = torch.arange(max_position, dtype=torch.long, device=device).unsqueeze(0)
+        marker = torch.empty((), dtype=dtype, device=device)
+        cos, sin = self._compute_cos_sin(marker, positions)
+        self._inference_cos_cache = cos.squeeze(0).contiguous()
+        self._inference_sin_cache = sin.squeeze(0).contiguous()
+
+    @torch.no_grad()
+    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
+    def forward(self, x, position_ids):
+        cos_cache = self._inference_cos_cache
+        sin_cache = self._inference_sin_cache
+        if (
+            cos_cache is not None
+            and sin_cache is not None
+            and cos_cache.device == x.device
+            and cos_cache.dtype == x.dtype
+        ):
+            return cos_cache[position_ids], sin_cache[position_ids]
+        return self._compute_cos_sin(x, position_ids)
 
 
 class Qwen3Attention(nn.Module):
@@ -1184,6 +1224,26 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def prepare_rotary_inference_cache(
+        self,
+        *,
+        max_temporal_position: int,
+        max_spatial_position: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        first_attention = self.layers[0].self_attn
+        first_attention.rotary_emb.prepare_inference_cache(
+            max_position=max_temporal_position,
+            device=device,
+            dtype=dtype,
+        )
+        first_attention.rotary_emb_hw.prepare_inference_cache(
+            max_position=max_spatial_position,
+            device=device,
+            dtype=dtype,
+        )
 
     @model_input_compat
     def forward(
