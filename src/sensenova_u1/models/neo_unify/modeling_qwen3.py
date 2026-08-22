@@ -30,11 +30,13 @@ from .transformers_compat import causal_mask_kwargs, model_input_compat, tied_we
 
 try:
     from flash_attn import flash_attn_func, flash_attn_with_kvcache  # type: ignore
+    from flash_attn.ops.triton.layer_norm import rms_norm_fn as flash_rms_norm_fn  # type: ignore
 
     _HAS_FLASH_ATTN = True
 except ImportError:  # pragma: no cover - exercised only in CPU-only / no-flash envs
     flash_attn_func = None  # type: ignore
     flash_attn_with_kvcache = None  # type: ignore
+    flash_rms_norm_fn = None  # type: ignore
     _HAS_FLASH_ATTN = False
 
 
@@ -47,6 +49,7 @@ except ImportError:  # pragma: no cover - exercised only in CPU-only / no-flash 
 #                    debugging, even when flash-attn is available).
 _VALID_ATTN_BACKENDS = ("auto", "flash", "sdpa")
 _ATTN_BACKEND: str = "auto"
+_FUSED_RMS_NORM: bool = False
 
 
 def set_attn_backend(backend: str) -> str:
@@ -83,6 +86,22 @@ def effective_attn_backend() -> str:
     if _ATTN_BACKEND != "auto":
         return _ATTN_BACKEND
     return "flash" if _HAS_FLASH_ATTN else "sdpa"
+
+
+def set_fused_rms_norm(enabled: bool) -> bool:
+    """Enable the FlashAttention Triton RMSNorm kernel for CUDA inference."""
+
+    if type(enabled) is not bool:
+        raise TypeError(f"enabled must be a bool, got {enabled!r}")
+    if enabled and flash_rms_norm_fn is None:
+        raise RuntimeError("fused RMSNorm requires the flash-attn Triton kernels")
+    global _FUSED_RMS_NORM
+    _FUSED_RMS_NORM = enabled
+    return _FUSED_RMS_NORM
+
+
+def fused_rms_norm_enabled() -> bool:
+    return _FUSED_RMS_NORM
 
 
 def _sdpa_attn_func(q, k, v, dropout_p: float = 0.0, softmax_scale=None, causal: bool = False):
@@ -191,6 +210,18 @@ class Qwen3RMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if (
+            _FUSED_RMS_NORM
+            and not self.training
+            and hidden_states.device.type == "cuda"
+        ):
+            return flash_rms_norm_fn(
+                hidden_states,
+                self.weight,
+                None,
+                eps=self.variance_epsilon,
+                prenorm=False,
+            )
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
