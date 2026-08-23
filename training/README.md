@@ -123,6 +123,14 @@ Distributed topology is also env-var driven (defaults shown):
 | `MASTER_ADDR` | 127.0.0.1 | Rendezvous host (rank-0 node's IP) |
 | `MASTER_PORT` | 29500 | Rendezvous port |
 
+The U1.5 native-resolution loader also exposes its per-rank worker and packing
+queue controls. `dataloader_num_workers` is per data rank (so an 8-rank run at
+the default value starts 64 workers), while `dataloader_prefetch_factor`,
+`dataloader_persistent_workers`, `packed_buffer_max_size`, and
+`packed_buffer_stale_threshold` tune how quickly preprocessed samples leave the
+packer. Small corpora and shared filesystems should benchmark these settings;
+the launcher defaults preserve the published behavior.
+
 All other knobs (`seq_len`, `total_steps`, `lr`, parallelism sizes,
 flow-matching schedule, CFG drop probabilities, ...) are also env-var
 overrideable. See [`configs/sensenovavl_qwen3_gen/`][configs] for the full

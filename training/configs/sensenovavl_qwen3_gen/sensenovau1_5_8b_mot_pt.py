@@ -85,6 +85,19 @@ down_sample_ratio = float(os.environ.get('down_sample_ratio', 0.5))
 print(f'down_sample_ratio is {down_sample_ratio}')
 
 dataset_replacement = env_bool('dataset_replacement', False)
+dataloader_num_workers = int(os.environ.get('dataloader_num_workers', 8))
+dataloader_prefetch_factor = int(os.environ.get('dataloader_prefetch_factor', 1))
+dataloader_persistent_workers = env_bool('dataloader_persistent_workers', False)
+packed_buffer_max_size = int(os.environ.get('packed_buffer_max_size', 10))
+packed_buffer_stale_threshold = int(os.environ.get('packed_buffer_stale_threshold', 200))
+if dataloader_num_workers < 0:
+    raise ValueError('dataloader_num_workers must be non-negative')
+if dataloader_prefetch_factor < 1:
+    raise ValueError('dataloader_prefetch_factor must be positive')
+if packed_buffer_max_size < 1:
+    raise ValueError('packed_buffer_max_size must be positive')
+if packed_buffer_stale_threshold < 1:
+    raise ValueError('packed_buffer_stale_threshold must be positive')
 
 # LLM-text mixing (kept as a hook; both `train_u1/*.sh` set the weights to 0).
 llm_data_config = None
@@ -228,7 +241,9 @@ data = dict(
     train_folder=None,  # SenseNovaVL drives this via data.meta_path
     empty_cache_and_diag_interval=200,
     diag_outlier_ratio=1.1,
-    num_workers=8,
+    num_workers=dataloader_num_workers,
+    prefetch_factor=dataloader_prefetch_factor,
+    persistent_workers=dataloader_persistent_workers,
     rampup_batch_size="",
     # vision / multimodal
     conv_style=conv_style,
@@ -255,7 +270,8 @@ data = dict(
     # packing
     num_images_expected=num_imgs,
     max_packed_tokens=SEQ_LEN,
-    max_buffer_size=10,
+    max_buffer_size=packed_buffer_max_size,
+    packed_buffer_stale_threshold=packed_buffer_stale_threshold,
     log_freq=1000,
     strict_mode=False,
     split_data_chunk=True,
