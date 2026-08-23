@@ -511,6 +511,9 @@ def main() -> None:
                 seed=args.seed,
             )
         profiler.update_last_batch(len(images))
+        profiler.update_last_text_tokens(
+            len(engine.tokenizer.encode(text, add_special_tokens=False))
+        )
         print(f"[text] {text}")
         _save_outputs(
             text,
@@ -568,6 +571,9 @@ def main() -> None:
                     seed=args.seed,
                 )
             profiler.update_last_batch(len(images))
+            profiler.update_last_text_tokens(
+                len(engine.tokenizer.encode(text, add_special_tokens=False))
+            )
 
             stem = f"{i + 1:04d}" + ("_think" if think_mode else "_no_think")
             input_names = _save_outputs(

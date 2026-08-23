@@ -70,6 +70,7 @@ class _GenerationRecord:
     width: int
     height: int
     batch: int
+    text_tokens: int
     seconds: float
     memory_peak: _MemoryPeak
 
@@ -86,6 +87,7 @@ class GenerationHandle:
     width: int
     height: int
     batch: int
+    text_tokens: int = 0
 
 
 class InferenceProfiler:
@@ -211,6 +213,7 @@ class InferenceProfiler:
                     width=handle.width,
                     height=handle.height,
                     batch=handle.batch,
+                    text_tokens=handle.text_tokens,
                     seconds=time.perf_counter() - t0,
                     memory_peak=self._memory_peak(),
                 )
@@ -225,6 +228,18 @@ class InferenceProfiler:
         """
         if self.enabled and self.gen_records:
             self.gen_records[-1].batch = n
+
+    def update_last_text_tokens(self, n: int) -> None:
+        """Attach the generated-text token count to the latest call.
+
+        Text is decoded by the task wrapper after the timed model call, so the
+        profiler accepts the exact tokenizer count post-hoc just like the
+        variable image count used by interleaved generation.
+        """
+        if n < 0:
+            raise ValueError("text token count must be non-negative")
+        if self.enabled and self.gen_records:
+            self.gen_records[-1].text_tokens = n
 
     # ------------------------------------------------------------------
     # reporting
@@ -249,28 +264,33 @@ class InferenceProfiler:
             return
 
         total_images = sum(record.batch for record in self.gen_records)
+        total_text_tokens = sum(record.text_tokens for record in self.gen_records)
         total_time = sum(record.seconds for record in self.gen_records)
-        avg_per_image = total_time / total_images
-
         total_tokens = sum(
             (record.width // self.patch_size) * (record.height // self.patch_size) * record.batch
             for record in self.gen_records
         )
-        avg_tokens = total_tokens / total_images
-        tokens_per_sec = total_tokens / total_time
 
         peak_generation_memory = self._max_memory_peak(record.memory_peak for record in self.gen_records)
 
         print(
             f"  generations         : {len(self.gen_records)} call(s), "
-            f"{total_images} image(s) total, {total_time:.3f} s wall"
+            f"{total_images} image(s), {total_text_tokens} text token(s), "
+            f"{total_time:.3f} s wall"
         )
-        print(f"  avg per image       : {avg_per_image:8.3f} s")
-        print(
-            f"  image tokens        : patch_size={self.patch_size}, "
-            f"avg {avg_tokens:.0f} tok/image ({int(avg_tokens):d})"
-        )
-        print(f"  throughput          : {tokens_per_sec:8.2f} tok/s")
+        if total_images:
+            avg_per_image = total_time / total_images
+            avg_tokens = total_tokens / total_images
+            print(f"  avg per image       : {avg_per_image:8.3f} s")
+            print(
+                f"  image tokens        : patch_size={self.patch_size}, "
+                f"avg {avg_tokens:.0f} tok/image ({int(avg_tokens):d})"
+            )
+            print(f"  image throughput    : {total_tokens / total_time:8.2f} tok/s")
+        else:
+            print("  image tokens        : 0 (text-only generation)")
+        if total_text_tokens:
+            print(f"  text throughput     : {total_text_tokens / total_time:8.2f} tok/s")
         if peak_generation_memory.available:
             print(f"  generation peak mem : {self._format_memory(peak_generation_memory)}")
 
@@ -279,10 +299,16 @@ class InferenceProfiler:
             for idx, record in enumerate(self.gen_records):
                 tokens = (record.width // self.patch_size) * (record.height // self.patch_size) * record.batch
                 memory = f", {self._format_memory(record.memory_peak)}" if record.memory_peak.available else ""
+                rates = []
+                if tokens:
+                    rates.append(f"{tokens / record.seconds:8.2f} image tok/s")
+                if record.text_tokens:
+                    rates.append(f"{record.text_tokens / record.seconds:8.2f} text tok/s")
+                rate = ", ".join(rates) if rates else "no output tokens"
                 print(
                     f"    [{idx + 1:>3}] {record.width}x{record.height} x{record.batch}  "
-                    f"{record.seconds:7.3f} s  ({tokens:>6d} tok, "
-                    f"{tokens / record.seconds:8.2f} tok/s{memory})"
+                    f"{record.seconds:7.3f} s  ({tokens:>6d} image tok, "
+                    f"{record.text_tokens:>6d} text tok, {rate}{memory})"
                 )
         print("=" * 64)
 
