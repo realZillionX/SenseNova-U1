@@ -11,6 +11,7 @@ from .checkpoint_loading import (
     parse_max_memory,
 )
 from .comparison import save_compare
+from .decode_cache import reserve_cuda_graph_decode
 from .gguf_loader import load_gguf_checkpoint, match_state_dict, set_gguf2meta_model
 from .lora import load_and_merge_lora_weight_from_safetensors
 from .offload import (
@@ -58,6 +59,7 @@ __all__ = [
     "offload_layers_async",
     "offload_layers_sync",
     "parse_max_memory",
+    "reserve_cuda_graph_decode",
     "save_compare",
     "seed_all_accelerators",
     "set_gguf2meta_model",

@@ -180,6 +180,7 @@ class SenseNovaU1Interleave:
         think_mode: bool = True,
         system_message: str = DEFAULT_SYSTEM_MESSAGE,
         seed: int = 0,
+        cuda_graph_decode: bool = False,
     ) -> tuple[str, list[Image.Image]]:
         with make_offload_ctx(
             self.model,
@@ -204,6 +205,7 @@ class SenseNovaU1Interleave:
                 system_message=system_message,
                 think_mode=think_mode,
                 seed=seed,
+                cuda_graph_decode=cuda_graph_decode,
                 verbose=True,
             )
         return text, [_to_pil(img) for img in image_tensors]
@@ -429,6 +431,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--cuda_graph_decode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use the native fixed-address KV cache and reusable single-token "
+            "CUDA graph. This changes kernel numerics and therefore output "
+            "trajectory; supported only for single-device full-VRAM CUDA inference."
+        ),
+    )
+    p.add_argument(
         "--profile",
         action="store_true",
         help=(
@@ -442,6 +454,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if args.cuda_graph_decode and (
+        not args.device.startswith("cuda")
+        or args.device_map is not None
+        or args.vram_mode != "full"
+    ):
+        raise ValueError(
+            "--cuda_graph_decode requires single-device full-VRAM CUDA inference"
+        )
 
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
 
@@ -458,6 +479,7 @@ def main() -> None:
             "fast_activation_reserve_gib": args.fast_activation_reserve_gib,
             "fast_vram_budget_gib": args.fast_vram_budget_gib,
             "attn_backend": sensenova_u1.effective_attn_backend(),
+            "cuda_graph_decode": args.cuda_graph_decode,
             "dtype": args.dtype,
             "gguf": args.gguf_checkpoint,
         },
@@ -509,6 +531,7 @@ def main() -> None:
                 think_mode=args.think_mode,
                 system_message=args.system_message,
                 seed=args.seed,
+                cuda_graph_decode=args.cuda_graph_decode,
             )
         profiler.update_last_batch(len(images))
         profiler.update_last_text_tokens(
@@ -569,6 +592,7 @@ def main() -> None:
                     think_mode=think_mode,
                     system_message=args.system_message,
                     seed=args.seed,
+                    cuda_graph_decode=args.cuda_graph_decode,
                 )
             profiler.update_last_batch(len(images))
             profiler.update_last_text_tokens(

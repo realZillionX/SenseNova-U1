@@ -300,6 +300,12 @@ three-mode launcher covering every usage pattern below.
 
 **Resolution:** when input images are provided via `--image` or the JSONL `image` field, the output resolution follows the first input image (snapped to 32-aligned buckets via `smart_resize`), overriding `--resolution` / `--width` / `--height`.
 
+**CUDA graph decode:** `--cuda_graph_decode` enables the fixed-address KV
+cache and reusable single-token CUDA graph for full-VRAM, single-device CUDA
+inference. It uses an inference-only FlashAttention kernel and can change the
+autoregressive trajectory through kernel numerics, so treat the flag as part
+of the serving identity and re-run output-quality evaluation when enabling it.
+
 ### 1) Single sample, text prompt only
 ```bash
 python examples/interleave/inference.py \

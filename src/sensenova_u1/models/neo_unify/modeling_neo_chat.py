@@ -1026,6 +1026,7 @@ class NEOChatModel(PreTrainedModel):
             system_message='',
             think_mode=False,
             seed=0,
+            cuda_graph_decode=False,
     ):
         self.img_context_token_id = tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
         self.img_start_token_id = tokenizer.convert_tokens_to_ids(IMG_START_TOKEN)
@@ -1093,6 +1094,30 @@ class NEOChatModel(PreTrainedModel):
         outputs_cond = self.language_model(inputs_embeds=input_embeds_cond, indexes=indexes_cond, attention_mask=attention_mask_cond, use_cache=True)
         past_key_values_cond = outputs_cond.past_key_values
         t_index_cond = indexes_cond[0].max().item()
+        decode_workspace = None
+        if cuda_graph_decode:
+            from ...utils.decode_cache import reserve_cuda_graph_decode
+
+            largest_image_tokens = max(
+                (
+                    (width // (self.patch_size * merge_size))
+                    * (height // (self.patch_size * merge_size))
+                    for width, height in image_size_list[:max_images]
+                ),
+                default=0,
+            )
+            required_capacity = (
+                int(past_key_values_cond.get_seq_length())
+                + max_new_tokens
+                + max_images * (largest_image_tokens + 1)
+            )
+            decode_workspace = reserve_cuda_graph_decode(
+                self,
+                model=self,
+                cache=past_key_values_cond,
+                capacity=required_capacity,
+            )
+            past_key_values_cond = decode_workspace.cache
 
         # Initialize Text Uncondition Cache
         question_text_uncondition = '<image>' * len(images)
@@ -1117,10 +1142,10 @@ class NEOChatModel(PreTrainedModel):
 
         generated_text = ""
         generated_images =[]
-        max_images = 10
         img_count = 0
 
         next_token = torch.argmax(outputs_cond.logits[:, -1, :], dim=-1)
+        condition_logits = outputs_cond.logits
 
         generator = torch.Generator(self.device).manual_seed(seed)
         while True:
@@ -1135,15 +1160,22 @@ class NEOChatModel(PreTrainedModel):
                 gen_tokens.append(token_item)
                 current_generated_tokens += 1
 
-                self.language_model.model.current_index = t_index_cond
-                outputs_cond = self.language_model(
-                    input_ids=next_token.unsqueeze(0),
-                    past_key_values=past_key_values_cond,
-                    use_cache=True
-                )
-                past_key_values_cond = outputs_cond.past_key_values
+                if decode_workspace is None:
+                    self.language_model.model.current_index = t_index_cond
+                    outputs_cond = self.language_model(
+                        input_ids=next_token.unsqueeze(0),
+                        past_key_values=past_key_values_cond,
+                        use_cache=True
+                    )
+                    past_key_values_cond = outputs_cond.past_key_values
+                    condition_logits = outputs_cond.logits
+                else:
+                    condition_logits = decode_workspace.replay(
+                        next_token, t_index=t_index_cond
+                    )
+                    past_key_values_cond = decode_workspace.cache
                 t_index_cond += 1
-                next_token = torch.argmax(outputs_cond.logits[:, -1, :], dim=-1)
+                next_token = torch.argmax(condition_logits[:, -1, :], dim=-1)
 
                 # Stream partial text so users see liveness during long runs
                 # (e.g. low VRAM offload). Decode in 16-token chunks.
@@ -1176,9 +1208,16 @@ class NEOChatModel(PreTrainedModel):
                     print(f"\n[image {img_count + 1}] preparing diffusion...", flush=True)
 
                 # Add the img_start_token for condition and text_uncondition branch
-                self.language_model.model.current_index = t_index_cond
-                outputs_cond = self.language_model(input_ids=next_token.unsqueeze(0), past_key_values=past_key_values_cond, use_cache=True)
-                past_key_values_cond = outputs_cond.past_key_values
+                if decode_workspace is None:
+                    self.language_model.model.current_index = t_index_cond
+                    outputs_cond = self.language_model(input_ids=next_token.unsqueeze(0), past_key_values=past_key_values_cond, use_cache=True)
+                    past_key_values_cond = outputs_cond.past_key_values
+                    condition_logits = outputs_cond.logits
+                else:
+                    condition_logits = decode_workspace.replay(
+                        next_token, t_index=t_index_cond
+                    )
+                    past_key_values_cond = decode_workspace.cache
                 t_index_cond += 1
 
                 self.language_model.model.current_index = t_index_tu
@@ -1207,7 +1246,7 @@ class NEOChatModel(PreTrainedModel):
                     if self.noise_scale_mode == 'dynamic_sqrt':
                         noise_scale = math.sqrt(noise_scale)
                 noise_scale = min(noise_scale, self.noise_scale_max_value)
-                image_prediction = noise_scale * torch.randn((1, 3, image_size[1], image_size[0]), device=device, dtype=outputs_cond.logits.dtype, generator=generator)
+                image_prediction = noise_scale * torch.randn((1, 3, image_size[1], image_size[0]), device=device, dtype=condition_logits.dtype, generator=generator)
 
                 past_key_values_cond_cfg = past_key_values_cond
                 past_key_values_tu_cfg = past_key_values_tu
@@ -1362,8 +1401,14 @@ class NEOChatModel(PreTrainedModel):
 
                 outputs_cond, t_index_cond = append_image_to_cache(past_key_values_cond, t_index_cond)
                 outputs_tu, t_index_tu = append_image_to_cache(past_key_values_tu, t_index_tu)
+                sync_decode_length = getattr(
+                    past_key_values_cond, "sync_flash_decode_length", None
+                )
+                if callable(sync_decode_length):
+                    sync_decode_length()
 
                 next_token = torch.argmax(outputs_cond.logits[:, -1, :], dim=-1)
+                condition_logits = outputs_cond.logits
 
         return generated_text, generated_images
 

@@ -284,6 +284,8 @@ CFG 默认值：`--cfg_scale 4.0`（文本引导强度），`--img_cfg_scale 1.0
 
 **分辨率：** 若通过 `--image` 或 JSONL 中的 `image` 字段提供了输入图像，输出分辨率会跟随第一张输入图（经 `smart_resize` 对齐到 32 的倍数），并覆盖 `--resolution` / `--width` / `--height` 的设置。
 
+**CUDA Graph 解码：** `--cuda_graph_decode` 会在单卡、全显存 CUDA 推理中启用固定地址 KV cache 与可复用的单 token CUDA Graph。该路径使用仅推理可用的 FlashAttention kernel，kernel 数值差异可能改变自回归轨迹；启用后应将此开关视为 serving identity 的一部分，并重新执行输出质量评测。
+
 ### 1) 单样本，仅文本 prompt
 ```bash
 python examples/interleave/inference.py \
