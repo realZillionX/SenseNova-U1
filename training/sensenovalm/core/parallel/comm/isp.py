@@ -605,6 +605,30 @@ class ISPCommunicator(WPCommunicator):
         if module in self._bias_global_output:
             del self._bias_global_output[module]
 
+    def drain_prefetch_state(self) -> None:
+        """Finish and release every outstanding ISP all-gather buffer.
+
+        Full-layer activation checkpointing happens to consume every prefetched
+        block before backward returns. With partial checkpointing, the boundary
+        between recomputed and saved layers can leave the next block prefetched.
+        Keeping that buffer across the optimizer step is both a leak and a stale
+        weight hazard: the following forward either trips the duplicate-prefetch
+        assertion or reads parameters gathered before the update.
+        """
+
+        for chunk_states in self._overlap_states.values():
+            for overlap_state in chunk_states.values():
+                handles = tuple(overlap_state.weight_global_handle.values()) + tuple(
+                    overlap_state.bias_global_handle.values()
+                )
+                for handle in handles:
+                    if handle is not None:
+                        handle.wait()
+                overlap_state.weight_global_handle.clear()
+                overlap_state.bias_global_handle.clear()
+                overlap_state.weight_global_output.clear()
+                overlap_state.bias_global_output.clear()
+
     def _pre_forward_hook_for_first_block(self, *args):  # pylint: disable=W0613
         """
         prefetch weight for block 0 before forward.
@@ -894,6 +918,9 @@ class ISPCommunicatorSchedulerHook(SchedulerHook):
         if self._isp_communicator and self._isp_communicator._enable_early_reduce_scatter_release:
             self._isp_communicator._early_prev_layer_rs_handles = []
             self._isp_communicator._early_curr_layer_rs_handles = []
+
+        if self._isp_communicator and self._isp_communicator.overlap:
+            self._isp_communicator.drain_prefetch_state()
 
     def post_helper_func(self, scheduler, outputs, label) -> None:  # pylint: disable=W0613
         pass
