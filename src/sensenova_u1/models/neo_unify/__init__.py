@@ -7,8 +7,10 @@ from .modeling_neo_vit import NEOVisionModel
 from .modeling_qwen3 import (
     _HAS_FLASH_ATTN as has_flash_attn,
     effective_attn_backend,
+    fused_rms_norm_enabled,
     get_attn_backend,
     set_attn_backend,
+    set_fused_rms_norm,
 )
 from .modeling_qwen3 import Qwen3ForCausalLM
 from .modeling_qwen3_moe import Qwen3MoeForCausalLM
@@ -27,6 +29,8 @@ __all__ = [
     "get_attn_backend",
     "effective_attn_backend",
     "has_flash_attn",
+    "set_fused_rms_norm",
+    "fused_rms_norm_enabled",
 ]
 
 

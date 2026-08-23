@@ -13,6 +13,16 @@ from sensenova_u1.models.neo_unify.transformers_compat import (
 
 
 class TransformersCompatibilityTest(unittest.TestCase):
+    def test_fused_rms_norm_control_is_public(self) -> None:
+        import sensenova_u1
+
+        previous = sensenova_u1.fused_rms_norm_enabled()
+        try:
+            self.assertFalse(sensenova_u1.set_fused_rms_norm(False))
+            self.assertFalse(sensenova_u1.fused_rms_norm_enabled())
+        finally:
+            sensenova_u1.set_fused_rms_norm(previous)
+
     def assert_inference_paths(self, model) -> None:
         model.eval()
         input_ids = torch.tensor([[1, 3, 4]])
@@ -198,6 +208,100 @@ class TransformersCompatibilityTest(unittest.TestCase):
         self.assertEqual(calls[(1, "hw")], 0)
         for handle in handles:
             handle.remove()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is unavailable")
+    def test_cached_multitoken_flash_attention_matches_explicit_causal_mask(self) -> None:
+        from sensenova_u1.models.neo_unify.configuration_neo_chat import NEOLLMConfig
+        from sensenova_u1.models.neo_unify.modeling_qwen3 import (
+            Qwen3ForCausalLM,
+            effective_attn_backend,
+            get_attn_backend,
+            set_attn_backend,
+        )
+
+        previous = get_attn_backend()
+        try:
+            set_attn_backend("flash")
+        except RuntimeError:
+            self.skipTest("FlashAttention is unavailable")
+        self.assertEqual(effective_attn_backend(), "flash")
+        config = NEOLLMConfig(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            head_dim=8,
+            max_position_embeddings=64,
+            bos_token_id=1,
+            eos_token_id=2,
+            pad_token_id=0,
+        )
+        config._attn_implementation = "eager"
+        reference = Qwen3ForCausalLM(config).cuda().to(torch.bfloat16).eval()
+        fused = Qwen3ForCausalLM(config).cuda().to(torch.bfloat16).eval()
+        fused.load_state_dict(reference.state_dict())
+        prefix = torch.tensor([[1, 3, 4]], device="cuda")
+        prefix_indexes = torch.stack(
+            (
+                torch.arange(3, device="cuda"),
+                torch.zeros(3, dtype=torch.long, device="cuda"),
+                torch.zeros(3, dtype=torch.long, device="cuda"),
+            )
+        )
+        prefix_mask = torch.triu(
+            torch.full((1, 1, 3, 3), -torch.inf, device="cuda"), diagonal=1
+        )
+        tokens = torch.tensor([[5, 6]], device="cuda")
+        indexes = torch.stack(
+            (
+                torch.arange(3, 5, device="cuda"),
+                torch.zeros(2, dtype=torch.long, device="cuda"),
+                torch.zeros(2, dtype=torch.long, device="cuda"),
+            )
+        )
+        dense_mask = torch.zeros((1, 1, 2, 5), device="cuda")
+        dense_mask[:, :, :, 3:] = torch.triu(
+            torch.full((2, 2), -torch.inf, device="cuda"), diagonal=1
+        )
+        try:
+            with torch.no_grad():
+                reference_prefix = reference(
+                    input_ids=prefix,
+                    indexes=prefix_indexes,
+                    attention_mask={"full_attention": prefix_mask},
+                    use_cache=True,
+                )
+                fused_prefix = fused(
+                    input_ids=prefix,
+                    indexes=prefix_indexes,
+                    attention_mask={"full_attention": prefix_mask},
+                    use_cache=True,
+                )
+                reference_output = reference(
+                    input_ids=tokens,
+                    indexes=indexes,
+                    attention_mask={"full_attention": dense_mask},
+                    past_key_values=reference_prefix.past_key_values,
+                    use_cache=True,
+                )
+                fused_output = fused(
+                    input_ids=tokens,
+                    indexes=indexes,
+                    attention_mask={"full_attention": None},
+                    past_key_values=fused_prefix.past_key_values,
+                    use_cache=True,
+                )
+            torch.testing.assert_close(
+                fused_output.logits,
+                reference_output.logits,
+                rtol=3e-2,
+                atol=3e-2,
+            )
+            self.assertEqual(fused_output.past_key_values.get_seq_length(), 5)
+        finally:
+            set_attn_backend(previous)
 
     def test_auto_config_and_model_registration(self) -> None:
         from transformers import AutoConfig, AutoModel

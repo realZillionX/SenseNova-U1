@@ -8,6 +8,7 @@
 # --------------------------------------------------------
 
 import numbers
+import warnings
 
 import torch
 from torch.nn import init
@@ -24,8 +25,30 @@ try:
 
     apex_rmsnorm_impl = True
 except (ModuleNotFoundError, ImportError):
-    logger.warning("The torch implementation for MixFusedRMSNorm is slower than apex. Please note this!")
     apex_rmsnorm_impl = False
+
+try:
+    # FlashAttention ships a Triton RMSNorm with both forward and backward
+    # fusion.  It is the portable CUDA fallback when Apex is unavailable.
+    # Older FlashAttention releases emit deprecation warnings while importing
+    # their AMP decorators; those warnings describe the dependency internals,
+    # not a caller action in SenseNova.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        from flash_attn.ops.triton.layer_norm import (
+            layer_norm_fn as _flash_layer_norm_fn,
+        )
+
+    flash_rmsnorm_impl = True
+except (ModuleNotFoundError, ImportError):
+    _flash_layer_norm_fn = None
+    flash_rmsnorm_impl = False
+
+if not apex_rmsnorm_impl and not flash_rmsnorm_impl:
+    logger.warning(
+        "The torch implementation for MixFusedRMSNorm is slower than Apex "
+        "or FlashAttention. Please note this!"
+    )
 
 try:
     from deeplink_ext.internevo_ops import MixedFusedRMSNorm as _RMSNormDIPU
@@ -79,9 +102,26 @@ class _RMSNorm(torch.nn.Module):
         if apex_rmsnorm_impl:
             _norm_func = mixed_dtype_fused_rms_norm_affine
             return _norm_func(_input, self.weight, self.normalized_shape, self.eps)
-        else:
-            _norm_func = manual_rms_norm
-            return _norm_func(_input, self.weight, self.normalized_shape, self.eps, self.add_unit_offset)
+        if (
+            flash_rmsnorm_impl
+            and _input.is_cuda
+            and len(self.normalized_shape) == 1
+            and not self.add_unit_offset
+        ):
+            return _flash_layer_norm_fn(
+                _input,
+                self.weight,
+                None,
+                eps=self.eps,
+                is_rms_norm=True,
+            )
+        return manual_rms_norm(
+            _input,
+            self.weight,
+            self.normalized_shape,
+            self.eps,
+            self.add_unit_offset,
+        )
 
     def reset_parameters(self):
         if self.add_unit_offset:

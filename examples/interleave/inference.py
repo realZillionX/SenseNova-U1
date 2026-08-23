@@ -441,6 +441,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--fused_rms_norm",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use FlashAttention's fused Triton RMSNorm for CUDA inference. "
+            "This changes kernel numerics and must be treated as part of the "
+            "serving identity; persistent sessions amortize the first-use "
+            "Triton compilation cost."
+        ),
+    )
+    p.add_argument(
         "--profile",
         action="store_true",
         help=(
@@ -467,7 +478,9 @@ def main() -> None:
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
 
     sensenova_u1.set_attn_backend(args.attn_backend)
+    sensenova_u1.set_fused_rms_norm(args.fused_rms_norm)
     print(f"[attn] backend={args.attn_backend!r} (effective={sensenova_u1.effective_attn_backend()!r})")
+    print(f"[norm] fused_rms_norm={sensenova_u1.fused_rms_norm_enabled()!r}")
 
     profiler = InferenceProfiler(
         enabled=args.profile,
@@ -480,6 +493,7 @@ def main() -> None:
             "fast_vram_budget_gib": args.fast_vram_budget_gib,
             "attn_backend": sensenova_u1.effective_attn_backend(),
             "cuda_graph_decode": args.cuda_graph_decode,
+            "fused_rms_norm": args.fused_rms_norm,
             "dtype": args.dtype,
             "gguf": args.gguf_checkpoint,
         },

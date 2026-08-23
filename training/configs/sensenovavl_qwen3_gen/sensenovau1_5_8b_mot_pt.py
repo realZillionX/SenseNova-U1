@@ -201,11 +201,16 @@ if llm_data_config is not None:
 # Checkpoint
 # -----------------------------------------------------------------------------
 SAVE_CKPT_FOLDER = f"local:RUN/{JOB_NAME}"
-CHECKPOINT_EVERY = 100             # full ckpt save every N train steps
-CHECKPOINT_SNAPSHOT_EVERY = 1000   # snapshot ckpt save every N train steps
+enable_save_ckpt = env_bool("enable_save_ckpt", True)
+CHECKPOINT_EVERY = int(os.environ.get("checkpoint_every", "100"))
+CHECKPOINT_SNAPSHOT_EVERY = int(
+    os.environ.get("checkpoint_snapshot_every", "1000")
+)
+if CHECKPOINT_EVERY < 1 or CHECKPOINT_SNAPSHOT_EVERY < 1:
+    raise ValueError("checkpoint intervals must be positive integers")
 
 ckpt = dict(
-    enable_save_ckpt=True,
+    enable_save_ckpt=enable_save_ckpt,
     save_ckpt_folder=SAVE_CKPT_FOLDER,
     load_ckpt_folder=MODEL_ONLY_FOLDER,
     # load_ckpt_info: path = ckpt dir; content = restored states

@@ -1363,11 +1363,11 @@ class LazySupervisedDataset(Dataset):
             ):
                 break
 
-        # if gpc.is_rank_for_log():
-        logger.info(f"[{worker_id}] dataset {self.ds_name} has been ran out of!!!")
+        if worker_id == 0:
+            logger.info(f"[{worker_id}] dataset {self.ds_name} has been ran out of!!!")
 
         self.reset()
-        raise StopIteration
+        return
 
 
 def get_dataset_type_ids_map(ds_collections, type_id_offset):

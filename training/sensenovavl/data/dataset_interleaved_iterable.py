@@ -942,6 +942,21 @@ class PackedDataset(IterableDataset):
 
         return worker_id == 0
 
+    @staticmethod
+    def _is_dataset_exhaustion(exc):
+        """Recognize an iterator's normal end without hiding data failures.
+
+        Older dataset generators explicitly raised ``StopIteration`` inside
+        the generator body, which Python surfaces as ``RuntimeError`` under
+        PEP 479.  Keep recognizing that exact legacy shape while treating all
+        other runtime errors as real failures.
+        """
+
+        return isinstance(exc, StopIteration) or (
+            isinstance(exc, RuntimeError)
+            and str(exc) == "generator raised StopIteration"
+        )
+
     def next_data(self, current_dataset_idx):
         try:
             if isinstance(self.datasets[current_dataset_idx], sensenovavl.data.dataset_interleaved_iterable.BaseDataset):
@@ -958,13 +973,17 @@ class PackedDataset(IterableDataset):
             else:
                 current_sample = next(self.dataset_iter_list[current_dataset_idx])
         except Exception as e:
-            logger.error(f"Dataloader caught exception type  {type(e)} which is: {e}")
-            # except StopIteration:/
-            if self.replacement:
-                logger.info(
-                    f"[Worker id {self.worker_id}] Dataset {self.datasets[current_dataset_idx].ds_name} "
-                    "is exhausted, restart it."
+            exhausted = self._is_dataset_exhaustion(e)
+            if not exhausted:
+                logger.error(
+                    f"Dataloader caught exception type  {type(e)} which is: {e}"
                 )
+            if self.replacement:
+                if self._should_log():
+                    logger.info(
+                        f"[Worker id {self.worker_id}] Dataset {self.datasets[current_dataset_idx].ds_name} "
+                        "is exhausted, restart it."
+                    )
 
                 try:
                     self.dataset_iter_list[current_dataset_idx] = iter(self.datasets[current_dataset_idx])
@@ -986,7 +1005,12 @@ class PackedDataset(IterableDataset):
                     else:
                         current_sample = next(self.dataset_iter_list[current_dataset_idx])
                 except Exception as e:
-                    logger.error(f"{self.worker_id=} Fail to get any data from {self.datasets[current_dataset_idx].ds_name} with error {type(e)} {e}!")
+                    if not self._is_dataset_exhaustion(e):
+                        logger.error(
+                            f"{self.worker_id=} Fail to get any data from "
+                            f"{self.datasets[current_dataset_idx].ds_name} "
+                            f"with error {type(e)} {e}!"
+                        )
                     self.dataset_weight[current_dataset_idx] = 0
 
 

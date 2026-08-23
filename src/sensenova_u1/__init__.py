@@ -11,9 +11,11 @@ from .models.neo_unify import (
     NEOVisionConfig,
     NEOVisionModel,
     effective_attn_backend,
+    fused_rms_norm_enabled,
     get_attn_backend,
     has_flash_attn,
     set_attn_backend,
+    set_fused_rms_norm,
 )
 from .models.neo_unify import (
     register as _register,
@@ -37,6 +39,8 @@ __all__ = [
     "get_attn_backend",
     "effective_attn_backend",
     "has_flash_attn",
+    "set_fused_rms_norm",
+    "fused_rms_norm_enabled",
     "main",
 ]
 

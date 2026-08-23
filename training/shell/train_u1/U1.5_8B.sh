@@ -48,7 +48,12 @@ export grad_accm=1
 export total_steps=200000
 export init_steps=2000
 export metric_interval_steps=${metric_interval_steps:-10}
-export activation_checkpoint_fraction=${activation_checkpoint_fraction:-1}
+# H100 80 GB keeps enough headroom at 0.75 for the mixed 8192-token profile;
+# lower fractions remain workload-specific and should be selected by profiling.
+export activation_checkpoint_fraction=${activation_checkpoint_fraction:-0.75}
+export enable_save_ckpt=${enable_save_ckpt:-true}
+export checkpoint_every=${checkpoint_every:-100}
+export checkpoint_snapshot_every=${checkpoint_snapshot_every:-1000}
 
 # ============================ Data / sequence ============================ #
 export num_imgs=144
@@ -102,7 +107,10 @@ export enable_ema=${enable_ema:-true}
 export thinking_method="tag"
 
 # ============================ Understanding ============================ #
-export pad_dummy_image_gen='false'
+# Mixed understanding/generation corpora can give an individual data rank no
+# generation tokens even when other ranks have them. Keep the trainable MoT
+# branch collective-safe with the official zero-loss dummy image.
+export pad_dummy_image_gen=${pad_dummy_image_gen:-true}
 export ce_loss_weight=0
 export enable_und_loss='false'
 

@@ -123,6 +123,11 @@ Distributed topology is also env-var driven (defaults shown):
 | `MASTER_ADDR` | 127.0.0.1 | Rendezvous host (rank-0 node's IP) |
 | `MASTER_PORT` | 29500 | Rendezvous port |
 
+U1.5 checkpointing is also environment-driven. `enable_save_ckpt=false`
+disables checkpoint writes for disposable performance probes; training runs
+that need recovery should leave it enabled. `checkpoint_every` and
+`checkpoint_snapshot_every` default to 100 and 1000 steps respectively.
+
 The U1.5 native-resolution loader also exposes its per-rank worker and packing
 queue controls. `dataloader_num_workers` is per data rank (so an 8-rank run at
 the default value starts 64 workers), while `dataloader_prefetch_factor`,
@@ -132,7 +137,7 @@ packer. Small corpora and shared filesystems should benchmark these settings;
 the launcher defaults preserve the published behavior.
 
 `activation_checkpoint_fraction` controls the fraction of U1.5 decoder layers
-that recompute activations during backward (`1` by default). On accelerators
+that recompute activations during backward (`0.75` in the U1.5 launcher). On accelerators
 with spare memory, lowering it can trade activation memory for less backward
 recomputation; select it from a measured sequence-length-specific profile.
 `enable_ema` controls the optional shadow averaged model (`true` by default).
@@ -151,6 +156,14 @@ default. Set `metric_interval_steps=1` to restore per-step monitoring or use a
 larger positive interval when profiling compute throughput. Allocator memory
 diagnostics follow `data.empty_cache_and_diag_interval`; the framework does not
 flush the CUDA caching allocator at step zero.
+
+On CUDA, training uses Apex fused RMSNorm when Apex is installed and otherwise
+uses FlashAttention's fused Triton RMSNorm. The manual PyTorch implementation
+is retained for CPU and unsupported shapes. The U1.5 launcher also enables its
+zero-loss dummy generation image by default, so mixed understanding/generation
+corpora remain valid when an individual data rank receives no generation
+tokens; set `pad_dummy_image_gen=false` only when every rank is guaranteed to
+carry generation tokens.
 
 [configs]: configs/sensenovavl_qwen3_gen/
 

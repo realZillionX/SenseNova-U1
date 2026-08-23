@@ -605,6 +605,32 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
+        # Differentiable RL replay appends a multi-token text span to an
+        # existing prompt cache. FlashAttention's bottom-right causal mask is
+        # exactly this geometry: query i sees the complete prefix and current
+        # keys through i. Keep ordinary multimodal prefill on its explicit
+        # mask path, and keep single-token decode on the graph-safe KV-cache
+        # kernel above.
+        if (
+            input_shape[-1] > 1
+            and attention_mask is None
+            and past_key_values is not None
+            and effective_attn_backend() == "flash"
+        ):
+            q = query_states.transpose(1, 2).contiguous()
+            k = key_states.transpose(1, 2).contiguous()
+            v = value_states.transpose(1, 2).contiguous()
+            attn_output = flash_attn_func(
+                q,
+                k,
+                v,
+                dropout_p=0.0 if not self.training else self.attention_dropout,
+                softmax_scale=self.scaling,
+                causal=True,
+            )
+            attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+            return self.o_proj(attn_output), None
+
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
