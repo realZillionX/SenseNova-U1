@@ -1172,7 +1172,7 @@ class NEOChatModel(PreTrainedModel):
                 else:
                     condition_logits = decode_workspace.replay(
                         next_token, t_index=t_index_cond
-                    )
+                    ).unsqueeze(1)
                     past_key_values_cond = decode_workspace.cache
                 t_index_cond += 1
                 next_token = torch.argmax(condition_logits[:, -1, :], dim=-1)
@@ -1216,7 +1216,7 @@ class NEOChatModel(PreTrainedModel):
                 else:
                     condition_logits = decode_workspace.replay(
                         next_token, t_index=t_index_cond
-                    )
+                    ).unsqueeze(1)
                     past_key_values_cond = decode_workspace.cache
                 t_index_cond += 1
 
