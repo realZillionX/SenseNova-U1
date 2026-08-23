@@ -347,6 +347,25 @@ python examples/interleave/inference.py \
 See [`interleave/data/samples.jsonl`](./interleave/data/samples.jsonl) for a
 two-sample starter (one text-only, one image-conditioned).
 
+For a larger JSONL corpus, `torchrun` can assign one model replica per GPU.
+Rows are sharded by global index and rank 0 merges the temporary result shards
+back into one input-ordered `results.jsonl`:
+
+```bash
+torchrun --standalone --nproc_per_node=8 examples/interleave/inference.py \
+    --distributed \
+    --device cuda \
+    --model_path sensenova/SenseNova-U1-8B-MoT \
+    --jsonl path/to/samples.jsonl \
+    --output_dir outputs/interleave/distributed
+```
+
+When the checkpoint lives on a shared filesystem, stage it once on each
+node's local NVMe and pass that directory to `--model_path`. Otherwise every
+rank reads the same weight shards concurrently during cold start. The staged
+copy is a disposable serving cache; the published checkpoint remains the
+source of truth.
+
 ## Visual Understanding (VQA)
 
 Single image, with sampling enabled:

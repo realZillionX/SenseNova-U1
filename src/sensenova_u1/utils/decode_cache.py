@@ -216,31 +216,37 @@ class CudaGraphDecodeWorkspace:
         )
 
     def _capture(self, *, t_index: int) -> None:
-        self.indexes[0, 0] = t_index + 1
-        self.cache_position[0] = self.cache.get_seq_length()
-        current = torch.cuda.current_stream(self.device)
-        warmup = torch.cuda.Stream(device=self.device)
-        warmup.wait_stream(current)
-        with torch.cuda.stream(warmup):
-            for _ in range(3):
-                self._forward()
-        current.wait_stream(warmup)
-        torch.cuda.synchronize(self.device)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            outputs = self._forward()
+        with torch.cuda.device(self.device):
+            self.indexes[0, 0] = t_index + 1
+            self.cache_position[0] = self.cache.get_seq_length()
+            current = torch.cuda.current_stream(self.device)
+            warmup = torch.cuda.Stream(device=self.device)
+            warmup.wait_stream(current)
+            with torch.cuda.stream(warmup):
+                for _ in range(3):
+                    self._forward()
+            current.wait_stream(warmup)
+            torch.cuda.synchronize(self.device)
+            capture_stream = torch.cuda.Stream(device=self.device)
+            capture_stream.wait_stream(current)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=capture_stream):
+                outputs = self._forward()
+            current.wait_stream(capture_stream)
+            torch.cuda.synchronize(self.device)
         self.graph = graph
         self.logits = outputs.logits[:, -1, :]
 
     def replay(self, token_ids: Tensor, *, t_index: int) -> Tensor:
-        if self.graph is None:
-            self._capture(t_index=t_index)
-        self.token.copy_(token_ids.reshape(1, 1))
-        self.indexes.zero_()
-        self.indexes[0, 0] = t_index + 1
-        self.cache_position[0] = self.cache.get_seq_length()
-        self.graph.replay()
-        self.cache.commit_flash_decode(1)
+        with torch.cuda.device(self.device):
+            if self.graph is None:
+                self._capture(t_index=t_index)
+            self.token.copy_(token_ids.reshape(1, 1))
+            self.indexes.zero_()
+            self.indexes[0, 0] = t_index + 1
+            self.cache_position[0] = self.cache.get_seq_length()
+            self.graph.replay()
+            self.cache.commit_flash_decode(1)
         if self.logits is None:
             raise RuntimeError("CUDA graph produced no logits buffer")
         return self.logits

@@ -291,13 +291,24 @@ class CheckpointManager:
             self.async_upload_tmp_folder = None
 
         self.async_upload = get_config_value(ckpt_config, "async_upload", False)
+        self.local_legacy_serialization = get_config_value(
+            ckpt_config, "local_legacy_serialization", False
+        )
+        if type(self.local_legacy_serialization) is not bool:
+            raise TypeError("local_legacy_serialization must be a bool")
         self.enable_internevo2hf_ckpt = get_config_value(ckpt_config, "enable_internevo2hf_ckpt", False)
 
         use_processpool = self.save_ckpt_folder is not None and (
             self.save_ckpt_folder.startswith("volc:") or self.save_ckpt_folder.startswith("oss2:")
         )
         # initialization storage manager
-        init_storage_manager(self.enable_save_ckpt, self.async_upload_tmp_folder, self.async_upload, use_processpool)
+        init_storage_manager(
+            self.enable_save_ckpt,
+            self.async_upload_tmp_folder,
+            self.async_upload,
+            use_processpool,
+            local_legacy_serialization=self.local_legacy_serialization,
+        )
 
         self.feishu_address = feishu_address
         self.storage_manager = get_storage_manager()

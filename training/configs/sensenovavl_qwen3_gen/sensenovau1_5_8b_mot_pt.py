@@ -228,6 +228,9 @@ ckpt = dict(
     resume_ds=resume_ds,
     checkpoint_every=CHECKPOINT_EVERY,
     oss_snapshot_freq=CHECKPOINT_SNAPSHOT_EVERY,
+    # Legacy torch serialization avoids the zip container's local-filesystem
+    # overhead while remaining directly readable by torch.load.
+    local_legacy_serialization=env_bool("local_legacy_serialization", True),
     async_upload=True,
     async_upload_tmp_folder="/dev/shm/sensenovalm_tmp_ckpt/",
 )

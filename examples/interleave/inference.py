@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 from pathlib import Path
 from typing import Sequence
@@ -181,6 +182,7 @@ class SenseNovaU1Interleave:
         system_message: str = DEFAULT_SYSTEM_MESSAGE,
         seed: int = 0,
         cuda_graph_decode: bool = False,
+        verbose: bool = True,
     ) -> tuple[str, list[Image.Image]]:
         with make_offload_ctx(
             self.model,
@@ -206,7 +208,7 @@ class SenseNovaU1Interleave:
                 think_mode=think_mode,
                 seed=seed,
                 cuda_graph_decode=cuda_graph_decode,
-                verbose=True,
+                verbose=verbose,
             )
         return text, [_to_pil(img) for img in image_tensors]
 
@@ -291,6 +293,43 @@ def _extract_prompt(sample: dict) -> str:
         if conv.get("from") == "human":
             return conv["value"]
     raise ValueError("sample has no 'prompt' and no human turn in 'conversations'")
+
+
+def _distributed_batch_indices(total: int, *, rank: int, world_size: int) -> range:
+    if total < 0:
+        raise ValueError("batch size must be non-negative")
+    if world_size < 1 or not 0 <= rank < world_size:
+        raise ValueError("invalid distributed rank/world size")
+    return range(rank, total, world_size)
+
+
+def _rank_results_path(output_dir: Path, rank: int) -> Path:
+    return output_dir / f".results.rank-{rank:04d}.jsonl"
+
+
+def _merge_rank_results(output_dir: Path, *, world_size: int, total: int) -> Path:
+    rows = []
+    shard_paths = [_rank_results_path(output_dir, rank) for rank in range(world_size)]
+    for shard in shard_paths:
+        with shard.open(encoding="utf-8") as stream:
+            rows.extend(json.loads(line) for line in stream if line.strip())
+    rows.sort(key=lambda row: row["index"])
+    indices = [row["index"] for row in rows]
+    if indices != list(range(total)):
+        raise RuntimeError(
+            "distributed inference shards do not cover every input exactly once"
+        )
+    destination = output_dir / "results.jsonl"
+    temporary = output_dir / ".results.jsonl.tmp"
+    with temporary.open("w", encoding="utf-8") as stream:
+        for row in rows:
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, destination)
+    for shard in shard_paths:
+        shard.unlink()
+    return destination
 
 
 def parse_args() -> argparse.Namespace:
@@ -460,11 +499,45 @@ def parse_args() -> argparse.Namespace:
             f"normalized per image token (patch size = {DEFAULT_IMAGE_PATCH_SIZE})."
         ),
     )
+    p.add_argument(
+        "--distributed",
+        action="store_true",
+        help=(
+            "Shard --jsonl rows across torchrun ranks, one model replica per "
+            "GPU, and merge rank-local result shards in input order."
+        ),
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    rank = 0
+    local_rank = 0
+    world_size = 1
+    distributed = args.distributed
+    if distributed:
+        if args.jsonl is None:
+            raise ValueError("--distributed is supported only with --jsonl")
+        if args.device != "cuda":
+            raise ValueError("--distributed requires --device cuda")
+        if args.device_map is not None:
+            raise ValueError("--distributed does not compose with --device_map")
+        try:
+            rank = int(os.environ["RANK"])
+            local_rank = int(os.environ["LOCAL_RANK"])
+            world_size = int(os.environ["WORLD_SIZE"])
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                "--distributed must be launched by torchrun with RANK, "
+                "LOCAL_RANK and WORLD_SIZE"
+            ) from exc
+        if world_size < 2:
+            raise ValueError("--distributed requires at least two torchrun ranks")
+        torch.cuda.set_device(local_rank)
+        args.device = f"cuda:{local_rank}"
+        torch.distributed.init_process_group(backend="nccl")
 
     if args.cuda_graph_decode and (
         not args.device.startswith("cuda")
@@ -496,6 +569,8 @@ def main() -> None:
             "fused_rms_norm": args.fused_rms_norm,
             "dtype": args.dtype,
             "gguf": args.gguf_checkpoint,
+            "rank": rank,
+            "world_size": world_size,
         },
     )
     with profiler.time_load():
@@ -574,10 +649,22 @@ def main() -> None:
         def tqdm(x, **_kw):  # type: ignore[no-redef]
             return x
 
-    results_path = out_dir / "results.jsonl"
+    results_path = (
+        _rank_results_path(out_dir, rank)
+        if distributed
+        else out_dir / "results.jsonl"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(results_path, "w", encoding="utf-8") as rf:
-        for i, sample in enumerate(tqdm(samples, desc="interleave")):
+        indices = _distributed_batch_indices(
+            len(samples), rank=rank, world_size=world_size
+        )
+        for i in tqdm(
+            indices,
+            desc=f"interleave rank {rank}" if distributed else "interleave",
+            disable=distributed and rank != 0,
+        ):
+            sample = samples[i]
             prompt = _extract_prompt(sample)
             input_images = _sample_images(sample, image_root=args.image_root)
             if input_images:
@@ -591,6 +678,7 @@ def main() -> None:
             else:
                 w, h = fallback_w, fallback_h
             think_mode = bool(sample.get("think_mode", args.think_mode))
+            sample_seed = int(sample.get("seed", args.seed))
             # _set_seed(int(sample.get("seed", args.seed)))
 
             with profiler.time_generate(w, h, 1) as gen:
@@ -605,8 +693,9 @@ def main() -> None:
                     num_steps=args.num_steps,
                     think_mode=think_mode,
                     system_message=args.system_message,
-                    seed=args.seed,
+                    seed=sample_seed,
                     cuda_graph_decode=args.cuda_graph_decode,
+                    verbose=False,
                 )
             profiler.update_last_batch(len(images))
             profiler.update_last_text_tokens(
@@ -633,6 +722,7 @@ def main() -> None:
                         "width": w,
                         "height": h,
                         "think_mode": think_mode,
+                        "seed": sample_seed,
                     },
                     ensure_ascii=False,
                 )
@@ -640,7 +730,17 @@ def main() -> None:
             )
             rf.flush()
 
-    print(f"[saved] {results_path}")
+    if distributed:
+        torch.distributed.barrier()
+        if rank == 0:
+            results_path = _merge_rank_results(
+                out_dir, world_size=world_size, total=len(samples)
+            )
+            print(f"[saved] {results_path}")
+        torch.distributed.barrier()
+        torch.distributed.destroy_process_group()
+    else:
+        print(f"[saved] {results_path}")
     profiler.report()
 
 

@@ -991,8 +991,16 @@ class StorageManager(metaclass=SingletonMeta):
     CLI_DICT = {}
 
     def __init__(
-        self, enable_save, tmp_local_folder="/dev/shm/test/", async_mode=True, use_processpool=False, n_async_workers=8
+        self,
+        enable_save,
+        tmp_local_folder="/dev/shm/test/",
+        async_mode=True,
+        use_processpool=False,
+        n_async_workers=8,
+        local_legacy_serialization=False,
     ) -> None:
+        if type(local_legacy_serialization) is not bool:
+            raise TypeError("local_legacy_serialization must be a bool")
         self._exception_list = []
         self._to_be_del_files = []
         self._async_stack = []
@@ -1005,6 +1013,7 @@ class StorageManager(metaclass=SingletonMeta):
         self.latest_save_folder = None
         self.latest_save_step = 0
         self.async_task_peeding = False
+        self.local_legacy_serialization = local_legacy_serialization
 
         if enable_save and self.async_mode:
             self._async_loop = asyncio.new_event_loop()
@@ -1152,6 +1161,12 @@ class StorageManager(metaclass=SingletonMeta):
             os.chmod(tmp_step_file, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
             self.async_task_peeding = True
         else:
+            if (
+                self.local_legacy_serialization
+                and isinstance(meta.client, LocalClient)
+                and not meta.file_path.endswith(".safetensors")
+            ):
+                kwargs.setdefault("_use_new_zipfile_serialization", False)
             meta.client.sync_upload_fileobj(*unpack_save_meta(meta), saved_obj=to_save_obj, **kwargs)
             self.upload_count += 1
 
@@ -1261,13 +1276,20 @@ class StorageManager(metaclass=SingletonMeta):
 storage_manager: StorageManager = None
 
 
-def init_storage_manager(enable_save_ckpt, async_upload_tmp_folder, async_upload, use_processpool=False):
+def init_storage_manager(
+    enable_save_ckpt,
+    async_upload_tmp_folder,
+    async_upload,
+    use_processpool=False,
+    local_legacy_serialization=False,
+):
     global storage_manager
     storage_manager = StorageManager(
         enable_save_ckpt,
         tmp_local_folder=async_upload_tmp_folder,
         async_mode=async_upload,
         use_processpool=use_processpool,
+        local_legacy_serialization=local_legacy_serialization,
     )
 
 

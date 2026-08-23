@@ -326,6 +326,23 @@ python examples/interleave/inference.py \
 
 [`interleave/data/samples.jsonl`](./interleave/data/samples.jsonl) 提供了一份包含两条样本（一条纯文本、一条图像条件）的起步文件。
 
+较大的 JSONL 语料可用 `torchrun` 为每张 GPU 启动一个模型副本。输入按全局
+index 分片，rank 0 最后把临时结果分片合并为一份保持输入顺序的
+`results.jsonl`：
+
+```bash
+torchrun --standalone --nproc_per_node=8 examples/interleave/inference.py \
+    --distributed \
+    --device cuda \
+    --model_path sensenova/SenseNova-U1-8B-MoT \
+    --jsonl path/to/samples.jsonl \
+    --output_dir outputs/interleave/distributed
+```
+
+若 checkpoint 位于共享文件系统，应先在每个节点把它 stage 到本地 NVMe，
+再把该目录传给 `--model_path`；否则冷启动时所有 rank 会并发读取同一组权重
+分片。本地副本只是可删除的 serving cache，发布 checkpoint 仍是唯一真源。
+
 ## 视觉理解（VQA）
 
 单图问答，启用采样：
