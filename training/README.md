@@ -131,6 +131,11 @@ the default value starts 64 workers), while `dataloader_prefetch_factor`,
 packer. Small corpora and shared filesystems should benchmark these settings;
 the launcher defaults preserve the published behavior.
 
+`activation_checkpoint_fraction` controls the fraction of U1.5 decoder layers
+that recompute activations during backward (`1` by default). On accelerators
+with spare memory, lowering it can trade activation memory for less backward
+recomputation; select it from a measured sequence-length-specific profile.
+
 All other knobs (`seq_len`, `total_steps`, `lr`, parallelism sizes,
 flow-matching schedule, CFG drop probabilities, ...) are also env-var
 overrideable. See [`configs/sensenovavl_qwen3_gen/`][configs] for the full

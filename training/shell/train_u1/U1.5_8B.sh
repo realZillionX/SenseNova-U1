@@ -48,6 +48,7 @@ export grad_accm=1
 export total_steps=200000
 export init_steps=2000
 export metric_interval_steps=${metric_interval_steps:-10}
+export activation_checkpoint_fraction=${activation_checkpoint_fraction:-1}
 
 # ============================ Data / sequence ============================ #
 export num_imgs=144

@@ -59,8 +59,11 @@ lr_scheduler_offset = int(os.environ.get('lr_scheduler_offset', 0))
 load_optimizer = os.environ.get('load_optimizer', None)
 ce_loss_weight = float(os.environ.get('ce_loss_weight', 1.0))
 metric_interval_steps = int(os.environ.get('metric_interval_steps', '10'))
+activation_checkpoint_fraction = float(os.environ.get('activation_checkpoint_fraction', '1'))
 if metric_interval_steps < 1:
     raise ValueError('metric_interval_steps must be a positive integer')
+if not 0 <= activation_checkpoint_fraction <= 1:
+    raise ValueError('activation_checkpoint_fraction must be in [0, 1]')
 
 
 # -----------------------------------------------------------------------------
@@ -329,7 +332,7 @@ model = dict(
     attention_selective_checkpoint=False,
     num_chunks=1,
     # activation checkpointing fraction: True/False/[0-1]
-    checkpoint=1,
+    checkpoint=activation_checkpoint_fraction,
     use_flash_attn=True,
     use_cache=False,
     pure_llm=False,
