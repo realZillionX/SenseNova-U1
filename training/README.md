@@ -135,6 +135,10 @@ the launcher defaults preserve the published behavior.
 that recompute activations during backward (`1` by default). On accelerators
 with spare memory, lowering it can trade activation memory for less backward
 recomputation; select it from a measured sequence-length-specific profile.
+`enable_ema` controls the optional shadow averaged model (`true` by default).
+Disable it only when the declared checkpoint consumer uses the ordinary model
+weights; doing so removes the shadow copy, its per-step update, and its extra
+checkpoint shard.
 
 All other knobs (`seq_len`, `total_steps`, `lr`, parallelism sizes,
 flow-matching schedule, CFG drop probabilities, ...) are also env-var

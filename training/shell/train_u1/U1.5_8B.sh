@@ -98,6 +98,7 @@ export cfg_img_uncond_drop_prob=0
 export cfg_txtimg_uncond_drop_prob=0.1
 export cfg_is_uncond_drop_independent='false'
 export ema_decay=0.9999
+export enable_ema=${enable_ema:-true}
 export thinking_method="tag"
 
 # ============================ Understanding ============================ #

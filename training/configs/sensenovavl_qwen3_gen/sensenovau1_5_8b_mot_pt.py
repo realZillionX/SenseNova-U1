@@ -156,6 +156,7 @@ cfg_is_uncond_drop_independent = env_bool('cfg_is_uncond_drop_independent', True
 
 # EMA of the unified model.
 ema_decay = float(os.environ.get('ema_decay', 0.999))
+enable_ema = env_bool('enable_ema', True)
 
 
 # -----------------------------------------------------------------------------
@@ -429,7 +430,7 @@ model = dict(
 # EMA copy of the model
 # -----------------------------------------------------------------------------
 averaged_model = dict(
-    enable=True,
+    enable=enable_ema,
     decay=ema_decay,
     multi_avg_fn="ema",
     use_buffers=False,
