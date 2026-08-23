@@ -8,6 +8,28 @@ from sensenova_u1.models.neo_unify.modeling_neo_chat import NEOChatModel
 
 
 class ThinkInferenceTest(unittest.TestCase):
+    def test_pixel_head_prediction_requires_explicit_image_size(self) -> None:
+        language_model = Mock()
+        language_model.model.return_value = SimpleNamespace(
+            last_hidden_state=torch.zeros(1, 1, 4)
+        )
+        model = SimpleNamespace(
+            language_model=language_model,
+            use_pixel_head=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires image_size"):
+            NEOChatModel._t2i_predict_v(
+                model,
+                input_embeds=torch.zeros(1, 1, 4),
+                indexes_image=torch.zeros(3, 1, dtype=torch.long),
+                attn_mask={"full_attention": None},
+                past_key_values=Mock(),
+                t=torch.tensor(0.5),
+                z=torch.zeros(1, 1, 4),
+                image_token_num=1,
+            )
+
     def test_initial_think_forward_only_computes_last_token_logits(self) -> None:
         language_model = Mock()
         model = SimpleNamespace(language_model=language_model)
