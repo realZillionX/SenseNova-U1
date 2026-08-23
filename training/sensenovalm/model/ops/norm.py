@@ -40,7 +40,7 @@ try:
         )
 
     flash_rmsnorm_impl = True
-except (ModuleNotFoundError, ImportError):
+except (ModuleNotFoundError, ImportError, RuntimeError):
     _flash_layer_norm_fn = None
     flash_rmsnorm_impl = False
 

@@ -33,7 +33,7 @@ try:
     from flash_attn.ops.triton.layer_norm import rms_norm_fn as flash_rms_norm_fn  # type: ignore
 
     _HAS_FLASH_ATTN = True
-except ImportError:  # pragma: no cover - exercised only in CPU-only / no-flash envs
+except (ImportError, RuntimeError):  # pragma: no cover - CPU/no-driver fallback
     flash_attn_func = None  # type: ignore
     flash_attn_with_kvcache = None  # type: ignore
     flash_rms_norm_fn = None  # type: ignore
