@@ -231,6 +231,9 @@ ckpt = dict(
     # Legacy torch serialization avoids the zip container's local-filesystem
     # overhead while remaining directly readable by torch.load.
     local_legacy_serialization=env_bool("local_legacy_serialization", True),
+    # mmap is available only for zip checkpoints and is intended for runs
+    # that prioritize restart latency over checkpoint write latency.
+    local_mmap_load=env_bool("local_mmap_load", False),
     async_upload=True,
     async_upload_tmp_folder="/dev/shm/sensenovalm_tmp_ckpt/",
 )

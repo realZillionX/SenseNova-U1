@@ -296,6 +296,16 @@ class CheckpointManager:
         )
         if type(self.local_legacy_serialization) is not bool:
             raise TypeError("local_legacy_serialization must be a bool")
+        self.local_mmap_load = get_config_value(
+            ckpt_config, "local_mmap_load", False
+        )
+        if type(self.local_mmap_load) is not bool:
+            raise TypeError("local_mmap_load must be a bool")
+        if self.local_legacy_serialization and self.local_mmap_load:
+            raise ValueError(
+                "local_mmap_load requires zip serialization; disable "
+                "local_legacy_serialization"
+            )
         self.enable_internevo2hf_ckpt = get_config_value(ckpt_config, "enable_internevo2hf_ckpt", False)
 
         use_processpool = self.save_ckpt_folder is not None and (
@@ -308,6 +318,7 @@ class CheckpointManager:
             self.async_upload,
             use_processpool,
             local_legacy_serialization=self.local_legacy_serialization,
+            local_mmap_load=self.local_mmap_load,
         )
 
         self.feishu_address = feishu_address

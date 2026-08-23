@@ -833,6 +833,8 @@ class LocalClient(StorageClient):
         # Handle safetensors
         if load_path.endswith(".safetensors"):
             return load_file(load_path)
+        if kwargs.get("mmap"):
+            return torch.load(load_path, **kwargs)
         with open(load_path, "rb") as f:
             states = torch.load(f, **kwargs)
         return states
@@ -998,9 +1000,17 @@ class StorageManager(metaclass=SingletonMeta):
         use_processpool=False,
         n_async_workers=8,
         local_legacy_serialization=False,
+        local_mmap_load=False,
     ) -> None:
         if type(local_legacy_serialization) is not bool:
             raise TypeError("local_legacy_serialization must be a bool")
+        if type(local_mmap_load) is not bool:
+            raise TypeError("local_mmap_load must be a bool")
+        if local_legacy_serialization and local_mmap_load:
+            raise ValueError(
+                "local_mmap_load requires zip serialization; disable "
+                "local_legacy_serialization"
+            )
         self._exception_list = []
         self._to_be_del_files = []
         self._async_stack = []
@@ -1014,6 +1024,7 @@ class StorageManager(metaclass=SingletonMeta):
         self.latest_save_step = 0
         self.async_task_peeding = False
         self.local_legacy_serialization = local_legacy_serialization
+        self.local_mmap_load = local_mmap_load
 
         if enable_save and self.async_mode:
             self._async_loop = asyncio.new_event_loop()
@@ -1174,6 +1185,13 @@ class StorageManager(metaclass=SingletonMeta):
         self.wait()
         meta = self._get_client(path=load_path)
 
+        if (
+            self.local_mmap_load
+            and isinstance(meta.client, LocalClient)
+            and not meta.file_path.endswith(".safetensors")
+        ):
+            kwargs.setdefault("mmap", True)
+
         return meta.client.load(*unpack_nosave_meta(meta), **kwargs)
 
     def delete_obj(self, fp: str):
@@ -1282,6 +1300,7 @@ def init_storage_manager(
     async_upload,
     use_processpool=False,
     local_legacy_serialization=False,
+    local_mmap_load=False,
 ):
     global storage_manager
     storage_manager = StorageManager(
@@ -1290,6 +1309,7 @@ def init_storage_manager(
         async_mode=async_upload,
         use_processpool=use_processpool,
         local_legacy_serialization=local_legacy_serialization,
+        local_mmap_load=local_mmap_load,
     )
 
 
