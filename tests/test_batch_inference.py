@@ -4,7 +4,10 @@ import unittest
 
 import torch
 
-from sensenova_u1.batch_inference import _left_pad_prefills
+from sensenova_u1.batch_inference import (
+    _apply_repetition_penalty,
+    _left_pad_prefills,
+)
 from sensenova_u1.models.neo_unify.modeling_qwen3 import batch_axis_indexes
 
 
@@ -54,6 +57,15 @@ class BatchPrefillTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(batch_axis_indexes(shared, 1), shared[1:2]))
         self.assertTrue(torch.equal(batch_axis_indexes(batched, 2), batched[:, 2]))
+
+    def test_repetition_penalty_only_changes_seen_generated_tokens(self) -> None:
+        logits = torch.tensor([[4.0, -3.0, 2.0], [-6.0, 5.0, 1.0]])
+        seen = torch.tensor([[True, True, False], [False, True, False]])
+
+        penalized = _apply_repetition_penalty(logits, seen, 2.0)
+
+        expected = torch.tensor([[2.0, -6.0, 2.0], [-6.0, 2.5, 1.0]])
+        self.assertTrue(torch.equal(penalized, expected))
 
 
 if __name__ == "__main__":

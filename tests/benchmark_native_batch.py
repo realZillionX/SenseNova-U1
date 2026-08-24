@@ -19,10 +19,6 @@ from sensenova_u1.models.neo_unify.utils import SYSTEM_MESSAGE_FOR_INTERLEAVE
 from sensenova_u1.utils import load_model_and_tokenizer
 
 
-BABYVISION_SYSTEM_PROMPT = (
-    "Reason step by step and place the thought process within the "
-    "<think></think> tags, and provide the final conclusion at the end."
-)
 INTERLEAVE_PROMPT = (
     "I want to learn how to cook tomato and egg stir-fry. "
     "Please give me a beginner-friendly illustrated tutorial."
@@ -67,9 +63,12 @@ def _load_first_babyvision_request(data_path: str) -> tuple[TextBatchRequest, An
         raise FileNotFoundError(f"First BabyVision sample images are missing: {missing}")
     return (
         TextBatchRequest(
-            prompt=str(sample["question"]),
+            prompt=(
+                str(sample["question"])
+                + "\nPut your final answer inside <answer></answer>."
+            ),
             images=resolved,
-            system_message=BABYVISION_SYSTEM_PROMPT,
+            system_message="",
         ),
         sample.get("taskId"),
     )
@@ -85,7 +84,10 @@ def _text_benchmark(
     max_new_tokens: int,
 ) -> dict[str, Any]:
     requests = tuple(request for _ in range(batch_size))
-    generation_config = GenerationConfig(max_new_tokens=max_new_tokens)
+    generation_config = GenerationConfig(
+        max_new_tokens=max_new_tokens,
+        repetition_penalty=1.05,
+    )
 
     # Warm the one-row prefill/decode kernels without affecting measurements.
     model.batch_text_gen(
@@ -156,6 +158,7 @@ def _text_benchmark(
         "sample_id": sample_id,
         "batch_size": batch_size,
         "max_new_tokens": max_new_tokens,
+        "repetition_penalty": 1.05,
         "serial": {
             "seconds": serial_seconds,
             "samples_per_second": _rate(batch_size, serial_seconds),

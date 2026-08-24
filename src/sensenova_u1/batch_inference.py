@@ -760,6 +760,23 @@ def _run_image_sde_batch(
     return prediction
 
 
+def _apply_repetition_penalty(
+    logits: Tensor,
+    seen_tokens: Tensor,
+    penalty: float,
+) -> Tensor:
+    """Apply LightLLM/HuggingFace-style generated-token repetition penalty."""
+
+    if logits.shape != seen_tokens.shape or seen_tokens.dtype != torch.bool:
+        raise ValueError("SenseNova repetition mask must match logits and be bool")
+    if penalty < 1.0:
+        raise ValueError("SenseNova repetition_penalty must be at least 1.0")
+    if penalty == 1.0:
+        return logits
+    adjusted = torch.where(logits > 0, logits / penalty, logits * penalty)
+    return torch.where(seen_tokens, adjusted, logits)
+
+
 @torch.no_grad()
 def batch_text_gen(
     model: Any,
@@ -786,6 +803,11 @@ def batch_text_gen(
     )
     if max_new_tokens < 1:
         raise ValueError("SenseNova max_new_tokens must be positive")
+    repetition_penalty = float(
+        getattr(generation_config, "repetition_penalty", None) or 1.0
+    )
+    if repetition_penalty < 1.0:
+        raise ValueError("SenseNova repetition_penalty must be at least 1.0")
     runtime_device = torch.device(device if device is not None else model.device)
     session = NativeTextBatchSession(
         model,
@@ -795,13 +817,23 @@ def batch_text_gen(
         dtype=dtype,
         prefix_sharing=prefix_sharing,
     )
+    runtime_device = session.device
     template = get_conv_template(model.template)
     eos_token_id = int(tokenizer.convert_tokens_to_ids(template.sep.strip()))
     active = torch.ones(len(rows), device=runtime_device, dtype=torch.bool)
+    seen_tokens = torch.zeros(
+        len(rows),
+        int(session.next_logits.shape[-1]),
+        device=runtime_device,
+        dtype=torch.bool,
+    )
     generated: list[list[int]] = [[] for _ in rows]
     reasons = ["" for _ in rows]
     while bool(active.any().item()):
-        next_tokens = torch.argmax(session.constrained_logits(), dim=-1).to(
+        logits = _apply_repetition_penalty(
+            session.constrained_logits(), seen_tokens, repetition_penalty
+        )
+        next_tokens = torch.argmax(logits, dim=-1).to(
             device=runtime_device, dtype=torch.long
         )
         accepted = active & next_tokens.ne(eos_token_id)
@@ -815,6 +847,8 @@ def batch_text_gen(
                 active[row] = False
                 reasons[row] = "max_new_tokens"
         if bool(accepted.any().item()):
+            accepted_rows = torch.nonzero(accepted, as_tuple=False).flatten()
+            seen_tokens[accepted_rows, next_tokens.index_select(0, accepted_rows)] = True
             session.commit(next_tokens, accepted)
     return tuple(
         TextBatchResult(
