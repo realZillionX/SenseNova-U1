@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--image-steps", type=int, default=2)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     args = parser.parse_args()
     if args.batch_size < 2:
         raise ValueError("real batch smoke requires at least two rows")
@@ -49,7 +50,7 @@ def main() -> int:
     results = model.batch_interleave_gen(
         tokenizer,
         requests,
-        generation_config=GenerationConfig(max_new_tokens=64),
+        generation_config=GenerationConfig(max_new_tokens=args.max_new_tokens),
         cfg_scale=1.0,
         img_cfg_scale=1.0,
         max_images=1,
