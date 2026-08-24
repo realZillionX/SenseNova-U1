@@ -59,29 +59,24 @@ def main() -> int:
     )
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
+    diagnostics = {
+        "batch_size": args.batch_size,
+        "elapsed_seconds": elapsed,
+        "finish_reasons": [result.finish_reason for result in results],
+        "generated_tokens": [result.generated_tokens for result in results],
+        "image_shapes": [
+            [list(image.shape) for image in result.images]
+            for result in results
+        ],
+        "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+        "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+        "texts": [result.text for result in results],
+    }
+    print(json.dumps(diagnostics, ensure_ascii=False, sort_keys=True), flush=True)
     if not all(result.images for result in results):
         raise RuntimeError(
             "TI2TI smoke did not enter the image batch for every shared-prefix row"
         )
-    print(
-        json.dumps(
-            {
-                "batch_size": args.batch_size,
-                "elapsed_seconds": elapsed,
-                "finish_reasons": [result.finish_reason for result in results],
-                "generated_tokens": [result.generated_tokens for result in results],
-                "image_shapes": [
-                    [list(image.shape) for image in result.images]
-                    for result in results
-                ],
-                "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-                "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
-                "texts": [result.text for result in results],
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
     return 0
 
 
