@@ -110,6 +110,20 @@ def _text_benchmark(
                 dtype=torch.bfloat16,
             )[0]
             completed.append(result)
+            if index == 1:
+                print(
+                    "TI2T_FIRST_OUTPUT="
+                    + json.dumps(
+                        {
+                            "finish_reason": result.finish_reason,
+                            "generated_tokens": result.generated_tokens,
+                            "text": result.text,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
             print(
                 f"TI2T_SERIAL_PROGRESS={index}/{batch_size} "
                 f"tokens={result.generated_tokens} reason={result.finish_reason}",
