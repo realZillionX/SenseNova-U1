@@ -1001,6 +1001,20 @@ class NEOChatModel(PreTrainedModel):
 
         return generated_images
 
+    def batch_text_gen(self, tokenizer, requests, **kwargs):
+        """Public native TI2T batch entry point."""
+
+        from ...batch_inference import batch_text_gen
+
+        return batch_text_gen(self, tokenizer, requests, **kwargs)
+
+    def batch_interleave_gen(self, tokenizer, requests, **kwargs):
+        """Public native TI2TI two-queue batch entry point."""
+
+        from ...batch_inference import batch_interleave_gen
+
+        return batch_interleave_gen(self, tokenizer, requests, **kwargs)
+
     @torch.no_grad()
     def interleave_gen(
             self,
