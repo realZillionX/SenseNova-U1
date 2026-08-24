@@ -70,21 +70,26 @@ def _text_benchmark(
     )
 
     def run_serial() -> tuple[Any, ...]:
-        return tuple(
-            model.batch_text_gen(
-                tokenizer,
-                (request,),
-                generation_config=generation_config,
-                prefix_sharing=False,
-                device="cuda",
-                dtype=torch.bfloat16,
-            )[0]
-            for request in requests
-        )
+        completed = []
+        print("TI2T_SERIAL_START", flush=True)
+        for index, request in enumerate(requests, start=1):
+            completed.append(
+                model.batch_text_gen(
+                    tokenizer,
+                    (request,),
+                    generation_config=generation_config,
+                    prefix_sharing=False,
+                    device="cuda",
+                    dtype=torch.bfloat16,
+                )[0]
+            )
+            print(f"TI2T_SERIAL_PROGRESS={index}/{batch_size}", flush=True)
+        return tuple(completed)
 
     serial, serial_seconds, serial_allocated, serial_reserved = _measure(run_serial)
 
     def run_batch() -> tuple[Any, ...]:
+        print(f"TI2T_BATCH_START={batch_size}", flush=True)
         return model.batch_text_gen(
             tokenizer,
             requests,
@@ -190,21 +195,26 @@ def _interleave_benchmark(
     )
 
     def run_serial() -> tuple[Any, ...]:
-        return tuple(
-            model.batch_interleave_gen(
-                tokenizer,
-                (request,),
-                prefix_sharing=False,
-                **common,
-            )[0]
-            for request in requests
-        )
+        completed = []
+        print("TI2TI_SERIAL_START", flush=True)
+        for index, request in enumerate(requests, start=1):
+            completed.append(
+                model.batch_interleave_gen(
+                    tokenizer,
+                    (request,),
+                    prefix_sharing=False,
+                    **common,
+                )[0]
+            )
+            print(f"TI2TI_SERIAL_PROGRESS={index}/{batch_size}", flush=True)
+        return tuple(completed)
 
     serial_raw, serial_seconds, serial_allocated, serial_reserved = _measure(run_serial)
     serial = _summarize_interleave(serial_raw)
     del serial_raw
 
     def run_batch() -> tuple[Any, ...]:
+        print(f"TI2TI_BATCH_START={batch_size}", flush=True)
         return model.batch_interleave_gen(
             tokenizer,
             requests,
