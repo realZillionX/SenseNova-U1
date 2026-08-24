@@ -7,6 +7,7 @@ import gc
 import json
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -18,9 +19,9 @@ from sensenova_u1.models.neo_unify.utils import SYSTEM_MESSAGE_FOR_INTERLEAVE
 from sensenova_u1.utils import load_model_and_tokenizer
 
 
-TEXT_PROMPT = (
-    "In one concise paragraph, explain why dynamic batching improves "
-    "autoregressive inference throughput."
+BABYVISION_SYSTEM_PROMPT = (
+    "Reason step by step and place the thought process within the "
+    "<think></think> tags, and provide the final conclusion at the end."
 )
 INTERLEAVE_PROMPT = (
     "I want to learn how to cook tomato and egg stir-fry. "
@@ -49,14 +50,41 @@ def _rate(numerator: int, elapsed: float) -> float:
     return float(numerator) / elapsed
 
 
+def _load_first_babyvision_request(data_path: str) -> tuple[TextBatchRequest, Any]:
+    metadata = Path(data_path)
+    with metadata.open("r", encoding="utf-8") as handle:
+        first_line = handle.readline()
+    if not first_line:
+        raise ValueError(f"BabyVision metadata is empty: {metadata}")
+    sample = json.loads(first_line)
+    image_value = sample.get("image")
+    image_paths = image_value if isinstance(image_value, list) else [image_value]
+    if not image_paths or any(not isinstance(path, str) for path in image_paths):
+        raise ValueError("First BabyVision sample has invalid image paths")
+    resolved = tuple(str(metadata.parent / path) for path in image_paths)
+    missing = [path for path in resolved if not Path(path).is_file()]
+    if missing:
+        raise FileNotFoundError(f"First BabyVision sample images are missing: {missing}")
+    return (
+        TextBatchRequest(
+            prompt=str(sample["question"]),
+            images=resolved,
+            system_message=BABYVISION_SYSTEM_PROMPT,
+        ),
+        sample.get("taskId"),
+    )
+
+
 def _text_benchmark(
     model: Any,
     tokenizer: Any,
     *,
+    request: TextBatchRequest,
+    sample_id: Any,
     batch_size: int,
     max_new_tokens: int,
 ) -> dict[str, Any]:
-    requests = tuple(TextBatchRequest(prompt=TEXT_PROMPT) for _ in range(batch_size))
+    requests = tuple(request for _ in range(batch_size))
     generation_config = GenerationConfig(max_new_tokens=max_new_tokens)
 
     # Warm the one-row prefill/decode kernels without affecting measurements.
@@ -73,17 +101,20 @@ def _text_benchmark(
         completed = []
         print("TI2T_SERIAL_START", flush=True)
         for index, request in enumerate(requests, start=1):
-            completed.append(
-                model.batch_text_gen(
-                    tokenizer,
-                    (request,),
-                    generation_config=generation_config,
-                    prefix_sharing=False,
-                    device="cuda",
-                    dtype=torch.bfloat16,
-                )[0]
+            result = model.batch_text_gen(
+                tokenizer,
+                (request,),
+                generation_config=generation_config,
+                prefix_sharing=False,
+                device="cuda",
+                dtype=torch.bfloat16,
+            )[0]
+            completed.append(result)
+            print(
+                f"TI2T_SERIAL_PROGRESS={index}/{batch_size} "
+                f"tokens={result.generated_tokens} reason={result.finish_reason}",
+                flush=True,
             )
-            print(f"TI2T_SERIAL_PROGRESS={index}/{batch_size}", flush=True)
         return tuple(completed)
 
     serial, serial_seconds, serial_allocated, serial_reserved = _measure(run_serial)
@@ -107,6 +138,8 @@ def _text_benchmark(
         for left, right in zip(serial, batch)
     )
     return {
+        "benchmark": "BabyVision",
+        "sample_id": sample_id,
         "batch_size": batch_size,
         "max_new_tokens": max_new_tokens,
         "serial": {
@@ -273,6 +306,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--mode", choices=("all", "ti2t", "ti2ti"), default="all")
+    parser.add_argument("--babyvision-data")
     parser.add_argument("--text-batch-size", type=int, default=32)
     parser.add_argument("--text-max-new-tokens", type=int, default=16384)
     parser.add_argument("--interleave-batch-size", type=int, default=8)
@@ -293,9 +327,14 @@ def main() -> int:
         "device": torch.cuda.get_device_name(),
     }
     if args.mode in ("all", "ti2t"):
+        if not args.babyvision_data:
+            parser.error("--babyvision-data is required for TI2T benchmarking")
+        text_request, sample_id = _load_first_babyvision_request(args.babyvision_data)
         report["ti2t"] = _text_benchmark(
             model,
             tokenizer,
+            request=text_request,
+            sample_id=sample_id,
             batch_size=args.text_batch_size,
             max_new_tokens=args.text_max_new_tokens,
         )
