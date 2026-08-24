@@ -19,8 +19,8 @@ from sensenova_u1.utils import load_model_and_tokenizer
 
 
 TEXT_PROMPT = (
-    "Write a detailed technical explanation of why dynamic batching improves "
-    "autoregressive inference throughput. Continue for at least 1000 words."
+    "In one concise paragraph, explain why dynamic batching improves "
+    "autoregressive inference throughput."
 )
 INTERLEAVE_PROMPT = (
     "I want to learn how to cook tomato and egg stir-fry. "
