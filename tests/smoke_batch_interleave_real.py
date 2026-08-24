@@ -11,7 +11,7 @@ from transformers import GenerationConfig
 
 from sensenova_u1 import set_attn_backend
 from sensenova_u1.batch_inference import InterleaveBatchRequest
-from sensenova_u1.models.neo_unify.utils import SYSTEM_MESSAGE_FOR_GEN
+from sensenova_u1.models.neo_unify.utils import SYSTEM_MESSAGE_FOR_INTERLEAVE
 from sensenova_u1.utils import load_model_and_tokenizer
 
 
@@ -31,11 +31,14 @@ def main() -> int:
         dtype=torch.bfloat16,
         device="cuda",
     )
-    prompt = "Generate a clean square image containing one large red circle."
+    prompt = (
+        "I want to learn how to cook tomato and egg stir-fry. "
+        "Please give me a beginner-friendly illustrated tutorial."
+    )
     requests = tuple(
         InterleaveBatchRequest(
             prompt=prompt,
-            system_message=SYSTEM_MESSAGE_FOR_GEN,
+            system_message=SYSTEM_MESSAGE_FOR_INTERLEAVE,
             seed=100 + row,
         )
         for row in range(args.batch_size)
@@ -52,7 +55,7 @@ def main() -> int:
         max_images=1,
         image_size=(args.image_size, args.image_size),
         num_steps=args.image_steps,
-        think_mode=False,
+        think_mode=True,
         prefix_sharing=True,
         device="cuda",
         dtype=torch.bfloat16,
