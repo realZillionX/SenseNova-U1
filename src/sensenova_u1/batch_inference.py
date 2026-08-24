@@ -298,6 +298,8 @@ class NativeTextBatchSession:
         self.model = model
         self.tokenizer = tokenizer
         self.device = torch.device(device)
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
         self.dtype = dtype
         self.batch_size = len(rows)
         self.allow_image_actions = bool(allow_image_actions)
