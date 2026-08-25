@@ -189,6 +189,40 @@ def create_block_causal_mask(index: torch.Tensor):
     return torch.where(mask[None, None, :, :] > 0, torch.tensor(0.0), torch.tensor(float('-inf')))
 
 
+def batch_axis_indexes(indexes: torch.Tensor, axis: int) -> torch.Tensor:
+    """Return one THW axis as ``(batch, sequence)`` positions.
+
+    Historical NEO-Unify callers pass one shared ``(3, sequence)`` index map.
+    Native batched inference needs a distinct temporal/spatial map per row and
+    therefore passes ``(batch, 3, sequence)``.  Normalising the two layouts in
+    one place preserves every existing single-row call while letting the
+    attention implementation apply RoPE without silently broadcasting row
+    zero's positions over the complete batch.
+    """
+
+    if not isinstance(indexes, torch.Tensor) or indexes.dtype != torch.long:
+        raise TypeError("NEO-Unify indexes must be a torch.long tensor")
+    if type(axis) is not int or not 0 <= axis < 3:
+        raise ValueError(f"NEO-Unify index axis must be 0, 1, or 2, got {axis!r}")
+    if indexes.ndim == 2:
+        if indexes.shape[0] != 3:
+            raise ValueError(
+                f"shared NEO-Unify indexes must have shape (3, sequence), got {tuple(indexes.shape)}"
+            )
+        return indexes[axis].unsqueeze(0)
+    if indexes.ndim == 3:
+        if indexes.shape[1] != 3:
+            raise ValueError(
+                "batched NEO-Unify indexes must have shape "
+                f"(batch, 3, sequence), got {tuple(indexes.shape)}"
+            )
+        return indexes[:, axis, :]
+    raise ValueError(
+        "NEO-Unify indexes must be rank 2 or 3, got "
+        f"rank {indexes.ndim} with shape {tuple(indexes.shape)}"
+    )
+
+
 def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12):
     """
     mask: (1,1, L, L)
@@ -533,7 +567,7 @@ class Qwen3Attention(nn.Module):
 
         if position_embeddings_t is None:
             position_embeddings_t = self.rotary_emb(
-                hidden_states, indexes[0].unsqueeze(0)
+                hidden_states, batch_axis_indexes(indexes, 0)
             )
         cos_t, sin_t = position_embeddings_t
         query_states_t, key_states_t = apply_rotary_pos_emb(query_states_t, key_states_t, cos_t, sin_t)
@@ -541,7 +575,7 @@ class Qwen3Attention(nn.Module):
         if not skip_spatial_rope:
             if position_embeddings_h is None:
                 position_embeddings_h = self.rotary_emb_hw(
-                    hidden_states, indexes[1].unsqueeze(0)
+                    hidden_states, batch_axis_indexes(indexes, 1)
                 )
             cos_h, sin_h = position_embeddings_h
             query_states_h, key_states_h = apply_rotary_pos_emb(
@@ -550,7 +584,7 @@ class Qwen3Attention(nn.Module):
 
             if position_embeddings_w is None:
                 position_embeddings_w = self.rotary_emb_hw(
-                    hidden_states, indexes[2].unsqueeze(0)
+                    hidden_states, batch_axis_indexes(indexes, 2)
                 )
             cos_w, sin_w = position_embeddings_w
             query_states_w, key_states_w = apply_rotary_pos_emb(
@@ -767,7 +801,7 @@ class Qwen3Attention(nn.Module):
         # RoPE
         if position_embeddings_t is None:
             position_embeddings_t = self.rotary_emb(
-                hidden_states, indexes[0].unsqueeze(0)
+                hidden_states, batch_axis_indexes(indexes, 0)
             )
         cos_t, sin_t = position_embeddings_t
         query_states_t, key_states_t = apply_rotary_pos_emb(query_states_t, key_states_t, cos_t, sin_t)
@@ -775,7 +809,7 @@ class Qwen3Attention(nn.Module):
         if not skip_spatial_rope:
             if position_embeddings_h is None:
                 position_embeddings_h = self.rotary_emb_hw(
-                    hidden_states, indexes[1].unsqueeze(0)
+                    hidden_states, batch_axis_indexes(indexes, 1)
                 )
             cos_h, sin_h = position_embeddings_h
             query_states_h, key_states_h = apply_rotary_pos_emb(
@@ -784,7 +818,7 @@ class Qwen3Attention(nn.Module):
 
             if position_embeddings_w is None:
                 position_embeddings_w = self.rotary_emb_hw(
-                    hidden_states, indexes[2].unsqueeze(0)
+                    hidden_states, batch_axis_indexes(indexes, 2)
                 )
             cos_w, sin_w = position_embeddings_w
             query_states_w, key_states_w = apply_rotary_pos_emb(
@@ -997,13 +1031,19 @@ class Qwen3Attention(nn.Module):
             value_states[image_gen_indicators] = self.v_proj_mot_gen(hidden_states[image_gen_indicators])
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
-        cos_t, sin_t = self.rotary_emb(hidden_states, indexes[0].unsqueeze(0))
+        cos_t, sin_t = self.rotary_emb(
+            hidden_states, batch_axis_indexes(indexes, 0)
+        )
         query_states_t, key_states_t = apply_rotary_pos_emb(query_states_t, key_states_t, cos_t, sin_t)
 
-        cos_h, sin_h = self.rotary_emb_hw(hidden_states, indexes[1].unsqueeze(0))
+        cos_h, sin_h = self.rotary_emb_hw(
+            hidden_states, batch_axis_indexes(indexes, 1)
+        )
         query_states_h, key_states_h = apply_rotary_pos_emb(query_states_h, key_states_h, cos_h, sin_h)
 
-        cos_w, sin_w = self.rotary_emb_hw(hidden_states, indexes[2].unsqueeze(0))
+        cos_w, sin_w = self.rotary_emb_hw(
+            hidden_states, batch_axis_indexes(indexes, 2)
+        )
         query_states_w, key_states_w = apply_rotary_pos_emb(query_states_w, key_states_w, cos_w, sin_w)
 
         query_states = torch.cat([query_states_t, query_states_h, query_states_w], dim=-1)
@@ -1361,9 +1401,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 causal_mask_mapping = {
                     "full_attention": create_block_causal_mask(indexes[0]),
                 }
-                self.current_index = indexes[0].max()
+                self.current_index = batch_axis_indexes(indexes, 0).max()
         else:
-            self.current_index = indexes[0].max()
+            self.current_index = batch_axis_indexes(indexes, 0).max()
             # raise NotImplementedError('not isinstance(causal_mask_mapping := attention_mask, dict)')
 
             # The sliding window alternating layers are not always activated depending on the config
@@ -1384,14 +1424,14 @@ class Qwen3Model(Qwen3PreTrainedModel):
             # Device-mapped models keep the per-layer fallback because their
             # hidden states migrate between devices.
             layer_kwargs["position_embeddings_t"] = first_attention.rotary_emb(
-                hidden_states, indexes[0].unsqueeze(0)
+                hidden_states, batch_axis_indexes(indexes, 0)
             )
             if not is_single_text_decode:
                 layer_kwargs["position_embeddings_h"] = first_attention.rotary_emb_hw(
-                    hidden_states, indexes[1].unsqueeze(0)
+                    hidden_states, batch_axis_indexes(indexes, 1)
                 )
                 layer_kwargs["position_embeddings_w"] = first_attention.rotary_emb_hw(
-                    hidden_states, indexes[2].unsqueeze(0)
+                    hidden_states, batch_axis_indexes(indexes, 2)
                 )
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
