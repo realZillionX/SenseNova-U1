@@ -1,0 +1,18 @@
+# Deliberately excludes torch/torchvision/torchaudio and all CUDA wheels.
+# The upstream image owns Torch 2.8.0 + CUDA 12.8; installing either full
+# LightLLM or LightX2V requirements would replace that tested ABI.
+atomics==1.0.3
+easydict==1.13
+fastapi==0.115.6
+frozendict==2.4.6
+Pillow==10.4.0
+prometheus_client==0.20.0
+psutil==5.9.4
+pydantic==2.10.3
+pyzmq==25.1.1b2
+requests==2.31.0
+rpyc==5.3.1
+safetensors==0.4.5
+setproctitle==1.3.6
+ujson==5.10.0
+uvloop==0.17.0

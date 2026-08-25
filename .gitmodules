@@ -10,5 +10,10 @@
 
 [submodule "evaluation/easi/lightllm-stack/LightLLM"]
 	path = evaluation/easi/lightllm-stack/LightLLM
-	url = https://github.com/ModelTC/LightLLM.git
-	branch = neo_plus_clean
+	url = https://github.com/expectqwq/LightLLM.git
+	branch = mova/sensenova-u15-rl-engine
+
+[submodule "evaluation/easi/lightllm-stack/LightX2V"]
+	path = evaluation/easi/lightllm-stack/LightX2V
+	url = https://github.com/expectqwq/LightX2V.git
+	branch = mova/sensenova-u15-rl-engine
