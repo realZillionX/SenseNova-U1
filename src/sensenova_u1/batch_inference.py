@@ -6,12 +6,12 @@ assumes one row.  This module exposes the lower-level operation needed by both
 evaluation and RL rollout: one multimodal prefill per row, followed by a shared
 batched KV cache with independently advancing/eos-ing rows.
 
-``ContiguousTextBatchSession`` is the common cache primitive.  The public
-``batch_interleave_gen`` entry point adds the deliberately small two-queue
-scheduler used by TI2TI: drain every text-ready row as one batch, then drain
-every image-ready row as one homogeneous SDE batch.  More elaborate scheduling
-(token quanta, continuous admission, resolution buckets) can be layered on top
-without moving model semantics into a serving framework.
+``ContiguousTextBatchSession`` is the fixed-batch compatibility primitive.
+``ContinuousTextBatchEngine`` adds chunked prefill and reusable paged KV slots
+for TI2T. ``ContinuousInterleaveBatchEngine`` extends that pool with independent
+text-ready and image-ready queues: one text step is followed by one homogeneous
+image batch, and completed image rows immediately rejoin text decoding.  The
+legacy ``batch_interleave_gen`` path remains available unchanged.
 """
 
 from __future__ import annotations
@@ -102,6 +102,11 @@ class _InterleaveState(Enum):
     TEXT_READY = "text_ready"
     IMAGE_READY = "image_ready"
     FINISHED = "finished"
+
+
+class _ContinuousInterleavePhase(Enum):
+    TEXT_READY = "text_ready"
+    IMAGE_READY = "image_ready"
 
 
 def _same_image_input(left: Any, right: Any) -> bool:
@@ -734,6 +739,13 @@ class ContinuousTextBatch:
     logits: Tensor
 
 
+@dataclass(frozen=True)
+class ContinuousImageBatch:
+    """Image-ready rows selected from a continuous TI2TI engine."""
+
+    request_ids: tuple[int, ...]
+
+
 @dataclass
 class _ContinuousTextState:
     request_id: int
@@ -747,6 +759,17 @@ class _ContinuousTextState:
     t_index: int = 0
     next_logits: Tensor | None = None
     generated: list[int] = field(default_factory=list)
+
+
+@dataclass
+class _ContinuousInterleaveState(_ContinuousTextState):
+    interleave_request: InterleaveBatchRequest | None = None
+    phase: _ContinuousInterleavePhase = _ContinuousInterleavePhase.TEXT_READY
+    pending_tokens: list[int] = field(default_factory=list)
+    parts: list[str] = field(default_factory=list)
+    generated_images: list[Tensor] = field(default_factory=list)
+    generator: torch.Generator | None = None
+    image_ready_step: int | None = None
 
 
 def _chunk_end_without_splitting_block(
@@ -1427,6 +1450,693 @@ def _run_image_sde_batch(
     return prediction
 
 
+def _continuous_image_geometry(
+    model: Any, image_size: tuple[int, int]
+) -> tuple[int, int, int, int, int, int, int]:
+    """Return validated image/token geometry for the paged TI2TI path."""
+
+    width, height = image_size
+    merge = int(1 / float(model.downsample_ratio))
+    patch = int(model.patch_size)
+    divisor = patch * merge
+    if width <= 0 or height <= 0 or width % divisor or height % divisor:
+        raise ValueError("SenseNova image size must divide by patch_size * merge_size")
+    token_h = height // divisor
+    token_w = width // divisor
+    return width, height, patch, merge, divisor, token_h, token_w
+
+
+def _run_paged_image_sde_batch(
+    model: Any,
+    cache: ContinuousFlashDecodeCache,
+    t_indexes: Tensor,
+    generators: Sequence[torch.Generator],
+    *,
+    image_size: tuple[int, int],
+    num_steps: int,
+    enable_timestep_shift: bool,
+    timestep_shift: float,
+    cfg_interval: tuple[float, float],
+) -> Tensor:
+    """Run no-CFG image denoising against an activated paged prefix view.
+
+    Unlike :func:`_run_image_sde_batch`, this path deliberately supplies no
+    dense attention mask.  ``ContinuousFlashDecodeCache.activate`` has already
+    selected the participating block tables and sequence lengths, so every
+    denoising step overwrites the same uncommitted image-token workspace.
+    """
+
+    count = len(generators)
+    if count < 1 or t_indexes.shape != (count,):
+        raise ValueError("SenseNova paged image rows and cache metadata disagree")
+    width, height, patch, merge, divisor, token_h, token_w = (
+        _continuous_image_geometry(model, image_size)
+    )
+    image_tokens = token_h * token_w
+    device = t_indexes.device
+    indexes = torch.stack(
+        tuple(
+            model._build_t2i_image_indexes(
+                token_h, token_w, int(t_index.item()) + 1, device=device
+            )
+            for t_index in t_indexes
+        )
+    )
+    grid_h = height // patch
+    grid_w = width // patch
+    grid_hw = torch.tensor(
+        [[grid_h, grid_w]] * count, device=device, dtype=torch.long
+    )
+
+    noise_scale = float(model.noise_scale)
+    if model.noise_scale_mode in ("resolution", "dynamic", "dynamic_sqrt"):
+        base = float(model.noise_scale_base_image_seq_len)
+        noise_scale = math.sqrt((grid_h * grid_w) / (merge**2) / base) * noise_scale
+        if model.noise_scale_mode == "dynamic_sqrt":
+            noise_scale = math.sqrt(noise_scale)
+    noise_scale = min(noise_scale, float(model.noise_scale_max_value))
+    model_dtype = next(model.parameters()).dtype
+    prediction = torch.cat(
+        tuple(
+            noise_scale
+            * torch.randn(
+                (1, 3, height, width),
+                device=device,
+                dtype=model_dtype,
+                generator=generator,
+            )
+            for generator in generators
+        ),
+        dim=0,
+    )
+
+    timesteps = torch.linspace(0.0, 1.0, num_steps + 1, device=device)
+    if enable_timestep_shift:
+        timesteps = model._apply_time_schedule(
+            timesteps, image_tokens, timestep_shift
+        )
+    attention = {"full_attention": None}
+    for step in range(num_steps):
+        t = timesteps[step]
+        t_next = timesteps[step + 1]
+        z = model.patchify(prediction, divisor)
+        image_input = model.patchify(prediction, patch, channel_first=True)
+        image_embeds = model.extract_feature(
+            image_input.reshape(count * grid_h * grid_w, -1),
+            gen_model=True,
+            grid_hw=grid_hw,
+        ).reshape(count, image_tokens, -1)
+        expanded_t = t.expand(count * image_tokens)
+        timestep_embeddings = model.fm_modules["timestep_embedder"](
+            expanded_t
+        ).reshape(count, image_tokens, -1)
+        if model.add_noise_scale_embedding:
+            normalized_noise = noise_scale / float(model.noise_scale_max_value)
+            noise_values = torch.full_like(expanded_t, normalized_noise)
+            timestep_embeddings = timestep_embeddings + model.fm_modules[
+                "noise_scale_embedder"
+            ](noise_values).reshape(count, image_tokens, -1)
+        image_embeds = image_embeds + timestep_embeddings
+
+        _ = cfg_interval
+        velocity = model._t2i_predict_v(
+            image_embeds,
+            indexes,
+            attention,
+            cache,
+            t,
+            z,
+            image_token_num=image_tokens,
+            timestep_embeddings=timestep_embeddings,
+            image_size=image_size,
+        )
+        z = z + (t_next - t) * velocity
+        prediction = model.unpatchify(z, divisor, height, width)
+    return prediction
+
+
+class ContinuousInterleaveBatchEngine(ContinuousTextBatchEngine):
+    """Continuous two-queue TI2TI engine backed by one paged KV pool.
+
+    Text-ready rows execute one decode step per scheduler iteration.  A row
+    that selects ``<img>`` commits that control token, leaves the text batch,
+    and joins an image-ready batch without waiting for unrelated text rows to
+    finish.  Generated image tokens are then appended to the same physical KV
+    slot and the row rejoins text decoding.
+
+    This is a separate entry point.  The legacy TI2I/interleave functions keep
+    their DynamicCache and dense-mask behavior unchanged.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        tokenizer: Any,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype = torch.bfloat16,
+        max_batch_size: int = 32,
+        max_image_batch_size: int = 8,
+        image_wait_steps: int = 8,
+        max_model_len: int = 16384,
+        prefill_chunk_size: int = 2048,
+        default_max_new_tokens: int = 8192,
+        max_kv_tokens: int = 131072,
+        kv_page_size: int = 256,
+        prefix_sharing: bool = True,
+        truncate_to_max_model_len: bool = False,
+        max_images: int = 10,
+        image_size: tuple[int, int] = (256, 256),
+        num_steps: int = 30,
+        enable_timestep_shift: bool = True,
+        timestep_shift: float = 1.0,
+        cfg_interval: tuple[float, float] = (0.0, 1.0),
+        t_eps: float = 0.02,
+        think_mode: bool = False,
+        image_start_token: str = "<img>",
+        image_context_token: str = "<IMG_CONTEXT>",
+        image_end_token: str = "</img>",
+    ) -> None:
+        if type(max_image_batch_size) is not int or max_image_batch_size < 1:
+            raise ValueError("SenseNova max_image_batch_size must be positive")
+        if type(image_wait_steps) is not int or image_wait_steps < 0:
+            raise ValueError("SenseNova image_wait_steps must be non-negative")
+        if type(max_images) is not int or max_images < 0:
+            raise ValueError("SenseNova max_images must be a non-negative int")
+        if type(num_steps) is not int or num_steps < 1:
+            raise ValueError("SenseNova num_steps must be positive")
+        if (
+            not isinstance(image_size, tuple)
+            or len(image_size) != 2
+            or any(type(value) is not int or value <= 0 for value in image_size)
+        ):
+            raise ValueError("SenseNova image_size must be a positive (width, height)")
+        _continuous_image_geometry(model, image_size)
+        super().__init__(
+            model,
+            tokenizer,
+            device=device,
+            dtype=dtype,
+            max_batch_size=max_batch_size,
+            max_model_len=max_model_len,
+            prefill_chunk_size=prefill_chunk_size,
+            default_max_new_tokens=default_max_new_tokens,
+            max_kv_tokens=max_kv_tokens,
+            kv_page_size=kv_page_size,
+            prefix_sharing=prefix_sharing,
+            truncate_to_max_model_len=truncate_to_max_model_len,
+            image_start_token=image_start_token,
+            image_context_token=image_context_token,
+            image_end_token=image_end_token,
+        )
+        self.max_image_batch_size = max_image_batch_size
+        self.image_wait_steps = image_wait_steps
+        self._text_decode_step = 0
+        self.max_images = max_images
+        self.image_size = image_size
+        self.num_steps = num_steps
+        self.enable_timestep_shift = bool(enable_timestep_shift)
+        self.timestep_shift = float(timestep_shift)
+        self.cfg_interval = cfg_interval
+        self.assistant_prefix = "" if think_mode else "<think>\n\n</think>\n\n"
+        self.image_end_token_id = int(
+            tokenizer.convert_tokens_to_ids(image_end_token)
+        )
+        self.model.config.t_eps = float(t_eps)
+        self._completed: deque[tuple[int, InterleaveBatchResult]] = deque()
+        self._scheduled_image_request_ids: tuple[int, ...] | None = None
+
+    @property
+    def image_token_count(self) -> int:
+        *_, token_h, token_w = _continuous_image_geometry(
+            self.model, self.image_size
+        )
+        return token_h * token_w
+
+    def submit(
+        self,
+        request: InterleaveBatchRequest,
+        *,
+        max_new_tokens: int | None = None,
+    ) -> int:
+        if not isinstance(request, InterleaveBatchRequest):
+            raise TypeError(
+                "SenseNova continuous interleave request must be InterleaveBatchRequest"
+            )
+        limit = self.default_max_new_tokens if max_new_tokens is None else max_new_tokens
+        if type(limit) is not int or limit < 1:
+            raise ValueError("SenseNova request max_new_tokens must be positive")
+        request_id = self._next_request_id
+        self._next_request_id += 1
+        text_request = TextBatchRequest(
+            prompt=request.prompt,
+            images=request.images,
+            system_message=request.system_message,
+            assistant_prefix=self.assistant_prefix,
+        )
+        self._waiting.append(
+            _ContinuousInterleaveState(
+                request_id=request_id,
+                request=text_request,
+                max_new_tokens=limit,
+                interleave_request=request,
+                generator=torch.Generator(device=self.device).manual_seed(request.seed),
+            )
+        )
+        return request_id
+
+    def _flush_text(self, state: _ContinuousInterleaveState) -> None:
+        if state.pending_tokens:
+            state.parts.append(
+                self.tokenizer.decode(
+                    state.pending_tokens, skip_special_tokens=True
+                )
+            )
+            state.pending_tokens.clear()
+
+    def _finish_interleave(
+        self, state: _ContinuousInterleaveState, reason: str
+    ) -> None:
+        if state.slot is None or self._cache is None:
+            raise RuntimeError("SenseNova completed interleave request has no KV slot")
+        self._flush_text(state)
+        self._cache.release(state.slot)
+        self._free_slots.append(state.slot)
+        del self._active[state.request_id]
+        self._completed.append(
+            (
+                state.request_id,
+                InterleaveBatchResult(
+                    text="".join(state.parts),
+                    images=tuple(state.generated_images),
+                    finish_reason=reason,
+                    generated_tokens=len(state.generated),
+                ),
+            )
+        )
+
+    @torch.no_grad()
+    def schedule_text(self) -> ContinuousTextBatch | None:
+        """Run one prefill chunk and expose only text-ready row logits."""
+
+        if self._scheduled_request_ids is not None:
+            raise RuntimeError("SenseNova continuous text batch must be advanced first")
+        if self._scheduled_image_request_ids is not None:
+            raise RuntimeError("SenseNova continuous image batch must be run first")
+        self._prefill_one_chunk()
+        states = sorted(
+            (
+                state
+                for state in self._active.values()
+                if state.phase is _ContinuousInterleavePhase.TEXT_READY
+            ),
+            key=lambda state: int(state.slot),
+        )
+        if not states:
+            return None
+        request_ids = tuple(state.request_id for state in states)
+        logits = torch.cat(
+            tuple(state.next_logits for state in states if state.next_logits is not None),
+            dim=0,
+        ).to(dtype=torch.float32, copy=True)
+        self._scheduled_request_ids = request_ids
+        return ContinuousTextBatch(request_ids=request_ids, logits=logits)
+
+    def schedule(self) -> ContinuousTextBatch | None:
+        """Compatibility alias for the engine's text scheduler."""
+
+        return self.schedule_text()
+
+    @torch.no_grad()
+    def advance_text(
+        self,
+        batch: ContinuousTextBatch,
+        token_ids: Tensor,
+        *,
+        stop_mask: Tensor | None = None,
+    ) -> None:
+        """Commit one caller-selected token and route image actions."""
+
+        if batch.request_ids != self._scheduled_request_ids:
+            raise RuntimeError("SenseNova continuous text batch is stale or out of order")
+        count = len(batch.request_ids)
+        if token_ids.shape != (count,) or token_ids.dtype != torch.long:
+            raise ValueError("SenseNova continuous token_ids must be batch-shaped long")
+        if token_ids.device != self.device:
+            raise ValueError("SenseNova continuous token_ids are on the wrong device")
+        if stop_mask is None:
+            stop_mask = torch.zeros(count, device=self.device, dtype=torch.bool)
+        if stop_mask.shape != (count,) or stop_mask.dtype != torch.bool:
+            raise ValueError("SenseNova continuous stop_mask must be batch-shaped bool")
+        if stop_mask.device != self.device:
+            raise ValueError("SenseNova continuous stop_mask is on the wrong device")
+
+        decode_step = self._text_decode_step + 1
+        states = [
+            self._active[request_id] for request_id in batch.request_ids
+        ]
+        token_values = token_ids.detach().cpu().tolist()
+        stop_values = stop_mask.detach().cpu().tolist()
+        commits: list[tuple[_ContinuousInterleaveState, int, str]] = []
+        finished: list[tuple[_ContinuousInterleaveState, str]] = []
+        final_text_tokens: list[tuple[_ContinuousInterleaveState, int]] = []
+        assert self._cache is not None
+        for raw_state, token, forced_stop in zip(
+            states, token_values, stop_values, strict=True
+        ):
+            state = raw_state
+            if not isinstance(state, _ContinuousInterleaveState):
+                raise TypeError("SenseNova interleave engine contains a text-only state")
+            token = int(token)
+            if forced_stop:
+                finished.append((state, "stopped"))
+            elif token == self.eos_token_id:
+                finished.append((state, "eos"))
+            elif token == self.image_start_token_id:
+                if len(state.generated_images) >= self.max_images:
+                    finished.append((state, "max_images"))
+                    continue
+                if state.slot is None:
+                    raise RuntimeError("SenseNova image-ready request has no KV slot")
+                current_length = int(
+                    self._cache.flash_decode_seqlens[state.slot].item()
+                )
+                required = current_length + 1 + self.image_token_count + 1
+                if required > self.max_model_len:
+                    finished.append((state, "max_model_len"))
+                else:
+                    commits.append((state, token, "image"))
+            elif len(state.generated) + 1 >= state.max_new_tokens:
+                final_text_tokens.append((state, token))
+                finished.append((state, "max_new_tokens"))
+            else:
+                commits.append((state, token, "text"))
+
+        outputs = None
+        if commits:
+            slots = torch.tensor(
+                [int(state.slot) for state, _, _ in commits],
+                device=self.device,
+                dtype=torch.long,
+            )
+            tokens = torch.tensor(
+                [token for _, token, _ in commits],
+                device=self.device,
+                dtype=torch.long,
+            )
+            next_t = torch.tensor(
+                [state.t_index + 1 for state, _, _ in commits],
+                device=self.device,
+                dtype=torch.long,
+            )
+            zeros = torch.zeros_like(next_t)
+            indexes = torch.stack((next_t, zeros, zeros), dim=1).unsqueeze(-1)
+            self._cache.activate(slots)
+            try:
+                outputs = self.model.language_model(
+                    input_ids=tokens.reshape(-1, 1),
+                    indexes=indexes,
+                    attention_mask={"full_attention": None},
+                    past_key_values=self._cache,
+                    use_cache=True,
+                )
+            except Exception:
+                self._cache.cancel_active()
+                raise
+            self._cache.commit_active()
+
+        for index, (state, token, kind) in enumerate(commits):
+            state.t_index += 1
+            if kind == "image":
+                self._flush_text(state)
+                state.phase = _ContinuousInterleavePhase.IMAGE_READY
+                state.image_ready_step = decode_step
+            else:
+                state.generated.append(token)
+                state.pending_tokens.append(token)
+                assert outputs is not None
+                state.next_logits = outputs.logits[
+                    index : index + 1, -1, :
+                ].detach()
+        for state, token in final_text_tokens:
+            state.generated.append(token)
+            state.pending_tokens.append(token)
+        for state, reason in finished:
+            self._finish_interleave(state, reason)
+        self._text_decode_step = decode_step
+        self._scheduled_request_ids = None
+
+    def advance(
+        self,
+        batch: ContinuousTextBatch,
+        token_ids: Tensor,
+        *,
+        stop_mask: Tensor | None = None,
+    ) -> None:
+        """Compatibility alias that preserves TI2TI image-action routing."""
+
+        self.advance_text(batch, token_ids, stop_mask=stop_mask)
+
+    def schedule_images(
+        self, *, max_batch_size: int | None = None
+    ) -> ContinuousImageBatch | None:
+        """Select a bounded-wait image batch that fits the remaining KV pages."""
+
+        if self._scheduled_request_ids is not None:
+            raise RuntimeError("SenseNova continuous text batch must be advanced first")
+        if self._scheduled_image_request_ids is not None:
+            raise RuntimeError("SenseNova continuous image batch is already scheduled")
+        limit = self.max_image_batch_size if max_batch_size is None else max_batch_size
+        if type(limit) is not int or limit < 1:
+            raise ValueError("SenseNova image schedule limit must be positive")
+        ready = sorted(
+            (
+                state
+                for state in self._active.values()
+                if state.phase is _ContinuousInterleavePhase.IMAGE_READY
+            ),
+            key=lambda state: (
+                self._text_decode_step
+                if state.image_ready_step is None
+                else state.image_ready_step,
+                int(state.slot),
+            ),
+        )
+        if not ready:
+            return None
+        text_ready = any(
+            state.phase is _ContinuousInterleavePhase.TEXT_READY
+            for state in self._active.values()
+        )
+        all_active_requests_are_image_ready = bool(self._active) and all(
+            state.phase is _ContinuousInterleavePhase.IMAGE_READY
+            for state in self._active.values()
+        )
+        oldest_ready_step = ready[0].image_ready_step
+        oldest_wait_steps = (
+            0
+            if oldest_ready_step is None
+            else self._text_decode_step - oldest_ready_step
+        )
+        should_flush = (
+            len(ready) >= limit
+            or oldest_wait_steps >= self.image_wait_steps
+            or not text_ready
+            or all_active_requests_are_image_ready
+        )
+        if not should_flush:
+            return None
+        assert self._cache is not None
+        selected: list[_ContinuousInterleaveState] = []
+        for state in ready[:limit]:
+            candidate = selected + [state]
+            slots = torch.tensor(
+                [int(item.slot) for item in candidate],
+                device=self.device,
+                dtype=torch.long,
+            )
+            if self._cache.can_reserve(slots, self.image_token_count + 1):
+                selected = candidate
+            else:
+                continue
+        if not selected:
+            text_can_progress = any(
+                state.phase is _ContinuousInterleavePhase.TEXT_READY
+                for state in self._active.values()
+            )
+            if not text_can_progress and not self._waiting and self._prefilling is None:
+                raise RuntimeError(
+                    "SenseNova continuous paged KV pool cannot reserve one image workspace"
+                )
+            return None
+        request_ids = tuple(state.request_id for state in selected)
+        self._scheduled_image_request_ids = request_ids
+        return ContinuousImageBatch(request_ids=request_ids)
+
+    def _append_generated_images_paged(
+        self,
+        states: Sequence[_ContinuousInterleaveState],
+        predictions: Tensor,
+    ) -> None:
+        """Re-encode generated images and commit image block then ``</img>``."""
+
+        count = len(states)
+        if predictions.ndim != 4 or int(predictions.shape[0]) != count:
+            raise ValueError("SenseNova generated-image batch and states disagree")
+        width, height, patch, merge, _, token_h, token_w = (
+            _continuous_image_geometry(self.model, self.image_size)
+        )
+        if tuple(predictions.shape[1:]) != (3, height, width):
+            raise ValueError("SenseNova generated images have unexpected geometry")
+        grid_h = height // patch
+        grid_w = width // patch
+        grid_hw = torch.tensor(
+            [[grid_h, grid_w]] * count, device=self.device, dtype=torch.long
+        )
+        prediction = predictions.to(self.device, dtype=torch.bfloat16)
+        raw = prediction * 0.5 + 0.5
+        mean = torch.tensor(
+            [0.485, 0.456, 0.406], dtype=raw.dtype, device=self.device
+        ).view(1, 3, 1, 1)
+        std = torch.tensor(
+            [0.229, 0.224, 0.225], dtype=raw.dtype, device=self.device
+        ).view(1, 3, 1, 1)
+        normalized = (raw - mean) / std
+        flattened = (
+            normalized.view(count, 3, grid_h, patch, grid_w, patch)
+            .permute(0, 2, 4, 1, 3, 5)
+            .reshape(count * grid_h * grid_w, 3 * patch**2)
+        )
+        features = self.model.extract_feature(flattened, grid_hw=grid_hw)
+        features = features.reshape(count, -1, int(features.shape[-1]))
+        image_tokens = int(features.shape[1])
+        if image_tokens != token_h * token_w:
+            raise RuntimeError("SenseNova generated-image token geometry is inconsistent")
+
+        temporal = torch.tensor(
+            [state.t_index + 1 for state in states],
+            device=self.device,
+            dtype=torch.long,
+        )
+        indexes = torch.zeros(
+            count, 3, image_tokens, device=self.device, dtype=torch.long
+        )
+        indexes[:, 0, :] = temporal[:, None]
+        spatial_h = (
+            torch.arange(token_h, device=self.device)
+            .view(token_h, 1)
+            .expand(token_h, token_w)
+            .reshape(-1)
+        )
+        spatial_w = (
+            torch.arange(token_w, device=self.device)
+            .view(1, token_w)
+            .expand(token_h, token_w)
+            .reshape(-1)
+        )
+        indexes[:, 1, :] = spatial_h
+        indexes[:, 2, :] = spatial_w
+        slots = torch.tensor(
+            [int(state.slot) for state in states],
+            device=self.device,
+            dtype=torch.long,
+        )
+        assert self._cache is not None
+        self._cache.activate(slots, token_count=image_tokens)
+        try:
+            self.model.language_model.model(
+                inputs_embeds=features,
+                indexes=indexes,
+                attention_mask={"full_attention": None},
+                past_key_values=self._cache,
+                use_cache=True,
+                paged_append_causal=False,
+            )
+        except Exception:
+            self._cache.cancel_active()
+            raise
+        self._cache.commit_active()
+
+        end_ids = torch.full(
+            (count, 1), self.image_end_token_id, device=self.device, dtype=torch.long
+        )
+        end_indexes = torch.zeros(
+            count, 3, 1, device=self.device, dtype=torch.long
+        )
+        end_indexes[:, 0, 0] = temporal + 1
+        self._cache.activate(slots)
+        try:
+            outputs = self.model.language_model(
+                input_ids=end_ids,
+                indexes=end_indexes,
+                attention_mask={"full_attention": None},
+                past_key_values=self._cache,
+                use_cache=True,
+            )
+        except Exception:
+            self._cache.cancel_active()
+            raise
+        self._cache.commit_active()
+        for index, state in enumerate(states):
+            state.t_index += 2
+            state.next_logits = outputs.logits[
+                index : index + 1, -1, :
+            ].detach()
+
+    @torch.no_grad()
+    def run_images(self, batch: ContinuousImageBatch) -> Tensor:
+        """Denoise and append one previously scheduled image-ready batch."""
+
+        if batch.request_ids != self._scheduled_image_request_ids:
+            raise RuntimeError("SenseNova continuous image batch is stale or out of order")
+        raw_states = [self._active[request_id] for request_id in batch.request_ids]
+        if not all(isinstance(state, _ContinuousInterleaveState) for state in raw_states):
+            raise TypeError("SenseNova image batch contains a text-only state")
+        states = list(raw_states)
+        slots = torch.tensor(
+            [int(state.slot) for state in states],
+            device=self.device,
+            dtype=torch.long,
+        )
+        t_indexes = torch.tensor(
+            [state.t_index for state in states],
+            device=self.device,
+            dtype=torch.long,
+        )
+        generators = [state.generator for state in states]
+        if any(generator is None for generator in generators):
+            raise RuntimeError("SenseNova image-ready request has no generator")
+        assert self._cache is not None
+        self._cache.activate(slots, token_count=self.image_token_count + 1)
+        try:
+            predictions = _run_paged_image_sde_batch(
+                self.model,
+                self._cache,
+                t_indexes,
+                generators,
+                image_size=self.image_size,
+                num_steps=self.num_steps,
+                enable_timestep_shift=self.enable_timestep_shift,
+                timestep_shift=self.timestep_shift,
+                cfg_interval=self.cfg_interval,
+            )
+        finally:
+            self._cache.cancel_active()
+        self._append_generated_images_paged(states, predictions)
+        for index, state in enumerate(states):
+            state.parts.append("<image>")
+            state.generated_images.append(predictions[index : index + 1].detach())
+            state.phase = _ContinuousInterleavePhase.TEXT_READY
+            state.image_ready_step = None
+        self._scheduled_image_request_ids = None
+        return predictions
+
+    def pop_completed(self) -> tuple[tuple[int, InterleaveBatchResult], ...]:
+        completed = tuple(self._completed)
+        self._completed.clear()
+        return completed
+
+
 def _apply_repetition_penalty(
     logits: Tensor,
     seen_tokens: Tensor,
@@ -1544,6 +2254,138 @@ def batch_text_gen(
         )
         for row, tokens in enumerate(generated)
     )
+
+
+@torch.no_grad()
+def continuous_batch_interleave_gen(
+    model: Any,
+    tokenizer: Any,
+    requests: Sequence[InterleaveBatchRequest],
+    *,
+    generation_config: Any | None = None,
+    cfg_scale: float = 1.0,
+    img_cfg_scale: float = 1.0,
+    cfg_norm: str = "none",
+    max_images: int = 10,
+    enable_timestep_shift: bool = True,
+    timestep_shift: float = 1.0,
+    image_size: tuple[int, int] = (256, 256),
+    num_steps: int = 30,
+    image_start_token: str = "<img>",
+    image_end_token: str = "</img>",
+    image_context_token: str = "<IMG_CONTEXT>",
+    method: str = "euler",
+    cfg_interval: tuple[float, float] = (0.0, 1.0),
+    t_eps: float = 0.02,
+    think_mode: bool = False,
+    max_batch_size: int = 32,
+    max_image_batch_size: int = 8,
+    image_wait_steps: int = 8,
+    max_model_len: int = 16384,
+    prefill_chunk_size: int = 2048,
+    max_kv_tokens: int = 131072,
+    kv_page_size: int = 256,
+    prefix_sharing: bool = True,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> tuple[InterleaveBatchResult, ...]:
+    """Generate TI2TI responses through paged continuous two-queue batching.
+
+    This new path preserves the existing no-CFG Euler semantics but does not
+    reuse or redirect the legacy TI2I/interleave implementation.  Each loop
+    performs one text decode step and accumulates image-ready rows into bounded
+    batches before returning those rows to text decoding.
+    """
+
+    rows = tuple(requests)
+    if not rows or not all(isinstance(row, InterleaveBatchRequest) for row in rows):
+        raise ValueError("SenseNova interleave batch must contain valid requests")
+    if cfg_scale != 1.0 or img_cfg_scale != 1.0 or cfg_norm != "none":
+        raise NotImplementedError(
+            "SenseNova continuous TI2TI currently supports no-CFG only"
+        )
+    if method != "euler":
+        raise NotImplementedError(
+            "SenseNova continuous TI2TI currently supports Euler only"
+        )
+    max_new_tokens = int(
+        getattr(generation_config, "max_new_tokens", None) or 8192
+    )
+    if max_new_tokens < 1:
+        raise ValueError("SenseNova max_new_tokens must be positive")
+    repetition_penalty = float(
+        getattr(generation_config, "repetition_penalty", None) or 1.0
+    )
+    if repetition_penalty < 1.0:
+        raise ValueError("SenseNova repetition_penalty must be at least 1.0")
+    runtime_device = torch.device(device if device is not None else model.device)
+    engine = ContinuousInterleaveBatchEngine(
+        model,
+        tokenizer,
+        device=runtime_device,
+        dtype=dtype,
+        max_batch_size=max_batch_size,
+        max_image_batch_size=max_image_batch_size,
+        image_wait_steps=image_wait_steps,
+        max_model_len=max_model_len,
+        prefill_chunk_size=prefill_chunk_size,
+        default_max_new_tokens=max_new_tokens,
+        max_kv_tokens=max_kv_tokens,
+        kv_page_size=kv_page_size,
+        prefix_sharing=prefix_sharing,
+        max_images=max_images,
+        image_size=image_size,
+        num_steps=num_steps,
+        enable_timestep_shift=enable_timestep_shift,
+        timestep_shift=timestep_shift,
+        cfg_interval=cfg_interval,
+        t_eps=t_eps,
+        think_mode=think_mode,
+        image_start_token=image_start_token,
+        image_context_token=image_context_token,
+        image_end_token=image_end_token,
+    )
+    request_ids = [engine.submit(row) for row in rows]
+    seen_tokens: dict[int, set[int]] = {
+        request_id: set() for request_id in request_ids
+    }
+    completed: dict[int, InterleaveBatchResult] = {}
+    while engine.has_unfinished_requests:
+        text_batch = engine.schedule_text()
+        if text_batch is not None:
+            logits = text_batch.logits
+            if repetition_penalty != 1.0:
+                seen = torch.zeros_like(logits, dtype=torch.bool)
+                for row, request_id in enumerate(text_batch.request_ids):
+                    if seen_tokens[request_id]:
+                        indexes = torch.tensor(
+                            sorted(seen_tokens[request_id]),
+                            device=runtime_device,
+                            dtype=torch.long,
+                        )
+                        seen[row, indexes] = True
+                logits = _apply_repetition_penalty(
+                    logits, seen, repetition_penalty
+                )
+            next_tokens = torch.argmax(logits, dim=-1).to(
+                device=runtime_device, dtype=torch.long
+            )
+            for request_id, token in zip(
+                text_batch.request_ids,
+                next_tokens.detach().cpu().tolist(),
+                strict=True,
+            ):
+                if token not in (engine.eos_token_id, engine.image_start_token_id):
+                    seen_tokens[request_id].add(int(token))
+            engine.advance_text(text_batch, next_tokens)
+            completed.update(engine.pop_completed())
+
+        image_batch = engine.schedule_images()
+        if image_batch is not None:
+            engine.run_images(image_batch)
+        completed.update(engine.pop_completed())
+    completed.update(engine.pop_completed())
+    return tuple(completed[request_id] for request_id in request_ids)
 
 
 @torch.no_grad()
@@ -1737,6 +2579,8 @@ def batch_interleave_gen(
 
 __all__ = [
     "ContiguousTextBatchSession",
+    "ContinuousImageBatch",
+    "ContinuousInterleaveBatchEngine",
     "ContinuousTextBatch",
     "ContinuousTextBatchEngine",
     "InterleaveBatchRequest",
@@ -1746,5 +2590,6 @@ __all__ = [
     "TextBatchResult",
     "batch_interleave_gen",
     "batch_text_gen",
+    "continuous_batch_interleave_gen",
     "continuous_batch_text_gen",
 ]

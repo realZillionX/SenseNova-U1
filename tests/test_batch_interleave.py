@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import types
 import unittest
+from collections import deque
 from unittest.mock import patch
 
 import torch
 
 from sensenova_u1.batch_inference import (
+    ContinuousInterleaveBatchEngine,
+    ContinuousTextBatch,
     InterleaveBatchRequest,
     NativeTextBatchSession,
     TextBatchRequest,
+    _ContinuousInterleavePhase,
+    _ContinuousInterleaveState,
     _repeat_cache_batch,
     _select_cache_batch,
     batch_interleave_gen,
@@ -160,6 +165,9 @@ class InterleaveSchedulerTest(unittest.TestCase):
                 "sensenova_u1.batch_inference._run_image_sde_batch",
                 return_value=torch.zeros(1, 3, 8, 8),
             ) as image_batch,
+            patch(
+                "sensenova_u1.batch_inference._run_paged_image_sde_batch",
+            ) as paged_image_batch,
         ):
             results = batch_interleave_gen(
                 model,
@@ -178,6 +186,7 @@ class InterleaveSchedulerTest(unittest.TestCase):
         self.assertEqual(_FakeSession.latest.appended, [[0]])
         self.assertTrue(_FakeSession.latest.kwargs["prefix_sharing"])
         image_batch.assert_called_once()
+        paged_image_batch.assert_not_called()
 
     def test_cfg_is_explicitly_rejected(self) -> None:
         model = types.SimpleNamespace(config=types.SimpleNamespace(), device="cpu")
@@ -188,6 +197,174 @@ class InterleaveSchedulerTest(unittest.TestCase):
                 [InterleaveBatchRequest(prompt="x")],
                 cfg_scale=2.0,
             )
+
+
+class _FakePagedCache:
+    def __init__(self) -> None:
+        self.flash_decode_seqlens = torch.tensor([5, 5], dtype=torch.int32)
+        self.active = None
+        self.active_tokens = 0
+        self.activations: list[tuple[list[int], int]] = []
+        self.released: list[int] = []
+
+    def activate(self, slots: torch.Tensor, *, token_count: int = 1) -> None:
+        self.active = slots.clone()
+        self.active_tokens = token_count
+        self.activations.append((slots.tolist(), token_count))
+
+    def commit_active(self) -> None:
+        self.flash_decode_seqlens.index_add_(
+            0,
+            self.active,
+            torch.full_like(self.active, self.active_tokens, dtype=torch.int32),
+        )
+        self.active = None
+
+    def cancel_active(self) -> None:
+        self.active = None
+
+    def can_reserve(self, slots: torch.Tensor, token_count: int) -> bool:
+        del slots, token_count
+        return True
+
+    def release(self, slot: int) -> None:
+        self.released.append(slot)
+
+
+class ContinuousInterleaveSchedulerTest(unittest.TestCase):
+    def _engine(self, count: int = 2):
+        class LanguageModel:
+            def __call__(self, *, input_ids, **kwargs):
+                del kwargs
+                batch = int(input_ids.shape[0])
+                logits = torch.arange(batch * 32, dtype=torch.float32).reshape(
+                    batch, 1, 32
+                )
+                return types.SimpleNamespace(logits=logits)
+
+        tokenizer = _FakeTokenizer()
+        model = types.SimpleNamespace(
+            language_model=LanguageModel(),
+            patch_size=1,
+            downsample_ratio=1.0,
+        )
+        engine = ContinuousInterleaveBatchEngine.__new__(
+            ContinuousInterleaveBatchEngine
+        )
+        engine.model = model
+        engine.tokenizer = tokenizer
+        engine.device = torch.device("cpu")
+        engine.eos_token_id = 0
+        engine.image_start_token_id = 1
+        engine.image_end_token_id = 2
+        engine.image_size = (2, 2)
+        engine.max_images = 1
+        engine.max_model_len = 128
+        engine.max_image_batch_size = 8
+        engine.image_wait_steps = 8
+        engine._text_decode_step = 0
+        engine.num_steps = 1
+        engine.enable_timestep_shift = True
+        engine.timestep_shift = 1.0
+        engine.cfg_interval = (0.0, 1.0)
+        engine._cache = _FakePagedCache()
+        engine._free_slots = deque()
+        engine._completed = deque()
+        engine._waiting = deque()
+        engine._prefilling = None
+        engine._scheduled_request_ids = tuple(range(count))
+        engine._scheduled_image_request_ids = None
+        request = InterleaveBatchRequest(prompt="same", seed=7)
+        states = {
+            request_id: _ContinuousInterleaveState(
+                request_id=request_id,
+                request=TextBatchRequest(prompt="same"),
+                interleave_request=request,
+                max_new_tokens=8,
+                slot=request_id,
+                t_index=3,
+                next_logits=torch.zeros(1, 32),
+                generator=torch.Generator().manual_seed(7 + request_id),
+            )
+            for request_id in range(count)
+        }
+        engine._active = states
+        return engine, states
+
+    def test_image_action_leaves_text_batch_without_waiting_for_other_row(self) -> None:
+        engine, states = self._engine()
+        batch = ContinuousTextBatch(
+            request_ids=(0, 1), logits=torch.zeros(2, 32)
+        )
+
+        engine.advance_text(batch, torch.tensor([1, 10], dtype=torch.long))
+
+        self.assertIs(
+            states[0].phase, _ContinuousInterleavePhase.IMAGE_READY
+        )
+        self.assertIs(
+            states[1].phase, _ContinuousInterleavePhase.TEXT_READY
+        )
+        self.assertEqual(states[0].image_ready_step, 1)
+        self.assertEqual(engine._text_decode_step, 1)
+        self.assertEqual(states[1].generated, [10])
+        self.assertEqual(engine._cache.flash_decode_seqlens.tolist(), [6, 6])
+
+    def test_image_batch_rejoins_text_queue_after_one_paged_sde(self) -> None:
+        engine, states = self._engine()
+        states[0].phase = _ContinuousInterleavePhase.IMAGE_READY
+        states[0].image_ready_step = 0
+        engine._active = {0: states[0]}
+        engine._scheduled_request_ids = None
+        image_batch = engine.schedule_images()
+        self.assertEqual(image_batch.request_ids, (0,))
+        prediction = torch.zeros(1, 3, 2, 2)
+
+        with (
+            patch(
+                "sensenova_u1.batch_inference._run_paged_image_sde_batch",
+                return_value=prediction,
+            ) as image_sde,
+            patch.object(
+                engine, "_append_generated_images_paged"
+            ) as append_images,
+        ):
+            output = engine.run_images(image_batch)
+
+        self.assertIs(output, prediction)
+        self.assertIs(
+            states[0].phase, _ContinuousInterleavePhase.TEXT_READY
+        )
+        self.assertEqual(states[0].parts, ["<image>"])
+        self.assertEqual(len(states[0].generated_images), 1)
+        self.assertIsNone(states[0].image_ready_step)
+        self.assertEqual(engine._cache.activations[-1], ([0], 5))
+        image_sde.assert_called_once()
+        append_images.assert_called_once()
+
+    def test_image_batch_waits_at_most_eight_text_decode_steps(self) -> None:
+        engine, states = self._engine()
+        states[0].phase = _ContinuousInterleavePhase.IMAGE_READY
+        states[0].image_ready_step = 0
+        engine._scheduled_request_ids = None
+        engine._text_decode_step = 7
+
+        self.assertIsNone(engine.schedule_images())
+
+        engine._text_decode_step = 8
+        image_batch = engine.schedule_images()
+        self.assertEqual(image_batch.request_ids, (0,))
+
+    def test_full_image_queue_flushes_while_text_can_progress(self) -> None:
+        engine, states = self._engine(count=9)
+        for request_id in range(8):
+            states[request_id].phase = _ContinuousInterleavePhase.IMAGE_READY
+            states[request_id].image_ready_step = 0
+        engine._scheduled_request_ids = None
+
+        image_batch = engine.schedule_images()
+
+        self.assertEqual(image_batch.request_ids, tuple(range(8)))
 
 
 if __name__ == "__main__":

@@ -128,6 +128,48 @@ class DecodeCacheTest(unittest.TestCase):
             )
         )
 
+    def test_continuous_cache_reserves_and_commits_multi_token_spans(self) -> None:
+        cache = ContinuousFlashDecodeCache.from_prefix(
+            self._prefix(length=4),
+            max_batch_size=2,
+            max_capacity=1024,
+            max_kv_tokens=1024,
+            page_size=256,
+            slot=0,
+        )
+        cache.load_prefix(1, self._prefix(length=2))
+        slots = torch.tensor([0, 1], dtype=torch.long)
+
+        self.assertTrue(cache.can_reserve(slots, 300))
+        cache.activate(slots, token_count=300)
+        self.assertEqual(cache.layers[0].flash_decode_seqlens.tolist(), [4, 2])
+        self.assertGreaterEqual(
+            int(cache.layers[0].flash_decode_block_table[:, 1].min().item()), 0
+        )
+        cache.commit_active()
+
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [304, 302])
+        self.assertEqual(cache.free_kv_tokens, 0)
+
+    def test_cancelled_image_workspace_does_not_advance_logical_lengths(self) -> None:
+        cache = ContinuousFlashDecodeCache.from_prefix(
+            self._prefix(length=4),
+            max_batch_size=1,
+            max_capacity=1024,
+            max_kv_tokens=1024,
+            page_size=256,
+            slot=0,
+        )
+        slots = torch.tensor([0], dtype=torch.long)
+
+        cache.activate(slots, token_count=300)
+        cache.cancel_active()
+
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [4])
+        self.assertGreaterEqual(
+            int(cache.flash_decode_block_table[0, 1].item()), 0
+        )
+
     @unittest.skipUnless(torch.cuda.device_count() >= 2, "two CUDA devices required")
     def test_graph_capture_uses_each_workspace_device(self) -> None:
         class LanguageModel(torch.nn.Module):

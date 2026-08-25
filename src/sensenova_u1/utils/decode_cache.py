@@ -643,6 +643,7 @@ class ContinuousFlashDecodeCache(Cache):
         result._slot_blocks = [[] for _ in range(max_batch_size)]
         result._free_blocks = deque(range(num_blocks))
         result._active_slots = None
+        result._active_token_count = 0
         result.load_prefix(slot, cache)
         return result
 
@@ -664,6 +665,11 @@ class ContinuousFlashDecodeCache(Cache):
         return math.ceil(prefix_tokens / self.page_size) <= len(self._free_blocks)
 
     def _allocate_blocks(self, slot: int, required_length: int) -> None:
+        if required_length > self._max_capacity:
+            raise RuntimeError(
+                "continuous paged KV sequence exceeds max capacity: "
+                f"{required_length}>{self._max_capacity}"
+            )
         required = math.ceil(required_length / self.page_size)
         current = len(self._slot_blocks[slot])
         missing = required - current
@@ -712,7 +718,45 @@ class ContinuousFlashDecodeCache(Cache):
         blocks.clear()
         self.flash_decode_seqlens[slot] = 0
 
-    def activate(self, slots: Tensor) -> None:
+    def can_reserve(self, slots: Tensor, token_count: int) -> bool:
+        """Return whether ``slots`` can append a same-length token block.
+
+        The check accounts for pages already owned by each slot.  It does not
+        mutate the free list, so schedulers can shrink an image batch before
+        activating it instead of discovering pool pressure inside a model
+        forward.
+        """
+
+        if (
+            not isinstance(slots, Tensor)
+            or slots.ndim != 1
+            or slots.dtype != torch.long
+            or not slots.numel()
+            or slots.device != self.flash_decode_seqlens.device
+        ):
+            return False
+        if type(token_count) is not int or token_count < 1:
+            return False
+        if int(torch.unique(slots).numel()) != int(slots.numel()):
+            return False
+        lengths = self.flash_decode_seqlens.index_select(0, slots)
+        if bool(lengths.le(0).any().item()):
+            return False
+        slot_values = slots.detach().cpu().tolist()
+        length_values = lengths.detach().cpu().tolist()
+        missing = 0
+        for slot, length in zip(slot_values, length_values, strict=True):
+            required_length = int(length) + token_count
+            if required_length > self._max_capacity:
+                return False
+            missing += max(
+                0,
+                math.ceil(required_length / self.page_size)
+                - len(self._slot_blocks[int(slot)]),
+            )
+        return missing <= len(self._free_blocks)
+
+    def activate(self, slots: Tensor, *, token_count: int = 1) -> None:
         if (
             not isinstance(slots, Tensor)
             or slots.ndim != 1
@@ -726,23 +770,30 @@ class ContinuousFlashDecodeCache(Cache):
             raise ValueError("continuous decode slots are on the wrong device")
         if int(torch.unique(slots).numel()) != int(slots.numel()):
             raise ValueError("continuous decode slots must be unique")
+        if type(token_count) is not int or token_count < 1:
+            raise ValueError("continuous decode token_count must be positive")
         selected = self.flash_decode_seqlens.index_select(0, slots)
         if bool(selected.le(0).any().item()):
             raise RuntimeError("continuous decode selected an empty slot")
         lengths = selected.detach().cpu().tolist()
         slot_values = slots.detach().cpu().tolist()
         needed = sum(
-            int(length) % self.page_size == 0
-            for length in lengths
+            max(
+                0,
+                math.ceil((int(length) + token_count) / self.page_size)
+                - len(self._slot_blocks[int(slot)]),
+            )
+            for slot, length in zip(slot_values, lengths, strict=True)
         )
         if needed > len(self._free_blocks):
             raise RuntimeError("continuous paged KV pool has no decode page")
         for slot, length in zip(slot_values, lengths, strict=True):
-            self._allocate_blocks(int(slot), int(length) + 1)
+            self._allocate_blocks(int(slot), int(length) + token_count)
         selected_table = self.flash_decode_block_table.index_select(
             0, slots
         ).contiguous()
         self._active_slots = slots
+        self._active_token_count = token_count
         for layer in self.layers:
             layer.flash_decode_seqlens = selected.contiguous()
             layer.flash_decode_block_table = selected_table
@@ -754,12 +805,15 @@ class ContinuousFlashDecodeCache(Cache):
         self.flash_decode_seqlens.index_add_(
             0,
             slots,
-            torch.ones_like(slots, dtype=torch.int32),
+            torch.full_like(
+                slots, self._active_token_count, dtype=torch.int32
+            ),
         )
         for layer in self.layers:
             layer.flash_decode_seqlens = self.flash_decode_seqlens
             layer.flash_decode_block_table = self.flash_decode_block_table
         self._active_slots = None
+        self._active_token_count = 0
 
     def cancel_active(self) -> None:
         if self._active_slots is None:
@@ -768,6 +822,7 @@ class ContinuousFlashDecodeCache(Cache):
             layer.flash_decode_seqlens = self.flash_decode_seqlens
             layer.flash_decode_block_table = self.flash_decode_block_table
         self._active_slots = None
+        self._active_token_count = 0
 
     def get_seq_length(self, layer_idx: int = 0) -> int:
         del layer_idx

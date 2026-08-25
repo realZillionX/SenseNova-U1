@@ -34,11 +34,16 @@ __all__ = [
     "NEOChatModel",
     "NEOVisionModel",
     "ContiguousTextBatchSession",
+    "ContinuousImageBatch",
+    "ContinuousInterleaveBatchEngine",
     "ContinuousTextBatch",
     "ContinuousTextBatchEngine",
+    "InterleaveBatchRequest",
+    "InterleaveBatchResult",
     "TextBatchRequest",
     "TextBatchResult",
     "batch_text_gen",
+    "continuous_batch_interleave_gen",
     "continuous_batch_text_gen",
     "check_checkpoint_compatibility",
     "set_attn_backend",
@@ -86,11 +91,16 @@ def check_checkpoint_compatibility(config_or_dict: Any) -> None:
 
 from .batch_inference import (  # noqa: E402
     ContiguousTextBatchSession,
+    ContinuousImageBatch,
+    ContinuousInterleaveBatchEngine,
     ContinuousTextBatch,
     ContinuousTextBatchEngine,
+    InterleaveBatchRequest,
+    InterleaveBatchResult,
     TextBatchRequest,
     TextBatchResult,
     batch_text_gen,
+    continuous_batch_interleave_gen,
     continuous_batch_text_gen,
 )
 

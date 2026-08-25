@@ -1042,6 +1042,22 @@ class NEOChatModel(PreTrainedModel):
 
         return continuous_batch_text_gen(self, tokenizer, requests, **kwargs)
 
+    def create_continuous_interleave_batch_engine(self, tokenizer, **kwargs):
+        """Create the paged two-queue TI2TI inference engine."""
+
+        from ...batch_inference import ContinuousInterleaveBatchEngine
+
+        return ContinuousInterleaveBatchEngine(self, tokenizer, **kwargs)
+
+    def continuous_batch_interleave_gen(self, tokenizer, requests, **kwargs):
+        """Drain TI2TI requests through paged continuous batching."""
+
+        from ...batch_inference import continuous_batch_interleave_gen
+
+        return continuous_batch_interleave_gen(
+            self, tokenizer, requests, **kwargs
+        )
+
     def batch_interleave_gen(self, tokenizer, requests, **kwargs):
         """Public native TI2TI two-queue batch entry point."""
 

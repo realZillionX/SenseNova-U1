@@ -595,8 +595,7 @@ class Qwen3Attention(nn.Module):
         key_states = torch.cat([key_states_t, key_states_h, key_states_w], dim=-1)
 
         if (
-            input_shape[-1] == 1
-            and attention_mask is None
+            attention_mask is None
             and past_key_values is not None
             and kwargs.get("update_cache", True)
             and effective_attn_backend() == "flash"
@@ -609,7 +608,13 @@ class Qwen3Attention(nn.Module):
                 layer, "flash_decode_cache_batch_idx", None
             )
             block_table = getattr(layer, "flash_decode_block_table", None)
-            if k_cache is not None and v_cache is not None and cache_seqlens is not None:
+            supports_current_span = input_shape[-1] == 1 or block_table is not None
+            if (
+                supports_current_span
+                and k_cache is not None
+                and v_cache is not None
+                and cache_seqlens is not None
+            ):
                 q = query_states.transpose(1, 2).contiguous()
                 k = key_states.transpose(1, 2).contiguous()
                 v = value_states.transpose(1, 2).contiguous()
@@ -623,7 +628,9 @@ class Qwen3Attention(nn.Module):
                     cache_batch_idx=cache_batch_idx,
                     block_table=block_table,
                     softmax_scale=self.scaling,
-                    causal=False,
+                    causal=bool(
+                        kwargs.get("paged_append_causal", input_shape[-1] > 1)
+                    ),
                 )
                 attn_output = attn_output.reshape(*input_shape, -1).contiguous()
                 return self.o_proj(attn_output), None
@@ -852,6 +859,33 @@ class Qwen3Attention(nn.Module):
             v_cur = value_states.transpose(1, 2).contiguous()
 
             if past_key_values is not None:
+                layer = past_key_values.layers[self.layer_idx]
+                paged_k_cache = getattr(layer, "flash_decode_k_cache", None)
+                paged_v_cache = getattr(layer, "flash_decode_v_cache", None)
+                paged_seqlens = getattr(layer, "flash_decode_seqlens", None)
+                paged_block_table = getattr(
+                    layer, "flash_decode_block_table", None
+                )
+                if (
+                    not update_cache
+                    and paged_k_cache is not None
+                    and paged_v_cache is not None
+                    and paged_seqlens is not None
+                    and paged_block_table is not None
+                ):
+                    attn_output = flash_attn_with_kvcache(
+                        q,
+                        paged_k_cache,
+                        paged_v_cache,
+                        k=k_cur,
+                        v=v_cur,
+                        cache_seqlens=paged_seqlens,
+                        block_table=paged_block_table,
+                        softmax_scale=self.scaling,
+                        causal=False,
+                    )
+                    attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+                    return self.o_proj_mot_gen(attn_output), None
                 if update_cache:
                     # Rare path, keep compatibility.
                     # past_key_values.update expects [B,H,S,D]
