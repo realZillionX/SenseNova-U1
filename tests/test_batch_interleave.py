@@ -11,6 +11,7 @@ from sensenova_u1.batch_inference import (
     NativeTextBatchSession,
     TextBatchRequest,
     _repeat_cache_batch,
+    _run_image_sde_batch,
     _select_cache_batch,
     batch_interleave_gen,
 )
@@ -188,6 +189,103 @@ class InterleaveSchedulerTest(unittest.TestCase):
                 [InterleaveBatchRequest(prompt="x")],
                 cfg_scale=2.0,
             )
+
+
+class ImageFlashKvTest(unittest.TestCase):
+    class _Model(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+            self.downsample_ratio = 0.5
+            self.patch_size = 2
+            self.noise_scale = 1.0
+            self.noise_scale_mode = "constant"
+            self.noise_scale_base_image_seq_len = 1.0
+            self.noise_scale_max_value = 1.0
+            self.add_noise_scale_embedding = False
+            self.fm_modules = {
+                "timestep_embedder": lambda values: torch.zeros(
+                    values.shape[0], 8
+                )
+            }
+            self.attention = None
+
+        @staticmethod
+        def _build_t2i_image_indexes(token_h, token_w, t_index, *, device):
+            count = token_h * token_w
+            indexes = torch.zeros(3, count, dtype=torch.long, device=device)
+            indexes[0].fill_(t_index)
+            return indexes
+
+        @staticmethod
+        def patchify(value, patch, channel_first=False):
+            del patch, channel_first
+            return value
+
+        @staticmethod
+        def extract_feature(value, *, gen_model, grid_hw):
+            del gen_model, grid_hw
+            return torch.zeros(value.shape[0], 2, device=value.device)
+
+        def _t2i_predict_v(self, image_embeds, indexes, attention, cache, t, z, **kwargs):
+            del image_embeds, indexes, cache, t, kwargs
+            self.attention = attention
+            return torch.zeros_like(z)
+
+        @staticmethod
+        def unpatchify(value, patch, height, width):
+            del patch, height, width
+            return value
+
+    @staticmethod
+    def _run(model, key_valid):
+        return _run_image_sde_batch(
+            model,
+            _Cache(batch=2),
+            key_valid,
+            torch.zeros(2, dtype=torch.long),
+            (torch.Generator().manual_seed(1), torch.Generator().manual_seed(2)),
+            image_size=(8, 8),
+            num_steps=1,
+            enable_timestep_shift=False,
+            timestep_shift=1.0,
+            cfg_interval=(0.0, 1.0),
+        )
+
+    def test_dense_prefix_uses_and_clears_flash_kv(self) -> None:
+        model = self._Model()
+        with (
+            patch(
+                "sensenova_u1.models.neo_unify.modeling_neo_chat.prepare_flash_kv_cache"
+            ) as prepare,
+            patch(
+                "sensenova_u1.models.neo_unify.modeling_neo_chat.clear_flash_kv_cache"
+            ) as clear,
+        ):
+            output = self._run(model, torch.ones(2, 3, dtype=torch.bool))
+
+        self.assertEqual(tuple(output.shape), (2, 3, 8, 8))
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.kwargs, {"current_len": 4, "batch_size": 2})
+        clear.assert_called_once_with(prepare.call_args.args[0])
+        self.assertIsNone(model.attention["full_attention"])
+
+    def test_prefix_with_dummy_slots_keeps_explicit_mask(self) -> None:
+        model = self._Model()
+        key_valid = torch.tensor([[True, False, True], [True, True, True]])
+        with (
+            patch(
+                "sensenova_u1.models.neo_unify.modeling_neo_chat.prepare_flash_kv_cache"
+            ) as prepare,
+            patch(
+                "sensenova_u1.models.neo_unify.modeling_neo_chat.clear_flash_kv_cache"
+            ) as clear,
+        ):
+            self._run(model, key_valid)
+
+        prepare.assert_not_called()
+        clear.assert_not_called()
+        self.assertEqual(tuple(model.attention["full_attention"].shape), (2, 1, 4, 7))
 
 
 if __name__ == "__main__":
