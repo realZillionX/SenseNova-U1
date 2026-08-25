@@ -27,7 +27,6 @@ from safetensors.torch import load_file, save
 
 from lightllm.utils.dist_utils import init_custom_process_group
 from lightllm.utils.rl_weight_update import tensor_checksum
-from lightllm.server.tokenizer import get_tokenizer
 from client import INTERLEAVE_SYSTEM_PROMPT
 
 
@@ -329,6 +328,10 @@ def main():
 
     receipt["health"] = _request("GET", f"{base_url}/health")
     receipt["initial_status"] = _request("GET", f"{base_url}/v1/rl/status")
+    # Tokenizer registration imports GPU-specific LightLLM model modules. Keep
+    # it lazy so CLI/help and static smoke validation work in the CPU builder.
+    from lightllm.server.tokenizer import get_tokenizer
+
     tokenizer = get_tokenizer(str(Path(args.model_path)), "auto", trust_remote_code=True)
     groups, init_receipt = _init_publish_groups(base_url, args.publisher_port, "smoke-update")
     receipt["stages"]["init_groups"] = init_receipt
