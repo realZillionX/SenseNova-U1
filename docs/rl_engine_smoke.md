@@ -13,12 +13,23 @@ checkpoint manager.
 - requested upstream image:
   `lightx2v/lightllm_lightx2v:20260407@sha256:bb1900389c320b37dbcfe51fdf4db76a198d38a10c4c80d8b9b0726f1fb43ac7`
 
-The Inspire registry currently cannot resolve the external digest directly.
-The development notebook therefore starts from the existing
-`mostar-u1-runtime:v4` platform image and the preflight treats its parent
-identity as unverified until Torch 2.8.0, CUDA 12.8, FA/NCCL availability, and
-all source commits have been recorded. The provided Dockerfile remains the
-reproducible direct build from the requested digest.
+The Inspire registry cannot resolve the external digest directly. Environment
+construction therefore happens once in the CPU Notebook
+`mova-u15-lightllm-x2v-rl-build`: `mostar-u1-runtime:v4` is used only as the
+Torch 2.8.0/CUDA 12.8 bootstrap layer, the fully resolved 122-entry lock and
+the verified FA3 wheel are installed by one pip command, and the result is
+saved as `mova-u15-lightllm-x2v-rl:v1`. H200 validation must use that saved
+image, not v4 and not an ad-hoc virtual environment.
+
+The build is intentionally reproducible and fail-fast:
+
+- interpreter: `/opt/mostar-u1-py312/bin/python`;
+- FA3 wheel SHA256:
+  `c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3`;
+- package lock and runtime contract are copied to
+  `/opt/mova-runtime-manifests/lightllm-x2v`;
+- `pip check`, CPU-side import closure, exact package versions, source commits,
+  CUDA/NCCL and FA3 are recorded by preflight.
 
 ## Rollout route
 
@@ -61,10 +72,13 @@ transport deviation.
 ## Fixed smoke entry points
 
 ```bash
-bash scripts/rl_engine/prepare_runtime.sh "$PWD"
+# Run once in the CPU builder, then save mova-u15-lightllm-x2v-rl:v1.
+bash docker/rl-engine/build_runtime.sh "$PWD"
+
+# Run in the fixed two-H200 Notebook created from the saved image.
 bash scripts/rl_engine/launch_server.sh
 bash scripts/rl_engine/run_claim_smoke.sh
-python examples/serving/rl_smoke.py \
+/opt/mostar-u1-py312/bin/python examples/serving/rl_smoke.py \
   --base-url http://127.0.0.1:8000 \
   --model-path /inspire/hdd/global_user/liangtianyi-253208120278/train-asset/models/SenseNova-U1.5-8B-MoT \
   --output-dir /tmp/mova-u15-rl-smoke

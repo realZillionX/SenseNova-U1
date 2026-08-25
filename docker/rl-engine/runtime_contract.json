@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "base_image": "mostar-u1-runtime:v4",
+  "saved_image": "mova-u15-lightllm-x2v-rl:v1",
+  "python": "/opt/mostar-u1-py312/bin/python",
+  "platform": {
+    "python_version": "3.12",
+    "cuda": "12.8",
+    "cxx11_abi": true,
+    "gpu_count": 2
+  },
+  "sources": {
+    "sensenova": "091771efd74879df2d02728e88d811f651cbeae3",
+    "lightllm": "1d6803d7414213186b52f85930e91377c286fd99",
+    "lightx2v": "f05032c3c1036449d425b27cd854f1c2a398747f",
+    "x2v_config_sha256": "594830cc1c0b087cce1185fc4d149c7cbd2916ca6ed634ec1b7b571485bf6125"
+  },
+  "immutable_core": {
+    "torch": "2.8.0",
+    "torchvision": "0.23.0",
+    "triton": "3.4.0",
+    "transformers": "4.57.1",
+    "tokenizers": "0.22.1",
+    "huggingface-hub": "0.36.2",
+    "numpy": "2.5.2",
+    "protobuf": "7.35.1"
+  },
+  "compiled_runtime": {
+    "torchaudio": "2.8.0",
+    "cupy-cuda12x": "13.6.0",
+    "flashinfer-python": "0.6.8.post1",
+    "sgl-kernel": "0.3.21",
+    "flash-attn-3": "3.0.0+20260817.cu128torch280cxx11abitrue.25110"
+  },
+  "flash_attn_3": {
+    "release": "windreamer/flash-attention3-wheels@2026.08.17-542a34a",
+    "asset": "flash_attn_3-3.0.0+20260817.cu128torch280cxx11abitrue.25110-cp310-abi3-linux_x86_64.whl",
+    "sha256": "c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3",
+    "lightx2v_backend": "flash_attn3",
+    "lightllm_neo_backend": "triton_fallback",
+    "lightllm_fa3_neo_available": false
+  },
+  "deliberate_exclusions": {
+    "vllm==0.16.0": "requires torch==2.9.1 and is not used by this LightLLM path",
+    "xformers==0.0.33.post2": "requires torch==2.9.1 and is not used by this path",
+    "swanlab==0.9.7": "training-only monitor and requires protobuf<7",
+    "gradio==6.25.0": "standalone Web UI and requires huggingface-hub>=1.16",
+    "matplotlib==3.8.2": "benchmark utility and requires numpy<2",
+    "torchao==0.18.0": "optional quantization backend needs newer torch APIs",
+    "service_clients": "cloud/database clients are outside the local ZMQ path",
+    "distributed_kernels": "NIXL, DeepEP, FlashMLA and LightMem are outside one-node TP=1"
+  }
+}
