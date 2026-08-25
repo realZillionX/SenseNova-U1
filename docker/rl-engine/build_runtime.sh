@@ -107,7 +107,8 @@ PY
 
   # NEO-Unify prefill is not standard causal attention.  The official
   # SenseNova inference documentation pins this FA3 fork because its Hopper
-  # kernel accepts image_token_tag.  A stock FA3 wheel is not equivalent.
+  # kernel accepts the scoped image_token_end ABI. A stock FA3 wheel is not
+  # equivalent.
   fa3_build_dir="$(mktemp -d /tmp/mova-fa3-neo-build.XXXXXX)"
   cleanup_fa3_build() {
     case "$fa3_build_dir" in
