@@ -10,9 +10,10 @@
     "gpu_count": 2
   },
   "sources": {
-    "sensenova": "091771efd74879df2d02728e88d811f651cbeae3",
-    "lightllm": "1d6803d7414213186b52f85930e91377c286fd99",
-    "lightx2v": "41d687efbae2dfbc355215fe5705ac47d6e88bb8",
+    "sensenova_base": "34ca2f66e7006489a0184eb8896a75f4081a0257",
+    "sensenova_integration_branch": "mova/lightllm-lightx2v-rl-engine",
+    "lightllm": "5fcda97af5ec11c42dfe1012fb761388e63875a4",
+    "lightx2v": "235a16b773c53774c25eeecf6363d7150a2754c4",
     "x2v_config_sha256": "594830cc1c0b087cce1185fc4d149c7cbd2916ca6ed634ec1b7b571485bf6125"
   },
   "immutable_core": {
@@ -30,15 +31,22 @@
     "cupy-cuda12x": "13.6.0",
     "flashinfer-python": "0.6.8.post1",
     "sgl-kernel": "0.3.21",
-    "flash-attn-3": "3.0.0+20260817.cu128torch280cxx11abitrue.25110"
+    "flash-attn-3": "3.0.0"
+  },
+  "cuda_development": {
+    "nvidia-cuda-runtime-cu12": "12.8.90",
+    "nvidia-cusolver-cu12": "11.7.3.90",
+    "nvidia-nccl-cu12": "2.27.3"
   },
   "flash_attn_3": {
-    "release": "windreamer/flash-attention3-wheels@2026.08.17-542a34a",
-    "asset": "flash_attn_3-3.0.0+20260817.cu128torch280cxx11abitrue.25110-cp310-abi3-linux_x86_64.whl",
-    "sha256": "c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3",
+    "repository": "https://github.com/WANDY666/flash-attention.git",
+    "branch": "support_neo",
+    "commit": "e2077ee6e568e64d0d01c6b44d8ce4ee24e7932b",
+    "features": ["hopper", "sm90", "bf16", "head_dim_128", "image_token_end"],
+    "disabled": ["backward", "sm80", "split", "softcap", "fp16", "fp8", "head_dim_64", "head_dim_96", "head_dim_192", "head_dim_256", "head_dim_diff_64", "head_dim_diff_192"],
     "lightx2v_backend": "flash_attn3",
-    "lightllm_neo_backend": "triton_fallback",
-    "lightllm_fa3_neo_available": false
+    "lightllm_neo_backend": "fa3_neo",
+    "lightllm_fa3_neo_available": true
   },
   "deliberate_exclusions": {
     "vllm==0.16.0": "requires torch==2.9.1 and is not used by this LightLLM path",

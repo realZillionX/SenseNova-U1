@@ -1,4 +1,5 @@
-# Fully resolved runtime for mostar-u1-runtime:v4.
+# Fully resolved Python layer for mova-u15-lightllm-x2v-rl:v2.
+# Its immutable Torch/CUDA base provenance is recorded in runtime_contract.json.
 # Resolver: /opt/mostar-u1-py312/bin/python -m pip 26.2.1
 # Platform: CPython 3.12, Linux x86_64, CUDA 12.8, CXX11 ABI enabled.
 # Resolved on 2026-08-24 without installing packages.
@@ -116,7 +117,6 @@ xxhash==3.6.0
 zipp==4.1.0
 zstandard==0.23.0
 
-# Generic FA3 is supplied as a separately verified local wheel to the single
-# pip invocation, so the 441 MB asset is downloaded exactly once.
-# URL: https://github.com/windreamer/flash-attention3-wheels/releases/download/2026.08.17-542a34a/flash_attn_3-3.0.0%2B20260817.cu128torch280cxx11abitrue.25110-cp310-abi3-linux_x86_64.whl
-# SHA256: c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3
+# FA3 is built separately from the SenseNova-documented NEO-Unify fork because
+# a stock wheel does not expose image_token_tag.  The exact source commit and
+# build feature closure live in runtime_contract.json.

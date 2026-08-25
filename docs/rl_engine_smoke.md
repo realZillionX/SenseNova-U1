@@ -24,12 +24,15 @@ image, not v4 and not an ad-hoc virtual environment.
 The build is intentionally reproducible and fail-fast:
 
 - interpreter: `/opt/mostar-u1-py312/bin/python`;
-- FA3 wheel SHA256:
-  `c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3`;
+- official NEO-Unify FA3 fork:
+  `WANDY666/flash-attention@e2077ee6e568e64d0d01c6b44d8ce4ee24e7932b`
+  (`support_neo`, with scoped `image_token_end`);
 - package lock and runtime contract are copied to
   `/opt/mova-runtime-manifests/lightllm-x2v`;
 - `pip check`, CPU-side import closure, exact package versions, source commits,
-  CUDA/NCCL and FA3 are recorded by preflight.
+  CUDA/NCCL and FA3 are recorded by preflight. A stock FA3 wheel or the Neo
+  Triton fallback fails preflight; both LightLLM and LightX2V must resolve the
+  pinned FA3-Neo runtime.
 
 ## Rollout route
 

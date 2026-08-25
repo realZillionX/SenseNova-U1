@@ -7,11 +7,48 @@ LIGHTX2V_ROOT="$SOURCE_ROOT/evaluation/easi/lightllm-stack/LightX2V"
 RUNTIME_LOCK="$SOURCE_ROOT/docker/rl-engine/requirements.lock"
 RUNTIME_CONTRACT="$SOURCE_ROOT/docker/rl-engine/runtime_contract.json"
 PYTHON_BIN=${PYTHON_BIN:-/opt/mostar-u1-py312/bin/python}
-FA3_WHEEL=${FA3_WHEEL:-/tmp/flash_attn_3-3.0.0+20260817.cu128torch280cxx11abitrue.25110-cp310-abi3-linux_x86_64.whl}
-FA3_URL=${FA3_URL:-https://github.com/windreamer/flash-attention3-wheels/releases/download/2026.08.17-542a34a/flash_attn_3-3.0.0%2B20260817.cu128torch280cxx11abitrue.25110-cp310-abi3-linux_x86_64.whl}
-EXPECTED_FA3_SHA256=c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3
+FA3_NEO_REPOSITORY=${FA3_NEO_REPOSITORY:-https://github.com/WANDY666/flash-attention.git}
+FA3_NEO_BRANCH=${FA3_NEO_BRANCH:-support_neo}
+FA3_NEO_COMMIT=e2077ee6e568e64d0d01c6b44d8ce4ee24e7932b
 MANIFEST_DIR=/opt/mova-runtime-manifests/lightllm-x2v
-export PATH="$(dirname "$PYTHON_BIN"):$PATH"
+export PATH="/usr/local/cuda/bin:$(dirname "$PYTHON_BIN"):$PATH"
+export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
+
+# The CUDA toolkit in the base image provides nvcc, while the matching CUDA
+# development headers and libraries installed with Torch live under the
+# environment's nvidia namespace packages.  Expose the entire closure to nvcc
+# instead of reinstalling a second CUDA SDK into the image.
+PYTHON_SITE_PACKAGES="$($PYTHON_BIN - <<'PY'
+import site
+
+paths = site.getsitepackages()
+if not paths:
+    raise SystemExit("Python environment has no site-packages directory")
+print(paths[0])
+PY
+)"
+NVIDIA_ROOT="$PYTHON_SITE_PACKAGES/nvidia"
+cuda_include_paths=("$CUDA_HOME/include")
+cuda_library_paths=("$CUDA_HOME/lib64")
+for component in cuda_runtime cublas cusolver cusparse cufft curand nvjitlink nccl; do
+  [[ -d "$NVIDIA_ROOT/$component/include" ]] && cuda_include_paths+=("$NVIDIA_ROOT/$component/include")
+  [[ -d "$NVIDIA_ROOT/$component/lib" ]] && cuda_library_paths+=("$NVIDIA_ROOT/$component/lib")
+done
+for required_cuda_path in \
+  "$CUDA_HOME/bin/nvcc" \
+  "$NVIDIA_ROOT/cusolver/include/cusolverDn.h" \
+  "$NVIDIA_ROOT/cusolver/lib/libcusolver.so.11"; do
+  [[ -e "$required_cuda_path" ]] || {
+    echo "required CUDA build dependency is missing: $required_cuda_path" >&2
+    exit 2
+  }
+done
+cuda_include_path="$(IFS=:; echo "${cuda_include_paths[*]}")"
+cuda_library_path="$(IFS=:; echo "${cuda_library_paths[*]}")"
+export CPATH="$cuda_include_path${CPATH:+:$CPATH}"
+export CPLUS_INCLUDE_PATH="$cuda_include_path${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
+export LIBRARY_PATH="$cuda_library_path${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$cuda_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 for path in "$PYTHON_BIN" "$RUNTIME_LOCK" "$RUNTIME_CONTRACT"; do
   [[ -e "$path" ]] || { echo "required path is missing: $path" >&2; exit 2; }
@@ -21,10 +58,16 @@ for path in "$LIGHTLLM_ROOT" "$LIGHTX2V_ROOT"; do
 done
 
 if ! "$PYTHON_BIN" - <<'PY'
+import inspect
 from importlib.metadata import PackageNotFoundError, version
+
 try:
-    assert version("flash-attn-3") == "3.0.0+20260817.cu128torch280cxx11abitrue.25110"
-except (AssertionError, PackageNotFoundError):
+    if version("flash-attn-3") != "3.0.0":
+        raise SystemExit(1)
+    from flash_attn_interface import flash_attn_with_kvcache
+except (ImportError, PackageNotFoundError):
+    raise SystemExit(1)
+if "image_token_end" not in inspect.signature(flash_attn_with_kvcache).parameters:
     raise SystemExit(1)
 PY
 then
@@ -42,6 +85,9 @@ expected = {
     "huggingface-hub": "0.36.2",
     "numpy": "2.5.2",
     "protobuf": "7.35.1",
+    "nvidia-cuda-runtime-cu12": "12.8.90",
+    "nvidia-cusolver-cu12": "11.7.3.90",
+    "nvidia-nccl-cu12": "2.27.3",
 }
 assert sys.version_info[:2] == (3, 12), sys.version
 for distribution, wanted in expected.items():
@@ -52,22 +98,54 @@ try:
     installed_fa3 = version("flash-attn-3")
 except PackageNotFoundError:
     installed_fa3 = None
-if installed_fa3 is not None:
-    raise SystemExit(f"unexpected FA3 version in builder: {installed_fa3}")
-print(json.dumps({"base": expected, "status": "clean"}, sort_keys=True))
+print(json.dumps({"base": expected, "replacing_fa3": installed_fa3}, sort_keys=True))
 PY
 
-  if [[ ! -f "$FA3_WHEEL" ]] || [[ "$(sha256sum "$FA3_WHEEL" | awk '{print $1}')" != "$EXPECTED_FA3_SHA256" ]]; then
-    unlink "$FA3_WHEEL" 2>/dev/null || true
-    curl --fail --location --retry 5 --output "$FA3_WHEEL" "$FA3_URL"
-  fi
-  [[ "$(sha256sum "$FA3_WHEEL" | awk '{print $1}')" == "$EXPECTED_FA3_SHA256" ]] || {
-    echo "FA3 wheel digest mismatch" >&2
+  # Resolve the complete Python environment once, without allowing the
+  # LightLLM requirements to replace the pinned Torch/CUDA core.
+  "$PYTHON_BIN" -m pip install -r "$RUNTIME_LOCK"
+
+  # NEO-Unify prefill is not standard causal attention.  The official
+  # SenseNova inference documentation pins this FA3 fork because its Hopper
+  # kernel accepts image_token_tag.  A stock FA3 wheel is not equivalent.
+  fa3_build_dir="$(mktemp -d /tmp/mova-fa3-neo-build.XXXXXX)"
+  cleanup_fa3_build() {
+    case "$fa3_build_dir" in
+      /tmp/mova-fa3-neo-build.*) rm -rf -- "$fa3_build_dir" ;;
+      *) echo "refusing to remove unexpected FA3 build path: $fa3_build_dir" >&2 ;;
+    esac
+  }
+  trap cleanup_fa3_build EXIT
+  git -C "$fa3_build_dir" init -q src
+  git -C "$fa3_build_dir/src" remote add origin "$FA3_NEO_REPOSITORY"
+  git -C "$fa3_build_dir/src" fetch --depth 1 origin "$FA3_NEO_COMMIT"
+  git -C "$fa3_build_dir/src" checkout -q --detach FETCH_HEAD
+  [[ "$(git -C "$fa3_build_dir/src" rev-parse HEAD)" == "$FA3_NEO_COMMIT" ]] || {
+    echo "FA3-Neo source commit mismatch" >&2
     exit 2
   }
-
-  # This is intentionally the only package-install command in the build.
-  "$PYTHON_BIN" -m pip install -r "$RUNTIME_LOCK" "$FA3_WHEEL"
+  git -C "$fa3_build_dir/src" submodule update --init --depth 1 csrc/cutlass
+  (
+    cd "$fa3_build_dir/src/hopper"
+    export MAX_JOBS=${MAX_JOBS:-8}
+    export TORCH_CUDA_ARCH_LIST=9.0
+    export FLASH_ATTENTION_FORCE_BUILD=TRUE
+    export FLASH_ATTENTION_DISABLE_BACKWARD=TRUE
+    export FLASH_ATTENTION_DISABLE_SM80=TRUE
+    export FLASH_ATTENTION_DISABLE_SPLIT=TRUE
+    export FLASH_ATTENTION_DISABLE_SOFTCAP=TRUE
+    export FLASH_ATTENTION_DISABLE_FP16=TRUE
+    export FLASH_ATTENTION_DISABLE_FP8=TRUE
+    export FLASH_ATTENTION_DISABLE_HDIM64=TRUE
+    export FLASH_ATTENTION_DISABLE_HDIM96=TRUE
+    export FLASH_ATTENTION_DISABLE_HDIM192=TRUE
+    export FLASH_ATTENTION_DISABLE_HDIM256=TRUE
+    export FLASH_ATTENTION_DISABLE_HDIMDIFF64=TRUE
+    export FLASH_ATTENTION_DISABLE_HDIMDIFF192=TRUE
+    "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
+  )
+  cleanup_fa3_build
+  trap - EXIT
 fi
 
 pip_check_status=0
@@ -77,7 +155,7 @@ if [[ "$pip_check_status" != 0 ]]; then
     echo "$pip_check_output" >&2
     exit "$pip_check_status"
   fi
-  echo "accepted inherited v4 metadata issue: $pip_check_output"
+  echo "accepted inherited base metadata issue in v2 runtime: $pip_check_output"
 else
   echo "$pip_check_output"
 fi
@@ -86,11 +164,13 @@ SKIP_PLATFORM_CHECK=1 PYTHONPATH="$LIGHTX2V_ROOT:$LIGHTLLM_ROOT" "$PYTHON_BIN" -
 from importlib.metadata import version
 from importlib.util import find_spec
 
+import inspect
+
 import av
 import pandas
 import torchaudio
 
-assert version("flash-attn-3") == "3.0.0+20260817.cu128torch280cxx11abitrue.25110"
+assert version("flash-attn-3") == "3.0.0"
 for module in (
     "cupy",
     "flashinfer",
@@ -100,6 +180,9 @@ for module in (
     "sgl_kernel",
 ):
     assert find_spec(module) is not None, module
+from flash_attn_interface import flash_attn_with_kvcache
+
+assert "image_token_end" in inspect.signature(flash_attn_with_kvcache).parameters
 from lightx2v.pipeline import _ensure_runner_registered
 from lightx2v.utils.registry_factory import RUNNER_REGISTER
 
@@ -114,7 +197,6 @@ install -m 0644 "$RUNTIME_CONTRACT" "$MANIFEST_DIR/runtime_contract.json"
 "$PYTHON_BIN" -m pip freeze >"$MANIFEST_DIR/pip-freeze.txt"
 sha256sum "$RUNTIME_LOCK" "$RUNTIME_CONTRACT" >"$MANIFEST_DIR/input-sha256.txt"
 
-unlink "$FA3_WHEEL" 2>/dev/null || true
 "$PYTHON_BIN" -m pip cache purge || true
 
 echo "MOVA LightLLM + LightX2V runtime build completed"

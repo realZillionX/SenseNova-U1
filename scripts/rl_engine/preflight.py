@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import importlib.util
 import json
 import os
@@ -27,7 +28,10 @@ EXPECTED_DISTRIBUTIONS = {
     "huggingface-hub": "0.36.2",
     "numpy": "2.5.2",
     "protobuf": "7.35.1",
-    "flash-attn-3": "3.0.0+20260817.cu128torch280cxx11abitrue.25110",
+    "nvidia-cuda-runtime-cu12": "12.8.90",
+    "nvidia-cusolver-cu12": "11.7.3.90",
+    "nvidia-nccl-cu12": "2.27.3",
+    "flash-attn-3": "3.0.0",
 }
 MANIFEST_DIR = Path("/opt/mova-runtime-manifests/lightllm-x2v")
 
@@ -68,6 +72,38 @@ def _sha256(path: Path) -> str | None:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _checkpoint_manifest(model_path: str | None) -> dict[str, object]:
+    result: dict[str, object] = {
+        "index": None,
+        "tensor_count": 0,
+        "shard_count": 0,
+        "missing_shards": [],
+        "error": None,
+    }
+    if not model_path:
+        return result
+    root = Path(model_path)
+    try:
+        indexes = sorted(root.glob("*.safetensors.index.json"))
+        if len(indexes) != 1:
+            raise ValueError(f"expected one safetensors index, found {len(indexes)}")
+        payload = json.loads(indexes[0].read_text(encoding="utf-8"))
+        weight_map = payload.get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map:
+            raise ValueError("safetensors index has no non-empty weight_map")
+        shards = sorted(set(weight_map.values()))
+        missing = [name for name in shards if not (root / name).is_file()]
+        result.update(
+            index=str(indexes[0]),
+            tensor_count=len(weight_map),
+            shard_count=len(shards),
+            missing_shards=missing,
+        )
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
 
 
 def main() -> None:
@@ -113,6 +149,38 @@ def main() -> None:
         name: importlib.util.find_spec(name) is not None
         for name in ("flash_attn", "flash_attn_interface", "flash_attn_3", "flashinfer")
     }
+    neo_fa3 = {
+        "available": False,
+        "image_token_end": False,
+        "lightllm_backend_imported": False,
+        "path": None,
+        "error": None,
+    }
+    try:
+        import flash_attn_interface
+        from flash_attn_interface import flash_attn_with_kvcache
+
+        has_scoped_abi = "image_token_end" in inspect.signature(flash_attn_with_kvcache).parameters
+        neo_fa3.update(
+            available=has_scoped_abi,
+            image_token_end=has_scoped_abi,
+            path=str(Path(flash_attn_interface.__file__).resolve()),
+        )
+        # Importing the full LightLLM attention package initializes GPU-specific
+        # Triton autotune state.  Verify that adapter on GPU; the CPU builder
+        # still verifies the installed native ABI directly above.
+        if torch.cuda.is_available():
+            from lightllm.common.basemodel.attention.fa3.fp import (
+                FA3_NEO_ARGUMENT,
+                HAS_FLASH_ATTN_INTERFACE,
+            )
+
+            neo_fa3["available"] = bool(
+                has_scoped_abi and HAS_FLASH_ATTN_INTERFACE and FA3_NEO_ARGUMENT == "image_token_end"
+            )
+            neo_fa3["lightllm_backend_imported"] = True
+    except Exception as exc:
+        neo_fa3["error"] = f"{type(exc).__name__}: {exc}"
     nccl_version = None
     if torch.cuda.is_available():
         try:
@@ -120,6 +188,7 @@ def main() -> None:
         except (AttributeError, TypeError):
             nccl_version = str(torch.cuda.nccl.version())
 
+    checkpoint_manifest = _checkpoint_manifest(args.model_path)
     payload = {
         "python": sys.version,
         "python_executable": sys.executable,
@@ -131,6 +200,7 @@ def main() -> None:
         "gpu_names": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
         "nccl": nccl_version,
         "flash_attention": flash_attention,
+        "neo_fa3": neo_fa3,
         "torch_flash_sdp_enabled": bool(torch.backends.cuda.flash_sdp_enabled()),
         "modules": modules,
         "neo_runner": neo_runner,
@@ -153,6 +223,7 @@ def main() -> None:
         },
         "model_path": args.model_path,
         "model_exists": bool(args.model_path and Path(args.model_path).is_dir()),
+        "model_checkpoint": checkpoint_manifest,
     }
 
     errors = []
@@ -169,11 +240,22 @@ def main() -> None:
         errors.append(f"expected at least {args.expected_gpus} GPUs, found {torch.cuda.device_count()}")
     if args.model_path and not payload["model_exists"]:
         errors.append(f"model path does not exist: {args.model_path}")
+    if args.model_path and (
+        checkpoint_manifest["error"]
+        or checkpoint_manifest["missing_shards"]
+        or not checkpoint_manifest["tensor_count"]
+    ):
+        errors.append(f"model safetensors closure is incomplete: {checkpoint_manifest}")
     for name, info in modules.items():
         if not info["available"]:
             errors.append(f"required module is unavailable: {name}")
     if not payload["flash_attention"]["flash_attn_interface"]:
         errors.append("FA3 module flash_attn_interface is unavailable")
+    if not neo_fa3["available"] or not neo_fa3["image_token_end"]:
+        errors.append(
+            "LightLLM FA3-Neo is unavailable or lacks scoped image_token_end support: "
+            f"{neo_fa3['error']}"
+        )
     if not neo_runner["available"]:
         errors.append(f"NeoPP import closure failed: {neo_runner['error']}")
     if payload["runtime_manifest"]["requirements_sha256"] is None:
