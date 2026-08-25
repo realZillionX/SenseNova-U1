@@ -33,13 +33,13 @@ SenseNova-U1 对外呈现为一个统一的多模态模型，但在实际生产�
 
 NEO-Unify 的 prefill 注意力并非标准因果注意力：文本 token 仍保持因果，而图像 token 则会同时关注整个文本前缀以及完整的图像 span。为支持这种混合掩码，我们对栈内两套注意力实现都进行了改造——Triton 内核与官方 FlashAttention3 (FA3) 代码库。我们的 FA3 分支见 [WANDY666/flash-attention](https://github.com/WANDY666/flash-attention)。
 
-具体做法是新增一个可选的 image_token_tag 参数，用以逐行调整掩码：文本行沿用标准因果掩码；图像行不再采用朴素的因果截断，而是被允许关注其之前的全部文本 token，以及所在图像 span 内的全部图像 token。
+具体做法是新增一个可选的 `image_token_end` 参数，用以逐行调整掩码：文本行的值为 0，沿用标准因果掩码；图像行记录其所在图像 span 的 exclusive end，因此可以关注其之前的全部文本 token，以及所在图像 span 内的全部图像 token，同时不会越界看到后续文本或下一张图像。
 
-为在尽可能多的情况下保留因果三角形带来的加速，内核按 M-block 粒度进行判断——对当前 block 内的 image_token_tag 做 OR-reduce：若该 block 不含图像 token，则维持标准因果 K-range；若含有图像 token，则将 K-range 扩展至覆盖所需的图像 span。因此纯文本 block 仍走常规因果路径，只有真正相关的 block 才承担混合掩码引入的额外开销。
+为在尽可能多的情况下保留因果三角形带来的加速，内核按 M-block 粒度进行判断——对当前 block 内的 `image_token_end` 做 max-reduce：结果为 0 时维持标准因果 K-range；结果非 0 时仅将 K-range 扩展到对应图像 span 的末尾。因此纯文本 block 仍走常规因果路径，只有真正相关的 block 才承担混合掩码引入的额外开销。
 
 ![NEO-Unify 多模态注意力行为](./assets/attn.png)
 
-额外开销并不取决于某个固定比例，而是取决于图像 token 在序列中的分布，以及它们跨 M-block 边界的方式。当图像行仅集中在序列的某一部分时，额外开销也被相应地局部化。对于纯文本请求，image_token_tag 为空，内核即回落至原生 FA3，没有任何额外开销。
+额外开销并不取决于某个固定比例，而是取决于图像 token 在序列中的分布，以及它们跨 M-block 边界的方式。当图像行仅集中在序列的某一部分时，额外开销也被相应地局部化。对于纯文本请求，`image_token_end` 全为 0，内核行为等价于原生因果 FA3。
 
 下表对比了 Neo 风格多模态 prefill 的两种实现：
 

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "base_image": "mostar-u1-runtime:v4",
+  "saved_image": "mova-u15-lightllm-x2v-rl:v2",
+  "python": "/opt/mostar-u1-py312/bin/python",
+  "platform": {
+    "python_version": "3.12",
+    "cuda": "12.8",
+    "cxx11_abi": true,
+    "gpu_count": 2
+  },
+  "sources": {
+    "sensenova_base": "34ca2f66e7006489a0184eb8896a75f4081a0257",
+    "sensenova_integration_branch": "mova/lightllm-lightx2v-rl-engine",
+    "lightllm": "a23a382c70ea7e3c31b2fafcd546c66c99c56fef",
+    "lightx2v": "f453c1ef22d1be21c76d186816c3aa6ad5c135c5",
+    "x2v_config_sha256": "594830cc1c0b087cce1185fc4d149c7cbd2916ca6ed634ec1b7b571485bf6125"
+  },
+  "immutable_core": {
+    "torch": "2.8.0",
+    "torchvision": "0.23.0",
+    "triton": "3.4.0",
+    "transformers": "4.57.1",
+    "tokenizers": "0.22.1",
+    "huggingface-hub": "0.36.2",
+    "numpy": "2.5.2",
+    "protobuf": "7.35.1"
+  },
+  "compiled_runtime": {
+    "torchaudio": "2.8.0",
+    "cupy-cuda12x": "13.6.0",
+    "flashinfer-python": "0.6.8.post1",
+    "sgl-kernel": "0.3.21",
+    "flash-attn-3": "3.0.0"
+  },
+  "cuda_development": {
+    "nvidia-cuda-runtime-cu12": "12.8.90",
+    "nvidia-cusolver-cu12": "11.7.3.90",
+    "nvidia-nccl-cu12": "2.27.3"
+  },
+  "flash_attn_3": {
+    "repository": "https://github.com/WANDY666/flash-attention.git",
+    "branch": "support_neo",
+    "commit": "e2077ee6e568e64d0d01c6b44d8ce4ee24e7932b",
+    "features": ["hopper", "sm90", "bf16", "head_dim_128", "image_token_end"],
+    "disabled": ["backward", "sm80", "split", "softcap", "fp16", "fp8", "head_dim_64", "head_dim_96", "head_dim_192", "head_dim_256", "head_dim_diff_64", "head_dim_diff_192"],
+    "lightx2v_backend": "flash_attn3",
+    "lightllm_neo_backend": "fa3_neo",
+    "lightllm_fa3_neo_available": true
+  },
+  "deliberate_exclusions": {
+    "vllm==0.16.0": "requires torch==2.9.1 and is not used by this LightLLM path",
+    "xformers==0.0.33.post2": "requires torch==2.9.1 and is not used by this path",
+    "swanlab==0.9.7": "training-only monitor and requires protobuf<7",
+    "gradio==6.25.0": "standalone Web UI and requires huggingface-hub>=1.16",
+    "matplotlib==3.8.2": "benchmark utility and requires numpy<2",
+    "torchao==0.18.0": "optional quantization backend needs newer torch APIs",
+    "service_clients": "cloud/database clients are outside the local ZMQ path",
+    "distributed_kernels": "NIXL, DeepEP, FlashMLA and LightMem are outside one-node TP=1"
+  }
+}
