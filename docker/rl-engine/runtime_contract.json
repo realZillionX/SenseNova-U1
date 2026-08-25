@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "base_image": "mostar-u1-runtime:v4",
-  "saved_image": "mova-u15-lightllm-x2v-rl:v1",
+  "saved_image": "mova-u15-lightllm-x2v-rl:v2",
   "python": "/opt/mostar-u1-py312/bin/python",
   "platform": {
     "python_version": "3.12",
@@ -12,7 +12,7 @@
   "sources": {
     "sensenova": "091771efd74879df2d02728e88d811f651cbeae3",
     "lightllm": "1d6803d7414213186b52f85930e91377c286fd99",
-    "lightx2v": "f05032c3c1036449d425b27cd854f1c2a398747f",
+    "lightx2v": "41d687efbae2dfbc355215fe5705ac47d6e88bb8",
     "x2v_config_sha256": "594830cc1c0b087cce1185fc4d149c7cbd2916ca6ed634ec1b7b571485bf6125"
   },
   "immutable_core": {

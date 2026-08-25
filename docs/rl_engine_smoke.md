@@ -9,7 +9,7 @@ checkpoint manager.
 
 - SenseNova integration base: `34ca2f66e7006489a0184eb8896a75f4081a0257`
 - LightLLM fork: `1d6803d7414213186b52f85930e91377c286fd99`
-- LightX2V fork: `f05032c3c1036449d425b27cd854f1c2a398747f`
+- LightX2V fork: `41d687efbae2dfbc355215fe5705ac47d6e88bb8`
 - requested upstream image:
   `lightx2v/lightllm_lightx2v:20260407@sha256:bb1900389c320b37dbcfe51fdf4db76a198d38a10c4c80d8b9b0726f1fb43ac7`
 
@@ -18,7 +18,7 @@ construction therefore happens once in the CPU Notebook
 `mova-u15-lightllm-x2v-rl-build`: `mostar-u1-runtime:v4` is used only as the
 Torch 2.8.0/CUDA 12.8 bootstrap layer, the fully resolved 122-entry lock and
 the verified FA3 wheel are installed by one pip command, and the result is
-saved as `mova-u15-lightllm-x2v-rl:v1`. H200 validation must use that saved
+saved as `mova-u15-lightllm-x2v-rl:v2`. H200 validation must use that saved
 image, not v4 and not an ad-hoc virtual environment.
 
 The build is intentionally reproducible and fail-fast:
@@ -72,7 +72,7 @@ transport deviation.
 ## Fixed smoke entry points
 
 ```bash
-# Run once in the CPU builder, then save mova-u15-lightllm-x2v-rl:v1.
+# Run once in the CPU builder, then save mova-u15-lightllm-x2v-rl:v2.
 bash docker/rl-engine/build_runtime.sh "$PWD"
 
 # Run in the fixed two-H200 Notebook created from the saved image.

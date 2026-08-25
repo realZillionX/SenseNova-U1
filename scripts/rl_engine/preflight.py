@@ -88,6 +88,23 @@ def main() -> None:
             actual = None
         distributions[name] = {"expected": expected, "actual": actual}
 
+    neo_runner = {"available": False, "class": None, "error": None}
+    try:
+        if args.allow_no_gpu:
+            os.environ.setdefault("SKIP_PLATFORM_CHECK", "1")
+        from lightx2v.pipeline import _ensure_runner_registered
+        from lightx2v.utils.registry_factory import RUNNER_REGISTER
+
+        _ensure_runner_registered("neopp")
+        runner_class = RUNNER_REGISTER["neopp"]
+        neo_runner = {
+            "available": True,
+            "class": f"{runner_class.__module__}.{runner_class.__name__}",
+            "error": None,
+        }
+    except Exception as exc:
+        neo_runner["error"] = f"{type(exc).__name__}: {exc}"
+
     modules = {
         name: _version(name)
         for name in ("lightllm", "lightx2v", "safetensors", "fastapi", "pydantic", "zmq", "rpyc")
@@ -116,6 +133,7 @@ def main() -> None:
         "flash_attention": flash_attention,
         "torch_flash_sdp_enabled": bool(torch.backends.cuda.flash_sdp_enabled()),
         "modules": modules,
+        "neo_runner": neo_runner,
         "distributions": distributions,
         "runtime_manifest": {
             "directory": str(MANIFEST_DIR),
@@ -156,6 +174,8 @@ def main() -> None:
             errors.append(f"required module is unavailable: {name}")
     if not payload["flash_attention"]["flash_attn_interface"]:
         errors.append("FA3 module flash_attn_interface is unavailable")
+    if not neo_runner["available"]:
+        errors.append(f"NeoPP import closure failed: {neo_runner['error']}")
     if payload["runtime_manifest"]["requirements_sha256"] is None:
         errors.append(f"runtime manifest is missing under {MANIFEST_DIR}")
     payload["errors"] = errors

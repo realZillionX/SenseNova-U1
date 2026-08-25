@@ -11,6 +11,7 @@ FA3_WHEEL=${FA3_WHEEL:-/tmp/flash_attn_3-3.0.0+20260817.cu128torch280cxx11abitru
 FA3_URL=${FA3_URL:-https://github.com/windreamer/flash-attention3-wheels/releases/download/2026.08.17-542a34a/flash_attn_3-3.0.0%2B20260817.cu128torch280cxx11abitrue.25110-cp310-abi3-linux_x86_64.whl}
 EXPECTED_FA3_SHA256=c5f5450f09a847415afaa2efbeff857ed9690e7001a1c0c09a1659e05f5b36c3
 MANIFEST_DIR=/opt/mova-runtime-manifests/lightllm-x2v
+export PATH="$(dirname "$PYTHON_BIN"):$PATH"
 
 for path in "$PYTHON_BIN" "$RUNTIME_LOCK" "$RUNTIME_CONTRACT"; do
   [[ -e "$path" ]] || { echo "required path is missing: $path" >&2; exit 2; }
@@ -81,7 +82,7 @@ else
   echo "$pip_check_output"
 fi
 
-PYTHONPATH="$LIGHTX2V_ROOT:$LIGHTLLM_ROOT" "$PYTHON_BIN" - <<'PY'
+SKIP_PLATFORM_CHECK=1 PYTHONPATH="$LIGHTX2V_ROOT:$LIGHTLLM_ROOT" "$PYTHON_BIN" - <<'PY'
 from importlib.metadata import version
 from importlib.util import find_spec
 
@@ -99,7 +100,12 @@ for module in (
     "sgl_kernel",
 ):
     assert find_spec(module) is not None, module
-print("CPU metadata and non-CUDA import closure: ok")
+from lightx2v.pipeline import _ensure_runner_registered
+from lightx2v.utils.registry_factory import RUNNER_REGISTER
+
+_ensure_runner_registered("neopp")
+assert "neopp" in RUNNER_REGISTER
+print("CPU metadata and actual NeoPP import closure: ok")
 PY
 
 install -d -m 0755 "$MANIFEST_DIR"
