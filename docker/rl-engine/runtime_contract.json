@@ -12,8 +12,8 @@
   "sources": {
     "sensenova_base": "34ca2f66e7006489a0184eb8896a75f4081a0257",
     "sensenova_integration_branch": "mova/lightllm-lightx2v-rl-engine",
-    "lightllm": "5fcda97af5ec11c42dfe1012fb761388e63875a4",
-    "lightx2v": "235a16b773c53774c25eeecf6363d7150a2754c4",
+    "lightllm": "307ec195c1f5ce4779d56eae37a072b15294cfdb",
+    "lightx2v": "f4aa8833ef0f6d8c256612df769896b6c8e04dd9",
     "x2v_config_sha256": "594830cc1c0b087cce1185fc4d149c7cbd2916ca6ed634ec1b7b571485bf6125"
   },
   "immutable_core": {

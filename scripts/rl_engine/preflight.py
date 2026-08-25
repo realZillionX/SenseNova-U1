@@ -141,9 +141,27 @@ def main() -> None:
     except Exception as exc:
         neo_runner["error"] = f"{type(exc).__name__}: {exc}"
 
+    http_server = {"available": False, "module": None, "error": None}
+    try:
+        import lightllm.server.api_http as api_http
+
+        http_server.update(available=True, module=api_http.__name__)
+    except Exception as exc:
+        http_server["error"] = f"{type(exc).__name__}: {exc}"
+
     modules = {
         name: _version(name)
-        for name in ("lightllm", "lightx2v", "safetensors", "fastapi", "pydantic", "zmq", "rpyc")
+        for name in (
+            "lightllm",
+            "lightx2v",
+            "safetensors",
+            "fastapi",
+            "hypercorn",
+            "websockets",
+            "pydantic",
+            "zmq",
+            "rpyc",
+        )
     }
     flash_attention = {
         name: importlib.util.find_spec(name) is not None
@@ -204,6 +222,7 @@ def main() -> None:
         "torch_flash_sdp_enabled": bool(torch.backends.cuda.flash_sdp_enabled()),
         "modules": modules,
         "neo_runner": neo_runner,
+        "http_server": http_server,
         "distributions": distributions,
         "runtime_manifest": {
             "directory": str(MANIFEST_DIR),
@@ -258,6 +277,8 @@ def main() -> None:
         )
     if not neo_runner["available"]:
         errors.append(f"NeoPP import closure failed: {neo_runner['error']}")
+    if not http_server["available"]:
+        errors.append(f"LightLLM HTTP server import closure failed: {http_server['error']}")
     if payload["runtime_manifest"]["requirements_sha256"] is None:
         errors.append(f"runtime manifest is missing under {MANIFEST_DIR}")
     payload["errors"] = errors

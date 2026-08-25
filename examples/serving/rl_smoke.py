@@ -58,20 +58,62 @@ def _load_tensor(path: Path, name: str) -> torch.Tensor:
         return handle.get_tensor(name)
 
 
+def _torch_dtype(dtype_name: str) -> torch.dtype:
+    if not dtype_name.startswith("torch."):
+        raise ValueError(f"unsupported runtime dtype {dtype_name}")
+    dtype = getattr(torch, dtype_name.removeprefix("torch."), None)
+    if not isinstance(dtype, torch.dtype):
+        raise ValueError(f"unsupported runtime dtype {dtype_name}")
+    return dtype
+
+
+def _load_entry_tensor(entry) -> torch.Tensor:
+    tensor = _load_tensor(Path(entry["path"]), entry["name"])
+    if entry.get("transform") == "transpose":
+        tensor = tensor.t()
+    target_dtype = _torch_dtype(entry["dtype"])
+    if tensor.dtype != target_dtype:
+        tensor = tensor.to(target_dtype)
+    return tensor.contiguous()
+
+
+def _make_entry(name, path, owner, target_spec):
+    tensor = _load_tensor(path, name)
+    target_shape = target_spec.get("shape")
+    transform = None
+    if target_shape is not None and list(tensor.shape) != list(target_shape):
+        if tensor.ndim == 2 and list(tensor.t().shape) == list(target_shape):
+            tensor = tensor.t()
+            transform = "transpose"
+        else:
+            raise RuntimeError(
+                f"checkpoint/runtime shape mismatch for {name}: "
+                f"{list(tensor.shape)} != {list(target_shape)}"
+            )
+    target_dtype = str(target_spec.get("dtype") or tensor.dtype)
+    if tensor.dtype != _torch_dtype(target_dtype):
+        tensor = tensor.to(_torch_dtype(target_dtype))
+    return {
+        "name": name,
+        "path": str(path),
+        "shape": list(tensor.shape),
+        "dtype": str(tensor.dtype),
+        "checksum": tensor_checksum(tensor),
+        "owner": owner,
+        "numel": tensor.numel(),
+        "element_size": tensor.element_size(),
+        "transform": transform,
+    }
+
+
 def _scan_manifest(
     model_path: Path,
-    language_closure: set[str],
-    vision_closure: set[str],
-    x2v_closure: set[str],
+    closure_specs: dict[str, dict[str, dict[str, object]]],
 ):
     locations = _checkpoint_files(model_path)
     entries = []
     smallest = {}
-    closures = {
-        "language": language_closure,
-        "vision": vision_closure,
-        "x2v": x2v_closure,
-    }
+    closures = {consumer: set(specs) for consumer, specs in closure_specs.items()}
     seen_closures = {consumer: set() for consumer in closures}
     for name, path in sorted(locations.items()):
         owners = [consumer for consumer, closure in closures.items() if name in closure]
@@ -81,19 +123,11 @@ def _scan_manifest(
             raise RuntimeError(f"checkpoint tensor has ambiguous ownership: {name} -> {owners}")
         owner = owners[0]
         seen_closures[owner].add(name)
-        tensor = _load_tensor(path, name)
-        entry = {
-            "name": name,
-            "path": str(path),
-            "shape": list(tensor.shape),
-            "dtype": str(tensor.dtype),
-            "checksum": tensor_checksum(tensor),
-            "owner": owner,
-            "numel": tensor.numel(),
-            "element_size": tensor.element_size(),
-        }
+        entry = _make_entry(name, path, owner, closure_specs[owner][name])
         entries.append(entry)
-        if tensor.is_floating_point() and (owner not in smallest or tensor.numel() < smallest[owner]["numel"]):
+        if _torch_dtype(entry["dtype"]).is_floating_point and (
+            owner not in smallest or entry["numel"] < smallest[owner]["numel"]
+        ):
             smallest[owner] = entry
     missing = {
         consumer: sorted(closure - seen_closures[consumer])
@@ -104,6 +138,37 @@ def _scan_manifest(
     if set(smallest) != {"language", "vision", "x2v"}:
         raise RuntimeError(f"could not select one floating smoke tensor per consumer: {sorted(smallest)}")
     return entries, smallest
+
+
+def _select_resume_tensors(model_path: Path, closure_specs):
+    locations = _checkpoint_files(model_path)
+    selected_names = {}
+    language_names = closure_specs["language"]
+    language_norms = sorted(
+        name for name in language_names if ".self_attn.k_norm.weight" in name
+    )
+    if not language_norms:
+        raise RuntimeError("could not select a lightweight language resume tensor")
+    selected_names["language"] = language_norms[0]
+    for consumer in ("vision", "x2v"):
+        candidates = [
+            (math.prod(spec["shape"]), name)
+            for name, spec in closure_specs[consumer].items()
+            if spec.get("shape") is not None
+            and _torch_dtype(str(spec["dtype"])).is_floating_point
+        ]
+        if not candidates:
+            raise RuntimeError(f"could not select a lightweight {consumer} resume tensor")
+        selected_names[consumer] = min(candidates)[1]
+    return {
+        consumer: _make_entry(
+            name,
+            locations[name],
+            consumer,
+            closure_specs[consumer][name],
+        )
+        for consumer, name in selected_names.items()
+    }
 
 
 def _init_publish_groups(base_url: str, port: int, group_name: str):
@@ -135,14 +200,19 @@ def _build_buckets(entries, max_bytes=256 * 1024 * 1024):
     buckets = []
     current = []
     current_dtype = None
+    current_owner = None
     current_bytes = 0
     for index, entry in enumerate(entries):
-        element_size = _load_tensor(Path(entry["path"]), entry["name"]).element_size()
-        size = entry["numel"] * element_size
-        if current and (entry["dtype"] != current_dtype or current_bytes + size > max_bytes):
+        size = entry["numel"] * entry["element_size"]
+        if current and (
+            entry["dtype"] != current_dtype
+            or entry["owner"] != current_owner
+            or current_bytes + size > max_bytes
+        ):
             buckets.append(current)
             current, current_bytes = [], 0
         current_dtype = entry["dtype"]
+        current_owner = entry["owner"]
         current.append(index)
         current_bytes += size
     if current:
@@ -150,8 +220,9 @@ def _build_buckets(entries, max_bytes=256 * 1024 * 1024):
     result = []
     for bucket_index, indices in enumerate(buckets):
         flat = torch.cat(
-            [_load_tensor(Path(entries[index]["path"]), entries[index]["name"]).reshape(-1) for index in indices]
+            [_load_entry_tensor(entries[index]).reshape(-1) for index in indices]
         ).contiguous()
+        owner = entries[indices[0]]["owner"]
         result.append(
             {
                 "id": f"bucket-{bucket_index:05d}",
@@ -159,6 +230,7 @@ def _build_buckets(entries, max_bytes=256 * 1024 * 1024):
                 "numel": flat.numel(),
                 "entry_indices": indices,
                 "checksum": tensor_checksum(flat),
+                "consumers": [owner],
             }
         )
     return result
@@ -193,11 +265,13 @@ def _publish_full_checkpoint(base_url, groups, entries, buckets, policy_version,
             json=payload,
             timeout=7200,
         )
-        for group in groups.values():
+        for consumer, group in groups.items():
             for bucket in buckets:
+                if consumer not in bucket.get("consumers", [consumer]):
+                    continue
                 tensor = torch.cat(
                     [
-                        _load_tensor(Path(entries[index]["path"]), entries[index]["name"]).reshape(-1)
+                        _load_entry_tensor(entries[index]).reshape(-1)
                         for index in bucket["entry_indices"]
                     ]
                 ).contiguous()
@@ -207,10 +281,18 @@ def _publish_full_checkpoint(base_url, groups, entries, buckets, policy_version,
 
 
 def _closure_from_init(receipt):
-    language = receipt["receipts"]["language"]["ranks"][0]["closure_names"]
-    vision = receipt["receipts"]["vision"]["ranks"][0]["closure_names"]
-    x2v = receipt["receipts"]["x2v"]["closure_names"]
-    return set(language), set(vision), set(x2v)
+    consumers = {
+        "language": receipt["receipts"]["language"]["ranks"][0],
+        "vision": receipt["receipts"]["vision"]["ranks"][0],
+        "x2v": receipt["receipts"]["x2v"],
+    }
+    return {
+        consumer: {
+            name: data.get("closure_specs", {}).get(name, {})
+            for name in data["closure_names"]
+        }
+        for consumer, data in consumers.items()
+    }
 
 
 def _verify_update_receipts(response, expected_checksums, assignments):
@@ -280,7 +362,7 @@ def _tensor_bundle(entries, mutate=False):
     assignments = {}
     originals = {}
     for consumer, entry in entries.items():
-        tensor = _load_tensor(Path(entry["path"]), entry["name"]).contiguous()
+        tensor = _load_entry_tensor(entry)
         originals[entry["name"]] = tensor.clone()
         if mutate:
             tensor = tensor.clone()
@@ -320,6 +402,11 @@ def main():
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output-dir", default="/tmp/mova-u15-rl-smoke")
     parser.add_argument("--publisher-port", type=int, default=29680)
+    parser.add_argument(
+        "--skip-full-sync",
+        action="store_true",
+        help="Resume later smoke stages after a separately verified full checkpoint sync.",
+    )
     args = parser.parse_args()
     base_url = args.base_url.rstrip("/")
     output_dir = Path(args.output_dir)
@@ -335,32 +422,54 @@ def main():
     tokenizer = get_tokenizer(str(Path(args.model_path)), "auto", trust_remote_code=True)
     groups, init_receipt = _init_publish_groups(base_url, args.publisher_port, "smoke-update")
     receipt["stages"]["init_groups"] = init_receipt
-    language_closure, vision_closure, x2v_closure = _closure_from_init(init_receipt)
-    entries, smallest = _scan_manifest(
-        Path(args.model_path), language_closure, vision_closure, x2v_closure
-    )
-    buckets = _build_buckets(entries)
-    receipt["manifest"] = {
-        "tensor_count": len(entries),
-        "bytes": sum(entry["numel"] * entry["element_size"] for entry in entries),
-        "consumer_counts": {
-            consumer: sum(entry["owner"] == consumer for entry in entries)
-            for consumer in ("language", "vision", "x2v")
-        },
-        "bucket_count": len(buckets),
-    }
-    update_receipt, seconds = _publish_full_checkpoint(
-        base_url, groups, entries, buckets, "smoke-v1", "smoke-update"
-    )
-    _verify_update_receipts(
-        update_receipt,
-        {entry["name"]: entry["checksum"] for entry in entries},
-        {entry["name"]: [entry["owner"]] for entry in entries},
-    )
-    receipt["stages"]["full_weight_sync"] = {"seconds": seconds, "receipt": update_receipt}
+    closure_specs = _closure_from_init(init_receipt)
+    if args.skip_full_sync:
+        smallest = _select_resume_tensors(Path(args.model_path), closure_specs)
+        resume_tensors, _, resume_assignments = _tensor_bundle(smallest)
+        resume_receipt = _post_tensor_update(
+            base_url,
+            resume_tensors,
+            resume_assignments,
+            "smoke-resume-v1",
+        )
+        receipt["stages"]["resume_version"] = _verify_update_receipts(
+            resume_receipt,
+            {
+                name: tensor_checksum(tensor)
+                for name, tensor in resume_tensors.items()
+            },
+            resume_assignments,
+        )
+        rollout_version = "smoke-resume-v1"
+        receipt["stages"]["full_weight_sync"] = {
+            "skipped": True,
+            "reason": "resuming after a separately verified full checkpoint sync",
+        }
+    else:
+        entries, smallest = _scan_manifest(Path(args.model_path), closure_specs)
+        buckets = _build_buckets(entries)
+        receipt["manifest"] = {
+            "tensor_count": len(entries),
+            "bytes": sum(entry["numel"] * entry["element_size"] for entry in entries),
+            "consumer_counts": {
+                consumer: sum(entry["owner"] == consumer for entry in entries)
+                for consumer in ("language", "vision", "x2v")
+            },
+            "bucket_count": len(buckets),
+        }
+        update_receipt, seconds = _publish_full_checkpoint(
+            base_url, groups, entries, buckets, "smoke-v1", "smoke-update"
+        )
+        _verify_update_receipts(
+            update_receipt,
+            {entry["name"]: entry["checksum"] for entry in entries},
+            {entry["name"]: [entry["owner"]] for entry in entries},
+        )
+        receipt["stages"]["full_weight_sync"] = {"seconds": seconds, "receipt": update_receipt}
+        rollout_version = "smoke-v1"
 
     ti2t_request = {
-        "expected_policy_version": "smoke-v1",
+        "expected_policy_version": rollout_version,
         "modality": "ti2t",
         "messages": [{"role": "user", "content": "What is 17 + 25? Answer briefly."}],
         "seeds": [11, 12],
@@ -376,7 +485,7 @@ def main():
     receipt["stages"]["ti2t"] = {"rollouts": len(ti2t["rollouts"]), "usage": [r["usage"] for r in ti2t["rollouts"]]}
 
     ti2ti_request = {
-        "expected_policy_version": "smoke-v1",
+        "expected_policy_version": rollout_version,
         "modality": "ti2ti",
         "messages": [
             {"role": "system", "content": INTERLEAVE_SYSTEM_PROMPT},

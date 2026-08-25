@@ -8,8 +8,8 @@ checkpoint manager.
 ## Runtime pins
 
 - SenseNova integration base: `34ca2f66e7006489a0184eb8896a75f4081a0257`
-- LightLLM fork: `5fcda97af5ec11c42dfe1012fb761388e63875a4`
-- LightX2V fork: `235a16b773c53774c25eeecf6363d7150a2754c4`
+- LightLLM fork: `307ec195c1f5ce4779d56eae37a072b15294cfdb`
+- LightX2V fork: `f4aa8833ef0f6d8c256612df769896b6c8e04dd9`
 - requested upstream image:
   `lightx2v/lightllm_lightx2v:20260407@sha256:bb1900389c320b37dbcfe51fdf4db76a198d38a10c4c80d8b9b0726f1fb43ac7`
 
