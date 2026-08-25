@@ -1,8 +1,8 @@
 FROM mostar-u1-runtime:v4
 
 ARG SENSENOVA_COMMIT=34ca2f66e7006489a0184eb8896a75f4081a0257
-ARG LIGHTLLM_COMMIT=307ec195c1f5ce4779d56eae37a072b15294cfdb
-ARG LIGHTX2V_COMMIT=f4aa8833ef0f6d8c256612df769896b6c8e04dd9
+ARG LIGHTLLM_COMMIT=a23a382c70ea7e3c31b2fafcd546c66c99c56fef
+ARG LIGHTX2V_COMMIT=f453c1ef22d1be21c76d186816c3aa6ad5c135c5
 
 COPY docker/rl-engine /workspace/mova-rl-engine/docker/rl-engine
 COPY evaluation/easi/lightllm-stack/LightLLM /workspace/mova-rl-engine/evaluation/easi/lightllm-stack/LightLLM
