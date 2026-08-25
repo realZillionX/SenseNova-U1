@@ -20,7 +20,6 @@ from .models.neo_unify import (
 from .models.neo_unify import (
     register as _register,
 )
-
 try:
     __version__ = _metadata.version("sensenova-u1")
 except _metadata.PackageNotFoundError:  # pragma: no cover - editable / not installed
@@ -34,6 +33,13 @@ __all__ = [
     "NEOVisionConfig",
     "NEOChatModel",
     "NEOVisionModel",
+    "ContiguousTextBatchSession",
+    "ContinuousTextBatch",
+    "ContinuousTextBatchEngine",
+    "TextBatchRequest",
+    "TextBatchResult",
+    "batch_text_gen",
+    "continuous_batch_text_gen",
     "check_checkpoint_compatibility",
     "set_attn_backend",
     "get_attn_backend",
@@ -76,6 +82,17 @@ def check_checkpoint_compatibility(config_or_dict: Any) -> None:
             f"but the installed version is {__version__}. "
             f"Please upgrade with `uv sync` or `pip install -U sensenova-u1`."
         )
+
+
+from .batch_inference import (  # noqa: E402
+    ContiguousTextBatchSession,
+    ContinuousTextBatch,
+    ContinuousTextBatchEngine,
+    TextBatchRequest,
+    TextBatchResult,
+    batch_text_gen,
+    continuous_batch_text_gen,
+)
 
 
 _register()

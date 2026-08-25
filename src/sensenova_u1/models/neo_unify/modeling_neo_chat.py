@@ -640,13 +640,13 @@ class NEOChatModel(PreTrainedModel):
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.config.t_eps)
         return v_pred
     
-    def _build_it2i_inputs(self, tokenizer, query, pixel_values=None, grid_hw=None):
+    def _build_it2i_embeddings(self, tokenizer, query, pixel_values=None, grid_hw=None):
+        """Build multimodal embeddings and THW indexes without a dense mask."""
+
         model_inputs = tokenizer(query, return_tensors="pt")
         input_ids = model_inputs["input_ids"].to(self.device)
 
         indexes = self.get_thw_indexes(input_ids[0], grid_hw)
-
-        attention_mask = {"full_attention": create_block_causal_mask(indexes[0])}
 
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
         B, N, C = input_embeds.shape
@@ -659,6 +659,13 @@ class NEOChatModel(PreTrainedModel):
             input_embeds[selected] = vit_embeds.reshape(-1, C).to(input_embeds.device)
             input_embeds = input_embeds.reshape(B, N, C)
 
+        return input_embeds, indexes
+
+    def _build_it2i_inputs(self, tokenizer, query, pixel_values=None, grid_hw=None):
+        input_embeds, indexes = self._build_it2i_embeddings(
+            tokenizer, query, pixel_values, grid_hw
+        )
+        attention_mask = {"full_attention": create_block_causal_mask(indexes[0])}
         return input_embeds, indexes, attention_mask
 
     @torch.no_grad()
@@ -1007,6 +1014,33 @@ class NEOChatModel(PreTrainedModel):
         from ...batch_inference import batch_text_gen
 
         return batch_text_gen(self, tokenizer, requests, **kwargs)
+
+    def create_contiguous_text_batch_session(self, tokenizer, requests, **kwargs):
+        """Create a caller-driven TI2T contiguous-batch decode session.
+
+        The high-level :meth:`batch_text_gen` method owns greedy token
+        selection.  RL rollout engines should use this session entry point so
+        they can sample from each row's logits and retain token log-probabilities
+        without duplicating SenseNova prompt/image preprocessing or KV logic.
+        """
+
+        from ...batch_inference import ContiguousTextBatchSession
+
+        return ContiguousTextBatchSession(self, tokenizer, requests, **kwargs)
+
+    def create_continuous_text_batch_engine(self, tokenizer, **kwargs):
+        """Create a chunked-prefill engine with reusable decode KV slots."""
+
+        from ...batch_inference import ContinuousTextBatchEngine
+
+        return ContinuousTextBatchEngine(self, tokenizer, **kwargs)
+
+    def continuous_batch_text_gen(self, tokenizer, requests, **kwargs):
+        """Drain TI2T requests through native continuous batching."""
+
+        from ...batch_inference import continuous_batch_text_gen
+
+        return continuous_batch_text_gen(self, tokenizer, requests, **kwargs)
 
     def batch_interleave_gen(self, tokenizer, requests, **kwargs):
         """Public native TI2TI two-queue batch entry point."""

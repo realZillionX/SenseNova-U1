@@ -605,6 +605,10 @@ class Qwen3Attention(nn.Module):
             k_cache = getattr(layer, "flash_decode_k_cache", None)
             v_cache = getattr(layer, "flash_decode_v_cache", None)
             cache_seqlens = getattr(layer, "flash_decode_seqlens", None)
+            cache_batch_idx = getattr(
+                layer, "flash_decode_cache_batch_idx", None
+            )
+            block_table = getattr(layer, "flash_decode_block_table", None)
             if k_cache is not None and v_cache is not None and cache_seqlens is not None:
                 q = query_states.transpose(1, 2).contiguous()
                 k = key_states.transpose(1, 2).contiguous()
@@ -616,6 +620,8 @@ class Qwen3Attention(nn.Module):
                     k=k,
                     v=v,
                     cache_seqlens=cache_seqlens,
+                    cache_batch_idx=cache_batch_idx,
+                    block_table=block_table,
                     softmax_scale=self.scaling,
                     causal=False,
                 )

@@ -6,7 +6,7 @@ assumes one row.  This module exposes the lower-level operation needed by both
 evaluation and RL rollout: one multimodal prefill per row, followed by a shared
 batched KV cache with independently advancing/eos-ing rows.
 
-``NativeTextBatchSession`` is the common cache primitive.  The public
+``ContiguousTextBatchSession`` is the common cache primitive.  The public
 ``batch_interleave_gen`` entry point adds the deliberately small two-queue
 scheduler used by TI2TI: drain every text-ready row as one batch, then drain
 every image-ready row as one homogeneous SDE batch.  More elaborate scheduling
@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import copy
 import math
+from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -27,12 +28,20 @@ import torch
 from torch import Tensor
 
 from .models.neo_unify.conversation import get_conv_template
+from .models.neo_unify.modeling_qwen3 import (
+    create_block_causal_mask,
+    effective_attn_backend,
+)
 from .models.neo_unify.utils import load_image_native
+from .utils.decode_cache import (
+    BatchedFlashDecodeCache,
+    ContinuousFlashDecodeCache,
+)
 
 
 @dataclass(frozen=True)
 class TextBatchRequest:
-    """One prompt row for :class:`NativeTextBatchSession`."""
+    """One prompt row for :class:`ContiguousTextBatchSession`."""
 
     prompt: str
     images: tuple[Any, ...] = ()
@@ -265,14 +274,83 @@ def _left_pad_prefills(
     return padded_embeds, padded_indexes, attention_mask, key_valid
 
 
-class NativeTextBatchSession:
-    """A batched native U1/U1.5 text-only KV-cache session.
+def _prepare_text_request(
+    model: Any,
+    tokenizer: Any,
+    request: TextBatchRequest,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    image_start_token: str,
+    image_context_token: str,
+    image_end_token: str,
+) -> tuple[Tensor, Tensor]:
+    """Render one official prompt and build embeddings without a dense mask."""
 
-    ``commit`` accepts one token and one ``accepted`` flag per row.  Rejected
-    rows still occupy a physical cache slot (all DynamicCache rows must have
-    one shared length), but that slot is masked from every later query and the
-    row's THW time index does not advance.  This is what permits independent
-    EOS/length stopping without corrupting active rows.
+    prompt = request.prompt
+    images = list(request.images)
+    image_count = prompt.count("<image>")
+    if len(images) < image_count:
+        raise ValueError("SenseNova prompt has more image placeholders than images")
+    if len(images) > image_count:
+        prompt = "<image>\n" * (len(images) - image_count) + prompt
+
+    pixel_values: list[Tensor] = []
+    grid_hw: list[Tensor] = []
+    for image in images:
+        pixels, grid = load_image_native(
+            image,
+            model.patch_size,
+            model.downsample_ratio,
+            min_pixels=512 * 512,
+            max_pixels=min(
+                2048 * 2048,
+                (4096 * 4096) // max(1, len(images)),
+            ),
+            upscale=False,
+        )
+        pixel_values.append(pixels.to(device, dtype=dtype))
+        grid_hw.append(grid.to(device))
+
+    template = get_conv_template(model.template)
+    template.system_message = request.system_message
+    template.append_message(template.roles[0], prompt)
+    template.append_message(template.roles[1], None)
+    query = template.get_prompt() + request.assistant_prefix
+    for grid in grid_hw:
+        context_tokens = int(
+            grid[0, 0] * grid[0, 1] * float(model.downsample_ratio) ** 2
+        )
+        image_span = (
+            image_start_token
+            + image_context_token * context_tokens
+            + image_end_token
+        )
+        query = query.replace("<image>", image_span, 1)
+
+    pixels_tensor = torch.cat(pixel_values) if pixel_values else None
+    grid_tensor = torch.cat(grid_hw) if grid_hw else None
+    return model._build_it2i_embeddings(
+        tokenizer,
+        query,
+        pixels_tensor,
+        grid_tensor,
+    )
+
+
+class ContiguousTextBatchSession:
+    """A native U1/U1.5 contiguous-batch text inference session.
+
+    The constructor performs one batched multimodal prefill.  Each later
+    ``advance``/``commit`` call performs one batched decode step for the rows
+    selected by ``accepted``.  The caller owns token selection, so the same
+    session can serve greedy evaluation or stochastic RL rollout while sharing
+    the exact prompt/image preprocessing and KV-cache implementation.
+
+    With FlashAttention enabled, only accepted rows enter the model forward and
+    ``cache_batch_idx`` maps them into contiguous preallocated KV storage.  The
+    eager fallback keeps a static physical batch and masks rejected rows.  In
+    both modes each logical row advances and stops independently.
     """
 
     def __init__(
@@ -288,6 +366,7 @@ class NativeTextBatchSession:
         image_end_token: str = "</img>",
         allow_image_actions: bool = False,
         prefix_sharing: bool = False,
+        flash_decode_tokens: int = 0,
     ) -> None:
         rows = tuple(requests)
         if not rows:
@@ -365,6 +444,28 @@ class NativeTextBatchSession:
             )
             self.next_logits = outputs.logits[:, -1, :]
 
+        self._flash_decode = False
+        if flash_decode_tokens:
+            if type(flash_decode_tokens) is not int or flash_decode_tokens < 1:
+                raise ValueError("SenseNova flash_decode_tokens must be positive")
+            if self.device.type != "cuda" or effective_attn_backend() != "flash":
+                raise RuntimeError(
+                    "SenseNova batched Flash decode requires CUDA and flash backend"
+                )
+            self.cache = BatchedFlashDecodeCache.from_cache(
+                self.cache,
+                key_valid=self.key_valid,
+                capacity=int(self.key_valid.shape[1]) + min(flash_decode_tokens, 2048),
+                max_capacity=int(self.key_valid.shape[1]) + flash_decode_tokens,
+            )
+            self._flash_decode = True
+
+    @property
+    def decode_backend(self) -> str:
+        """Return the active decode implementation for observability/tests."""
+
+        return "flash_kv" if self._flash_decode else "masked_dynamic"
+
     def _prepare_request(
         self,
         request: TextBatchRequest,
@@ -373,61 +474,22 @@ class NativeTextBatchSession:
         image_context_token: str,
         image_end_token: str,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        prompt = request.prompt
-        images = list(request.images)
-        image_count = prompt.count("<image>")
-        if len(images) < image_count:
-            raise ValueError("SenseNova prompt has more image placeholders than images")
-        if len(images) > image_count:
-            prompt = "<image>\n" * (len(images) - image_count) + prompt
-
-        pixel_values: list[Tensor] = []
-        grid_hw: list[Tensor] = []
-        for image in images:
-            pixels, grid = load_image_native(
-                image,
-                self.model.patch_size,
-                self.model.downsample_ratio,
-                min_pixels=512 * 512,
-                max_pixels=min(
-                    2048 * 2048,
-                    (4096 * 4096) // max(1, len(images)),
-                ),
-                upscale=False,
-            )
-            pixel_values.append(pixels.to(self.device, dtype=self.dtype))
-            grid_hw.append(grid.to(self.device))
-
-        template = get_conv_template(self.model.template)
-        template.system_message = request.system_message
-        template.append_message(template.roles[0], prompt)
-        template.append_message(template.roles[1], None)
-        query = template.get_prompt() + request.assistant_prefix
-        for grid in grid_hw:
-            context_tokens = int(
-                grid[0, 0]
-                * grid[0, 1]
-                * float(self.model.downsample_ratio) ** 2
-            )
-            image_span = (
-                image_start_token
-                + image_context_token * context_tokens
-                + image_end_token
-            )
-            query = query.replace("<image>", image_span, 1)
-
-        pixels_tensor = torch.cat(pixel_values) if pixel_values else None
-        grid_tensor = torch.cat(grid_hw) if grid_hw else None
-        inputs_embeds, indexes, attention = self.model._build_it2i_inputs(
+        inputs_embeds, indexes = _prepare_text_request(
+            self.model,
             self.tokenizer,
-            query,
-            pixels_tensor,
-            grid_tensor,
+            request,
+            device=self.device,
+            dtype=self.dtype,
+            image_start_token=image_start_token,
+            image_context_token=image_context_token,
+            image_end_token=image_end_token,
         )
-        return inputs_embeds, indexes, attention["full_attention"]
+        return inputs_embeds, indexes, create_block_causal_mask(indexes[0])
 
     def constrained_logits(self) -> Tensor:
-        logits = self.next_logits.float()
+        # ``Tensor.float()`` aliases an already-float32 tensor.  Always clone so
+        # masking the image action cannot corrupt the cached unmodified logits.
+        logits = self.next_logits.to(dtype=torch.float32, copy=True)
         if logits.ndim != 2 or logits.shape[0] != self.batch_size:
             raise RuntimeError(
                 "SenseNova batch returned invalid next-token logits "
@@ -456,6 +518,32 @@ class NativeTextBatchSession:
             )
         if accepted.device != self.device:
             raise ValueError("SenseNova text batch accepted mask is on the wrong device")
+
+        if self._flash_decode:
+            active_indices = torch.nonzero(accepted, as_tuple=False).flatten()
+            if not active_indices.numel():
+                return
+            next_t = self.t_indexes.index_select(0, active_indices) + 1
+            zeros = torch.zeros_like(next_t)
+            indexes = torch.stack((next_t, zeros, zeros), dim=1).unsqueeze(-1)
+            self.cache.activate(active_indices)
+            try:
+                outputs = self.model.language_model(
+                    input_ids=token_ids.index_select(0, active_indices).reshape(-1, 1),
+                    indexes=indexes,
+                    attention_mask={"full_attention": None},
+                    past_key_values=self.cache,
+                    use_cache=True,
+                )
+            except Exception:
+                self.cache.cancel_active()
+                raise
+            self.cache.commit_active()
+            self.t_indexes.index_copy_(0, active_indices, next_t)
+            self.next_logits.index_copy_(
+                0, active_indices, outputs.logits[:, -1, :]
+            )
+            return
 
         next_t = self.t_indexes + accepted.to(dtype=torch.long)
         zeros = torch.zeros_like(next_t)
@@ -487,6 +575,8 @@ class NativeTextBatchSession:
         )
 
     def advance(self, token_ids: Tensor, accepted: Tensor) -> Tensor:
+        """Commit one token for each accepted row and return next-token logits."""
+
         self.commit(token_ids, accepted)
         return self.constrained_logits()
 
@@ -629,6 +719,583 @@ class NativeTextBatchSession:
         self.next_logits = torch.where(
             ready.unsqueeze(1), outputs.logits[:, -1, :], self.next_logits
         )
+
+
+# Backwards-compatible name used by the first WIP callers.  New integrations
+# should use ``ContiguousTextBatchSession`` so the execution contract is clear.
+NativeTextBatchSession = ContiguousTextBatchSession
+
+
+@dataclass(frozen=True)
+class ContinuousTextBatch:
+    """Decode-ready rows returned by :meth:`ContinuousTextBatchEngine.schedule`."""
+
+    request_ids: tuple[int, ...]
+    logits: Tensor
+
+
+@dataclass
+class _ContinuousTextState:
+    request_id: int
+    request: TextBatchRequest
+    max_new_tokens: int
+    inputs_embeds: Tensor | None = None
+    indexes: Tensor | None = None
+    prefill_cache: Any | None = None
+    prefill_cursor: int = 0
+    slot: int | None = None
+    t_index: int = 0
+    next_logits: Tensor | None = None
+    generated: list[int] = field(default_factory=list)
+
+
+def _chunk_end_without_splitting_block(
+    temporal_indexes: Tensor,
+    start: int,
+    chunk_size: int,
+) -> int:
+    """Choose a bounded prefill end without splitting a bidirectional block."""
+
+    if temporal_indexes.ndim != 1 or temporal_indexes.dtype != torch.long:
+        raise ValueError("SenseNova temporal indexes must be one-dimensional long")
+    length = int(temporal_indexes.numel())
+    if type(start) is not int or not 0 <= start < length:
+        raise ValueError("SenseNova prefill start is out of range")
+    if type(chunk_size) is not int or chunk_size < 1:
+        raise ValueError("SenseNova prefill chunk size must be positive")
+    end = min(length, start + chunk_size)
+    if end == length:
+        return end
+    block = temporal_indexes[end - 1]
+    while end < length and bool(temporal_indexes[end].eq(block).item()):
+        end += 1
+    return end
+
+
+def _chunk_block_causal_mask(
+    temporal_indexes: Tensor,
+    start: int,
+    end: int,
+) -> Tensor:
+    """Build only the query-chunk rows of the official block-causal mask."""
+
+    if temporal_indexes.ndim != 1 or temporal_indexes.dtype != torch.long:
+        raise ValueError("SenseNova temporal indexes must be one-dimensional long")
+    length = int(temporal_indexes.numel())
+    if not 0 <= start < end <= length:
+        raise ValueError("SenseNova prefill chunk range is invalid")
+    query_index = temporal_indexes[start:end]
+    key_index = temporal_indexes[:end]
+    query_positions = torch.arange(start, end, device=temporal_indexes.device)
+    key_positions = torch.arange(end, device=temporal_indexes.device)
+    allowed = query_index[:, None].eq(key_index[None, :]) | key_positions[
+        None, :
+    ].le(query_positions[:, None])
+    zeros = torch.zeros((), device=temporal_indexes.device, dtype=torch.float32)
+    blocked = torch.full(
+        (), -torch.inf, device=temporal_indexes.device, dtype=torch.float32
+    )
+    return torch.where(allowed, zeros, blocked).unsqueeze(0).unsqueeze(0)
+
+
+class ContinuousTextBatchEngine:
+    """Hand-written continuous batching engine for native SenseNova TI2T.
+
+    Requests enter a waiting queue, receive block-safe chunked prefill, and are
+    admitted into reusable physical KV slots.  Every decode iteration forwards
+    all currently active rows together.  Finished rows release their slots, so
+    later requests join without rebuilding or copying surviving rows' caches.
+
+    ``schedule`` exposes float32 logits and ``advance`` accepts caller-selected
+    tokens.  This split is intentional: evaluation can use argmax while RL can
+    sample and record exact behavior log-probabilities from the same engine.
+    KV storage is a fixed-size paged pool, so one long request does not grow
+    every physical batch row.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        tokenizer: Any,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype = torch.bfloat16,
+        max_batch_size: int = 32,
+        max_model_len: int = 16384,
+        prefill_chunk_size: int = 2048,
+        default_max_new_tokens: int = 2048,
+        max_kv_tokens: int = 98304,
+        kv_page_size: int = 256,
+        prefix_sharing: bool = True,
+        truncate_to_max_model_len: bool = False,
+        image_start_token: str = "<img>",
+        image_context_token: str = "<IMG_CONTEXT>",
+        image_end_token: str = "</img>",
+    ) -> None:
+        if type(max_batch_size) is not int or max_batch_size < 1:
+            raise ValueError("SenseNova continuous max_batch_size must be positive")
+        if type(max_model_len) is not int or max_model_len < 2:
+            raise ValueError("SenseNova continuous max_model_len must exceed one")
+        if type(prefill_chunk_size) is not int or prefill_chunk_size < 1:
+            raise ValueError("SenseNova continuous prefill_chunk_size must be positive")
+        if type(default_max_new_tokens) is not int or default_max_new_tokens < 1:
+            raise ValueError("SenseNova default max_new_tokens must be positive")
+        if type(max_kv_tokens) is not int or max_kv_tokens < 256:
+            raise ValueError("SenseNova continuous max_kv_tokens is too small")
+        if type(kv_page_size) is not int or kv_page_size < 256 or kv_page_size % 256:
+            raise ValueError(
+                "SenseNova continuous kv_page_size must be a multiple of 256"
+            )
+
+        self.device = torch.device(device)
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
+        if self.device.type != "cuda" or effective_attn_backend() != "flash":
+            raise RuntimeError(
+                "SenseNova continuous batching requires CUDA FlashAttention"
+            )
+        self.model = model
+        self.tokenizer = tokenizer
+        self.dtype = dtype
+        self.max_batch_size = max_batch_size
+        self.max_model_len = max_model_len
+        self.prefill_chunk_size = prefill_chunk_size
+        self.default_max_new_tokens = default_max_new_tokens
+        self.max_kv_tokens = max_kv_tokens
+        self.kv_page_size = kv_page_size
+        self.prefix_sharing = bool(prefix_sharing)
+        self.truncate_to_max_model_len = bool(truncate_to_max_model_len)
+        self.image_start_token = image_start_token
+        self.image_context_token = image_context_token
+        self.image_end_token = image_end_token
+
+        self.image_start_token_id = int(
+            tokenizer.convert_tokens_to_ids(image_start_token)
+        )
+        model.img_context_token_id = int(
+            tokenizer.convert_tokens_to_ids(image_context_token)
+        )
+        model.img_start_token_id = self.image_start_token_id
+        template = get_conv_template(model.template)
+        self.eos_token_id = int(
+            tokenizer.convert_tokens_to_ids(template.sep.strip())
+        )
+
+        self._next_request_id = 0
+        self._waiting: deque[_ContinuousTextState] = deque()
+        self._prefilling: _ContinuousTextState | None = None
+        self._active: dict[int, _ContinuousTextState] = {}
+        self._completed: deque[tuple[int, TextBatchResult]] = deque()
+        self._free_slots: deque[int] = deque(range(max_batch_size))
+        self._cache: ContinuousFlashDecodeCache | None = None
+        self._scheduled_request_ids: tuple[int, ...] | None = None
+
+    @property
+    def decode_backend(self) -> str:
+        return "flash_kv_paged_continuous"
+
+    @property
+    def has_unfinished_requests(self) -> bool:
+        return bool(self._waiting or self._prefilling or self._active)
+
+    @property
+    def active_size(self) -> int:
+        return len(self._active)
+
+    @property
+    def waiting_size(self) -> int:
+        return len(self._waiting) + int(self._prefilling is not None)
+
+    @property
+    def free_kv_tokens(self) -> int:
+        """Return whole-page KV capacity still available to new rows/decode."""
+
+        if self._cache is None:
+            return self.max_kv_tokens
+        return self._cache.free_kv_tokens
+
+    def submit(
+        self,
+        request: TextBatchRequest,
+        *,
+        max_new_tokens: int | None = None,
+    ) -> int:
+        """Queue one request and return its stable engine-local identifier."""
+
+        if not isinstance(request, TextBatchRequest):
+            raise TypeError("SenseNova continuous request must be TextBatchRequest")
+        limit = self.default_max_new_tokens if max_new_tokens is None else max_new_tokens
+        if type(limit) is not int or limit < 1:
+            raise ValueError("SenseNova request max_new_tokens must be positive")
+        request_id = self._next_request_id
+        self._next_request_id += 1
+        self._waiting.append(
+            _ContinuousTextState(
+                request_id=request_id,
+                request=request,
+                max_new_tokens=limit,
+            )
+        )
+        return request_id
+
+    def _prepare_prefill(self, state: _ContinuousTextState) -> None:
+        inputs_embeds, indexes = _prepare_text_request(
+            self.model,
+            self.tokenizer,
+            state.request,
+            device=self.device,
+            dtype=self.dtype,
+            image_start_token=self.image_start_token,
+            image_context_token=self.image_context_token,
+            image_end_token=self.image_end_token,
+        )
+        prefix = int(inputs_embeds.shape[1])
+        if prefix + state.max_new_tokens > self.max_model_len:
+            available = self.max_model_len - prefix
+            if available < 1 or not self.truncate_to_max_model_len:
+                raise ValueError(
+                    "SenseNova request exceeds max_model_len: "
+                    f"{prefix}+{state.max_new_tokens}>{self.max_model_len}"
+                )
+            state.max_new_tokens = available
+        state.inputs_embeds = inputs_embeds
+        state.indexes = indexes
+
+    def _admit(
+        self,
+        state: _ContinuousTextState,
+        prefix_cache: Any,
+        next_logits: Tensor,
+        t_index: int,
+    ) -> None:
+        if not self._free_slots:
+            raise RuntimeError("SenseNova continuous batch has no free KV slot")
+        slot = self._free_slots.popleft()
+        if self._cache is None:
+            self._cache = ContinuousFlashDecodeCache.from_prefix(
+                prefix_cache,
+                max_batch_size=self.max_batch_size,
+                max_capacity=self.max_model_len,
+                max_kv_tokens=self.max_kv_tokens,
+                page_size=self.kv_page_size,
+                slot=slot,
+            )
+        else:
+            self._cache.load_prefix(slot, prefix_cache)
+        state.slot = slot
+        state.t_index = t_index
+        state.next_logits = next_logits.detach().clone()
+        state.inputs_embeds = None
+        state.indexes = None
+        state.prefill_cache = None
+        self._active[state.request_id] = state
+
+    def _admit_shared_prefixes(
+        self,
+        source: _ContinuousTextState,
+        prefix_cache: Any,
+        next_logits: Tensor,
+        t_index: int,
+    ) -> None:
+        if not self.prefix_sharing or not self._free_slots or not self._waiting:
+            return
+        remaining: deque[_ContinuousTextState] = deque()
+        while self._waiting:
+            candidate = self._waiting.popleft()
+            prefix = int(prefix_cache.get_seq_length())
+            if (
+                self._free_slots
+                and self._cache is not None
+                and self._cache.can_admit(prefix)
+                and _requests_share_prefix((source.request, candidate.request))
+            ):
+                if prefix + candidate.max_new_tokens > self.max_model_len:
+                    available = self.max_model_len - prefix
+                    if available < 1 or not self.truncate_to_max_model_len:
+                        raise ValueError(
+                            "SenseNova shared-prefix request exceeds max_model_len"
+                        )
+                    candidate.max_new_tokens = available
+                self._admit(candidate, prefix_cache, next_logits, t_index)
+            else:
+                remaining.append(candidate)
+        self._waiting = remaining
+
+    @torch.no_grad()
+    def _prefill_one_chunk(self) -> None:
+        if not self._free_slots:
+            return
+        if self._prefilling is None:
+            if not self._waiting:
+                return
+            self._prefilling = self._waiting.popleft()
+            self._prepare_prefill(self._prefilling)
+
+        state = self._prefilling
+        assert state is not None and state.inputs_embeds is not None
+        assert state.indexes is not None
+        prefix_length = int(state.inputs_embeds.shape[1])
+        if state.prefill_cursor == prefix_length:
+            assert state.prefill_cache is not None
+            assert state.next_logits is not None
+            if self._cache is not None and not self._cache.can_admit(prefix_length):
+                return
+            self._prefilling = None
+            self._admit(
+                state,
+                state.prefill_cache,
+                state.next_logits,
+                state.t_index,
+            )
+            return
+        start = state.prefill_cursor
+        temporal_indexes = state.indexes[0]
+        end = _chunk_end_without_splitting_block(
+            temporal_indexes,
+            start,
+            self.prefill_chunk_size,
+        )
+        attention_mask = _chunk_block_causal_mask(temporal_indexes, start, end)
+        outputs = self.model.language_model(
+            inputs_embeds=state.inputs_embeds[:, start:end],
+            indexes=state.indexes[:, start:end],
+            attention_mask={"full_attention": attention_mask},
+            past_key_values=state.prefill_cache,
+            use_cache=True,
+        )
+        state.prefill_cache = outputs.past_key_values
+        state.prefill_cursor = end
+        if end < prefix_length:
+            return
+
+        prefix_cache = state.prefill_cache
+        state.next_logits = outputs.logits[:, -1, :].detach().clone()
+        state.t_index = int(temporal_indexes.max().item())
+        if self._cache is not None and not self._cache.can_admit(prefix_length):
+            return
+        self._prefilling = None
+        self._admit(state, prefix_cache, state.next_logits, state.t_index)
+        self._admit_shared_prefixes(
+            state,
+            prefix_cache,
+            state.next_logits,
+            state.t_index,
+        )
+
+    @torch.no_grad()
+    def schedule(self) -> ContinuousTextBatch | None:
+        """Run one prefill chunk and expose all decode-ready row logits."""
+
+        if self._scheduled_request_ids is not None:
+            raise RuntimeError("SenseNova continuous batch must be advanced first")
+        self._prefill_one_chunk()
+        if not self._active:
+            return None
+        states = sorted(self._active.values(), key=lambda state: int(state.slot))
+        request_ids = tuple(state.request_id for state in states)
+        logits = torch.cat(
+            tuple(state.next_logits for state in states if state.next_logits is not None),
+            dim=0,
+        ).to(dtype=torch.float32, copy=True)
+        logits[:, self.image_start_token_id] = torch.finfo(logits.dtype).min
+        self._scheduled_request_ids = request_ids
+        return ContinuousTextBatch(request_ids=request_ids, logits=logits)
+
+    def _finish(self, state: _ContinuousTextState, reason: str) -> None:
+        if state.slot is None or self._cache is None:
+            raise RuntimeError("SenseNova completed request has no KV slot")
+        self._cache.release(state.slot)
+        self._free_slots.append(state.slot)
+        del self._active[state.request_id]
+        self._completed.append(
+            (
+                state.request_id,
+                TextBatchResult(
+                    text=self.tokenizer.decode(
+                        state.generated, skip_special_tokens=True
+                    ),
+                    finish_reason=reason,
+                    generated_tokens=len(state.generated),
+                ),
+            )
+        )
+
+    @torch.no_grad()
+    def advance(
+        self,
+        batch: ContinuousTextBatch,
+        token_ids: Tensor,
+        *,
+        stop_mask: Tensor | None = None,
+    ) -> None:
+        """Accept caller-selected tokens and execute one active-row decode."""
+
+        if batch.request_ids != self._scheduled_request_ids:
+            raise RuntimeError("SenseNova continuous batch is stale or out of order")
+        count = len(batch.request_ids)
+        if token_ids.shape != (count,) or token_ids.dtype != torch.long:
+            raise ValueError("SenseNova continuous token_ids must be batch-shaped long")
+        if token_ids.device != self.device:
+            raise ValueError("SenseNova continuous token_ids are on the wrong device")
+        if stop_mask is None:
+            stop_mask = torch.zeros(count, device=self.device, dtype=torch.bool)
+        if stop_mask.shape != (count,) or stop_mask.dtype != torch.bool:
+            raise ValueError("SenseNova continuous stop_mask must be batch-shaped bool")
+        if stop_mask.device != self.device:
+            raise ValueError("SenseNova continuous stop_mask is on the wrong device")
+
+        states = [self._active[request_id] for request_id in batch.request_ids]
+        token_values = token_ids.detach().cpu().tolist()
+        stop_values = stop_mask.detach().cpu().tolist()
+        continuing: list[tuple[_ContinuousTextState, int]] = []
+        finished: list[tuple[_ContinuousTextState, str]] = []
+        for state, token, forced_stop in zip(
+            states, token_values, stop_values, strict=True
+        ):
+            if forced_stop:
+                finished.append((state, "stopped"))
+            elif int(token) == self.eos_token_id:
+                finished.append((state, "eos"))
+            elif len(state.generated) + 1 >= state.max_new_tokens:
+                finished.append((state, "max_new_tokens"))
+            else:
+                continuing.append((state, int(token)))
+
+        outputs = None
+        if continuing:
+            assert self._cache is not None
+            slots = torch.tensor(
+                [int(state.slot) for state, _ in continuing],
+                device=self.device,
+                dtype=torch.long,
+            )
+            tokens = torch.tensor(
+                [token for _, token in continuing],
+                device=self.device,
+                dtype=torch.long,
+            )
+            next_t = torch.tensor(
+                [state.t_index + 1 for state, _ in continuing],
+                device=self.device,
+                dtype=torch.long,
+            )
+            zeros = torch.zeros_like(next_t)
+            indexes = torch.stack((next_t, zeros, zeros), dim=1).unsqueeze(-1)
+            self._cache.activate(slots)
+            try:
+                outputs = self.model.language_model(
+                    input_ids=tokens.reshape(-1, 1),
+                    indexes=indexes,
+                    attention_mask={"full_attention": None},
+                    past_key_values=self._cache,
+                    use_cache=True,
+                )
+            except Exception:
+                self._cache.cancel_active()
+                raise
+            self._cache.commit_active()
+
+        continuing_index = 0
+        finish_by_id = {state.request_id: reason for state, reason in finished}
+        for state, token in zip(states, token_values, strict=True):
+            reason = finish_by_id.get(state.request_id)
+            if reason == "stopped" or reason == "eos":
+                continue
+            state.generated.append(int(token))
+            if reason is None:
+                assert outputs is not None
+                state.t_index += 1
+                state.next_logits = outputs.logits[
+                    continuing_index : continuing_index + 1, -1, :
+                ].detach()
+                continuing_index += 1
+
+        for state, reason in finished:
+            self._finish(state, reason)
+        self._scheduled_request_ids = None
+
+    def pop_completed(self) -> tuple[tuple[int, TextBatchResult], ...]:
+        """Return completed results once, in completion order."""
+
+        completed = tuple(self._completed)
+        self._completed.clear()
+        return completed
+
+
+@torch.no_grad()
+def continuous_batch_text_gen(
+    model: Any,
+    tokenizer: Any,
+    requests: Sequence[TextBatchRequest],
+    *,
+    generation_config: Any | None = None,
+    max_batch_size: int = 32,
+    max_model_len: int = 16384,
+    prefill_chunk_size: int = 2048,
+    max_kv_tokens: int = 98304,
+    kv_page_size: int = 256,
+    prefix_sharing: bool = True,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> tuple[TextBatchResult, ...]:
+    """Greedily drain requests through :class:`ContinuousTextBatchEngine`."""
+
+    rows = tuple(requests)
+    if not rows or not all(isinstance(row, TextBatchRequest) for row in rows):
+        raise ValueError("SenseNova continuous text batch must contain valid requests")
+    max_new_tokens = int(
+        getattr(generation_config, "max_new_tokens", None) or 8192
+    )
+    repetition_penalty = float(
+        getattr(generation_config, "repetition_penalty", None) or 1.0
+    )
+    if repetition_penalty < 1.0:
+        raise ValueError("SenseNova repetition_penalty must be at least 1.0")
+    runtime_device = torch.device(device if device is not None else model.device)
+    engine = ContinuousTextBatchEngine(
+        model,
+        tokenizer,
+        device=runtime_device,
+        dtype=dtype,
+        max_batch_size=max_batch_size,
+        max_model_len=max_model_len,
+        prefill_chunk_size=prefill_chunk_size,
+        default_max_new_tokens=max_new_tokens,
+        max_kv_tokens=max_kv_tokens,
+        kv_page_size=kv_page_size,
+        prefix_sharing=prefix_sharing,
+    )
+    request_ids = [engine.submit(row) for row in rows]
+    seen_tokens: dict[int, set[int]] = {request_id: set() for request_id in request_ids}
+    completed: dict[int, TextBatchResult] = {}
+    while engine.has_unfinished_requests:
+        batch = engine.schedule()
+        if batch is None:
+            continue
+        logits = batch.logits
+        if repetition_penalty != 1.0:
+            seen = torch.zeros_like(logits, dtype=torch.bool)
+            for row, request_id in enumerate(batch.request_ids):
+                if seen_tokens[request_id]:
+                    indexes = torch.tensor(
+                        sorted(seen_tokens[request_id]),
+                        device=runtime_device,
+                        dtype=torch.long,
+                    )
+                    seen[row, indexes] = True
+            logits = _apply_repetition_penalty(logits, seen, repetition_penalty)
+        next_tokens = torch.argmax(logits, dim=-1).to(
+            device=runtime_device, dtype=torch.long
+        )
+        for request_id, token in zip(
+            batch.request_ids, next_tokens.detach().cpu().tolist(), strict=True
+        ):
+            if int(token) != engine.eos_token_id:
+                seen_tokens[request_id].add(int(token))
+        engine.advance(batch, next_tokens)
+        completed.update(engine.pop_completed())
+    completed.update(engine.pop_completed())
+    return tuple(completed[request_id] for request_id in request_ids)
 
 
 def _image_attention_mask(key_valid: Tensor, image_tokens: int) -> Tensor:
@@ -816,11 +1483,16 @@ def batch_text_gen(
         device=runtime_device,
         dtype=dtype,
         prefix_sharing=prefix_sharing,
+        flash_decode_tokens=(
+            max_new_tokens
+            if runtime_device.type == "cuda" and effective_attn_backend() == "flash"
+            else 0
+        ),
     )
     runtime_device = session.device
     template = get_conv_template(model.template)
     eos_token_id = int(tokenizer.convert_tokens_to_ids(template.sep.strip()))
-    active = torch.ones(len(rows), device=runtime_device, dtype=torch.bool)
+    active = [True for _ in rows]
     seen_tokens = torch.zeros(
         len(rows),
         int(session.next_logits.shape[-1]),
@@ -829,25 +1501,39 @@ def batch_text_gen(
     )
     generated: list[list[int]] = [[] for _ in rows]
     reasons = ["" for _ in rows]
-    while bool(active.any().item()):
+    while any(active):
         logits = _apply_repetition_penalty(
             session.constrained_logits(), seen_tokens, repetition_penalty
         )
         next_tokens = torch.argmax(logits, dim=-1).to(
             device=runtime_device, dtype=torch.long
         )
-        accepted = active & next_tokens.ne(eos_token_id)
-        for row in torch.nonzero(active, as_tuple=False).flatten().tolist():
-            if not bool(accepted[row].item()):
+        token_values = next_tokens.detach().cpu().tolist()
+        accepted_indices = []
+        for row, is_active in enumerate(active):
+            if not is_active:
+                continue
+            token = int(token_values[row])
+            if token == eos_token_id:
                 active[row] = False
                 reasons[row] = "eos"
                 continue
-            generated[row].append(int(next_tokens[row].item()))
+            generated[row].append(token)
             if len(generated[row]) >= max_new_tokens:
                 active[row] = False
                 reasons[row] = "max_new_tokens"
-        if bool(accepted.any().item()):
-            accepted_rows = torch.nonzero(accepted, as_tuple=False).flatten()
+            else:
+                # There is no next token to select after a row reaches its
+                # length limit, so avoid one otherwise wasted model forward.
+                accepted_indices.append(row)
+        if accepted_indices:
+            accepted_rows = torch.tensor(
+                accepted_indices, device=runtime_device, dtype=torch.long
+            )
+            accepted = torch.zeros(
+                len(rows), device=runtime_device, dtype=torch.bool
+            )
+            accepted[accepted_rows] = True
             seen_tokens[accepted_rows, next_tokens.index_select(0, accepted_rows)] = True
             session.commit(next_tokens, accepted)
     return tuple(
@@ -1050,6 +1736,9 @@ def batch_interleave_gen(
 
 
 __all__ = [
+    "ContiguousTextBatchSession",
+    "ContinuousTextBatch",
+    "ContinuousTextBatchEngine",
     "InterleaveBatchRequest",
     "InterleaveBatchResult",
     "NativeTextBatchSession",
@@ -1057,4 +1746,5 @@ __all__ = [
     "TextBatchResult",
     "batch_interleave_gen",
     "batch_text_gen",
+    "continuous_batch_text_gen",
 ]

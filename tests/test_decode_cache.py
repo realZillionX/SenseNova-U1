@@ -8,6 +8,8 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from sensenova_u1.utils.decode_cache import (
+    BatchedFlashDecodeCache,
+    ContinuousFlashDecodeCache,
     CudaGraphDecodeWorkspace,
     PreallocatedDecodeCache,
 )
@@ -48,6 +50,83 @@ class DecodeCacheTest(unittest.TestCase):
         self.assertEqual(int(cache.flash_decode_seqlens.item()), 3)
         cache.sync_flash_decode_length()
         self.assertEqual(int(cache.flash_decode_seqlens.item()), 5)
+
+    def test_batched_cache_compacts_prefix_and_selects_active_rows(self) -> None:
+        prefix = DynamicCache()
+        keys = torch.arange(2 * 2 * 4 * 3, dtype=torch.float32).reshape(
+            2, 2, 4, 3
+        )
+        prefix.update(keys, keys + 100, 0)
+        valid = torch.tensor(
+            [[False, False, True, True], [True, True, True, True]]
+        )
+
+        cache = BatchedFlashDecodeCache.from_cache(
+            prefix, key_valid=valid, capacity=8
+        )
+
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [2, 4])
+        expected = keys[0, :, 2:].transpose(0, 1)
+        self.assertTrue(
+            torch.equal(cache.layers[0].flash_decode_k_cache[0, :2], expected)
+        )
+
+        indices = torch.tensor([1], dtype=torch.long)
+        cache.activate(indices)
+        self.assertEqual(cache.layers[0].flash_decode_seqlens.tolist(), [4])
+        self.assertEqual(
+            cache.layers[0].flash_decode_cache_batch_idx.tolist(), [0]
+        )
+        self.assertEqual(cache.layers[0].max_batch_size, 1)
+        cache.commit_active()
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [2, 5])
+        self.assertFalse(
+            hasattr(cache.layers[0], "flash_decode_cache_batch_idx")
+        )
+
+        cache.ensure_capacity(indices)
+        self.assertEqual(cache.max_cache_len, 8)
+
+    def test_continuous_cache_reuses_released_physical_slot(self) -> None:
+        first = DynamicCache()
+        first_keys = torch.arange(1 * 2 * 4 * 3, dtype=torch.float32).reshape(
+            1, 2, 4, 3
+        )
+        first.update(first_keys, first_keys + 100, 0)
+        cache = ContinuousFlashDecodeCache.from_prefix(
+            first,
+            max_batch_size=3,
+            max_capacity=1024,
+            max_kv_tokens=1024,
+            page_size=256,
+            slot=0,
+        )
+
+        second = DynamicCache()
+        second_keys = torch.full((1, 2, 2, 3), 7.0)
+        second.update(second_keys, second_keys + 100, 0)
+        cache.load_prefix(2, second)
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [4, 0, 2])
+
+        slots = torch.tensor([2, 0], dtype=torch.long)
+        cache.activate(slots)
+        self.assertEqual(cache.layers[0].flash_decode_seqlens.tolist(), [2, 4])
+        self.assertEqual(
+            cache.layers[0].flash_decode_block_table[:, 0].tolist(), [1, 0]
+        )
+        cache.commit_active()
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [5, 0, 3])
+
+        cache.release(0)
+        cache.load_prefix(0, second)
+        self.assertEqual(cache.flash_decode_seqlens.tolist(), [2, 0, 3])
+        block = int(cache.flash_decode_block_table[0, 0].item())
+        self.assertTrue(
+            torch.equal(
+                cache.layers[0].flash_decode_k_cache[block, :2],
+                second_keys[0].transpose(0, 1),
+            )
+        )
 
     @unittest.skipUnless(torch.cuda.device_count() >= 2, "two CUDA devices required")
     def test_graph_capture_uses_each_workspace_device(self) -> None:
