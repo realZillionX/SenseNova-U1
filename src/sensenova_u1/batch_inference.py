@@ -718,73 +718,45 @@ def _run_image_sde_batch(
         timesteps = model._apply_time_schedule(
             timesteps, image_tokens, timestep_shift
         )
-    # FlashAttention can consume the prefix and current image span directly
-    # only when every physical prefix slot is real.  Rows that waited while a
-    # sibling continued text decoding contain masked dummy cache slots; those
-    # retain the explicit-mask fallback until the scheduler compacts/buckets
-    # their prefixes.  Identical-prefix rollout groups take this fast path.
-    use_flash_kv = bool(key_valid.all().item())
-    if use_flash_kv:
-        from .models.neo_unify.modeling_neo_chat import (
-            clear_flash_kv_cache,
-            prepare_flash_kv_cache,
+    attention = {"full_attention": _image_attention_mask(key_valid, image_tokens)}
+    for step in range(num_steps):
+        t = timesteps[step]
+        t_next = timesteps[step + 1]
+        z = model.patchify(prediction, divisor)
+        image_input = model.patchify(prediction, patch, channel_first=True)
+        image_embeds = model.extract_feature(
+            image_input.reshape(count * grid_h * grid_w, -1),
+            gen_model=True,
+            grid_hw=grid_hw,
+        ).reshape(count, image_tokens, -1)
+        expanded_t = t.expand(count * image_tokens)
+        timestep_embeddings = model.fm_modules["timestep_embedder"](
+            expanded_t
+        ).reshape(count, image_tokens, -1)
+        if model.add_noise_scale_embedding:
+            normalized_noise = noise_scale / float(model.noise_scale_max_value)
+            noise_values = torch.full_like(expanded_t, normalized_noise)
+            timestep_embeddings = timestep_embeddings + model.fm_modules[
+                "noise_scale_embedder"
+            ](noise_values).reshape(count, image_tokens, -1)
+        image_embeds = image_embeds + timestep_embeddings
+
+        # The current baseline has CFG disabled.  The interval remains in the
+        # signature so introducing batched CFG later does not change the API.
+        _ = cfg_interval
+        velocity = model._t2i_predict_v(
+            image_embeds,
+            indexes,
+            attention,
+            cache,
+            t,
+            z,
+            image_token_num=image_tokens,
+            timestep_embeddings=timestep_embeddings,
+            image_size=image_size,
         )
-
-        attention = {"full_attention": None}
-    else:
-        attention = {
-            "full_attention": _image_attention_mask(key_valid, image_tokens)
-        }
-
-    try:
-        if use_flash_kv:
-            prepare_flash_kv_cache(
-                cache,
-                current_len=image_tokens,
-                batch_size=count,
-            )
-        for step in range(num_steps):
-            t = timesteps[step]
-            t_next = timesteps[step + 1]
-            z = model.patchify(prediction, divisor)
-            image_input = model.patchify(prediction, patch, channel_first=True)
-            image_embeds = model.extract_feature(
-                image_input.reshape(count * grid_h * grid_w, -1),
-                gen_model=True,
-                grid_hw=grid_hw,
-            ).reshape(count, image_tokens, -1)
-            expanded_t = t.expand(count * image_tokens)
-            timestep_embeddings = model.fm_modules["timestep_embedder"](
-                expanded_t
-            ).reshape(count, image_tokens, -1)
-            if model.add_noise_scale_embedding:
-                normalized_noise = noise_scale / float(model.noise_scale_max_value)
-                noise_values = torch.full_like(expanded_t, normalized_noise)
-                timestep_embeddings = timestep_embeddings + model.fm_modules[
-                    "noise_scale_embedder"
-                ](noise_values).reshape(count, image_tokens, -1)
-            image_embeds = image_embeds + timestep_embeddings
-
-            # The current baseline has CFG disabled.  The interval remains in
-            # the signature so introducing batched CFG later does not change
-            # the API.
-            _ = cfg_interval
-            velocity = model._t2i_predict_v(
-                image_embeds,
-                indexes,
-                attention,
-                cache,
-                t,
-                z,
-                image_token_num=image_tokens,
-                timestep_embeddings=timestep_embeddings,
-                image_size=image_size,
-            )
-            z = z + (t_next - t) * velocity
-            prediction = model.unpatchify(z, divisor, height, width)
-    finally:
-        if use_flash_kv:
-            clear_flash_kv_cache(cache)
+        z = z + (t_next - t) * velocity
+        prediction = model.unpatchify(z, divisor, height, width)
     return prediction
 
 
