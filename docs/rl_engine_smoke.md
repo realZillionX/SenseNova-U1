@@ -49,10 +49,11 @@ all text spans in the complete interleaved trajectory.
 Each text event contains token IDs, selected-token log-probabilities, response
 mask, stop token, and decoded text. Each image event contains the final image,
 SDE geometry, and a trace bundle ID. Trace bundles are short-lived
-safetensors files under `/tmp/mova_rl_traces` and are exposed through:
+safetensors files under `/dev/shm/mova_rl_traces` and are exposed through:
 
 - `GET /v1/rl/traces/{bundle_id}`
 - `DELETE /v1/rl/traces/{bundle_id}`
+- `WS /v1/rl/traces/ws` for bounded multi-bundle trainer streaming and cleanup
 
 The RL-only image path disables CFG and applies the request's `t_eps`,
 `timestep_shift`, noise level, and selected SDE window. The ordinary

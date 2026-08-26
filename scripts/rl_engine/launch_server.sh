@@ -13,12 +13,13 @@ export PYTHONPATH="$LIGHTLLM_ROOT:$LIGHTX2V_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export MOVA_PLATFORM_PARENT_IMAGE=${MOVA_PLATFORM_PARENT_IMAGE:-mostar-u1-runtime:v4}
 export MOVA_IMAGE_DIGEST=${MOVA_IMAGE_DIGEST:-inspire:mova-u15-lightllm-x2v-rl:v2}
 export MOVA_SENSENOVA_COMMIT=${MOVA_SENSENOVA_COMMIT:-34ca2f66e7006489a0184eb8896a75f4081a0257}
-export MOVA_LIGHTLLM_COMMIT=${MOVA_LIGHTLLM_COMMIT:-a23a382c70ea7e3c31b2fafcd546c66c99c56fef}
-export MOVA_LIGHTX2V_COMMIT=${MOVA_LIGHTX2V_COMMIT:-f453c1ef22d1be21c76d186816c3aa6ad5c135c5}
+export MOVA_LIGHTLLM_COMMIT=${MOVA_LIGHTLLM_COMMIT:-dc093519d7a6979fd2258c7015f3608347092931}
+export MOVA_LIGHTX2V_COMMIT=${MOVA_LIGHTX2V_COMMIT:-57a304d62696a94e8920ec42615704ad970688c6}
 export MOVA_LIGHTLLM_ROOT="$LIGHTLLM_ROOT"
 export MOVA_LIGHTX2V_ROOT="$LIGHTX2V_ROOT"
-export MOVA_RL_TRACE_DIR=${MOVA_RL_TRACE_DIR:-/tmp/mova_rl_traces}
+export MOVA_RL_TRACE_DIR=${MOVA_RL_TRACE_DIR:-/dev/shm/mova_rl_traces}
 export MOVA_RL_TRACE_TTL=${MOVA_RL_TRACE_TTL:-3600}
+MAX_REQ_TOTAL_LEN=${MAX_REQ_TOTAL_LEN:-8192}
 
 "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
   --model-path "$MODEL_ROOT" \
@@ -33,6 +34,6 @@ exec "$PYTHON_BIN" -m lightllm.server.api_server \
   --x2v_gen_model_config "$LIGHTX2V_ROOT/configs/neopp/neopp_dense.json" \
   --host 0.0.0.0 \
   --port 8000 \
-  --max_req_total_len 65536 \
+  --max_req_total_len "$MAX_REQ_TOTAL_LEN" \
   --mem_fraction 0.75 \
   --tp 1
