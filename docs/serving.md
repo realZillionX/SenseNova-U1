@@ -39,3 +39,9 @@ Ordinary inference and RL use different, explicit profiles:
 startup fallback. Every request now updates the live scheduler step count; the
 RL response reports the actual trace geometry, and replay refuses a schedule
 mismatch.
+
+LightLLM reserves 70% of its post-weight memory for KV cache by default. The
+remaining headroom is part of the online-publication contract: a paused server
+must still receive a full-parameter bucket without OOM. Override
+`LIGHTLLM_MEM_FRACTION` only after measuring both rollout capacity and the
+largest planned weight bucket.

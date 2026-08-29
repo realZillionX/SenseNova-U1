@@ -54,6 +54,8 @@ class ServingContractTest(unittest.TestCase):
         launcher = (ROOT / "scripts/rl_engine/launch_server.sh").read_text()
         self.assertIn("INPUT_PENALTY", launcher)
         self.assertIn("MAX_REQ_TOTAL_LEN:-16384", launcher)
+        self.assertIn("LIGHTLLM_MEM_FRACTION:-0.70", launcher)
+        self.assertIn('--mem_fraction "$LIGHTLLM_MEM_FRACTION"', launcher)
 
 
 if __name__ == "__main__":

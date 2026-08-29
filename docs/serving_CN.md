@@ -26,3 +26,7 @@ CFG，并从不可变 plan 读取分辨率、step、shift、t-epsilon、noise le
 window。`serving/configs/neopp_u15_forge_512.json` 只是 512×512、30-step、shift-1
 的 RL 启动 fallback；每个请求都会更新真实 scheduler step，RL 返回实际 trace
 geometry，replay 在调度不一致时直接拒绝。
+
+LightLLM 默认只把加载权重后的 70% 可用显存交给 KV cache，剩余 headroom 属于
+online publication 合同：服务暂停后仍必须能接收完整参数 bucket 而不 OOM。只有
+同时测量 rollout 容量与最大权重 bucket 后，才可覆盖 `LIGHTLLM_MEM_FRACTION`。

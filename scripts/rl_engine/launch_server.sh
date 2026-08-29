@@ -40,6 +40,10 @@ export INPUT_PENALTY=${INPUT_PENALTY:-true}
 # The official VQA/interleave profile permits 8192 generated tokens, so the
 # server must also leave room for its prompt.
 MAX_REQ_TOTAL_LEN=${MAX_REQ_TOTAL_LEN:-16384}
+# Online publication receives one bounded full-parameter bucket in addition to
+# the live model/KV/CUDA-graph footprint. 0.75 exhausted an 80 GiB H100 before
+# the first 192 MiB bucket; 0.70 preserves high KV capacity with update headroom.
+LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.70}
 
 "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
   --model-path "$MODEL_ROOT" \
@@ -55,5 +59,5 @@ exec "$PYTHON_BIN" -m lightllm.server.api_server \
   --host 0.0.0.0 \
   --port 8000 \
   --max_req_total_len "$MAX_REQ_TOTAL_LEN" \
-  --mem_fraction 0.75 \
+  --mem_fraction "$LIGHTLLM_MEM_FRACTION" \
   --tp 1
