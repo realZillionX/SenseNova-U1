@@ -258,12 +258,8 @@ def main() -> None:
             "forge_checkout": _source_commit(os.getenv("FORGE_ROOT", ""), "forge"),
             "lightllm_commit": os.getenv("FORGE_LIGHTLLM_COMMIT", "unknown"),
             "lightx2v_commit": os.getenv("FORGE_LIGHTX2V_COMMIT", "unknown"),
-            "lightllm_checkout": _source_commit(
-                os.getenv("FORGE_LIGHTLLM_ROOT", "/workspace/LightLLM"), "lightllm"
-            ),
-            "lightx2v_checkout": _source_commit(
-                os.getenv("FORGE_LIGHTX2V_ROOT", "/workspace/LightX2V"), "lightx2v"
-            ),
+            "lightllm_checkout": _source_commit(os.getenv("FORGE_LIGHTLLM_ROOT", "/workspace/LightLLM"), "lightllm"),
+            "lightx2v_checkout": _source_commit(os.getenv("FORGE_LIGHTX2V_ROOT", "/workspace/LightX2V"), "lightx2v"),
         },
         "model_path": args.model_path,
         "model_exists": bool(args.model_path and Path(args.model_path).is_dir()),

@@ -12,9 +12,7 @@ class TrainingImportBoundariesTest(unittest.TestCase):
         source = ROOT / "training" / "sensenovavl" / "model" / "sensenovavl_moe_chat" / "__init__.py"
         tree = ast.parse(source.read_text())
         imported = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
+            node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None
         }
         self.assertNotIn("modeling_neo_vit", imported)
         self.assertNotIn("modeling_sensenovavl_chat_mot", imported)
