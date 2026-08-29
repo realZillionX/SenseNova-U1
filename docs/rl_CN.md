@@ -14,8 +14,17 @@ availability、group ids、errors 和 diagnostics。维度语义、hard gate、T
 verifier 都由下游拥有；Forge 在 GDPO 前拒绝任何 unscorable row。
 
 文本与图像分支消费同一个 detached trajectory advantage：文本使用 token PPO
-clip 和可选 k3 KL；图像使用选中 SDE action、RatioNorm clip 和可选
-velocity-MSE。两个分支内部独立归约，再用显式权重组合。
+clip 和精确、不截断的 k3 KL；图像使用选中 SDE action、RatioNorm clip 和可选
+velocity-MSE。两个分支都先在每条 trajectory 内对自身 action 取均值，再对
+trajectory 取均值，最后用显式权重组合，变长输出不会改变样本总权重。
+
+LightLLM 产生 rollout 后、参数更新前，Forge 会用 no-grad FSDP replay geometry
+重建一次 old likelihood；同一 batch 的全部 PPO update 固定使用这份 detached
+anchor，replay 中不做 straight-through 修正。RL 文本采样固定为 temperature 1、
+top-p 1、不限 top-k、presence/frequency penalty 为 0、repetition penalty 为 1；
+它有意不同于普通 VQA 推理 profile，以确保 serving 与 replay 表达同一个策略。
+持久 reward provider 与这次必需的 no-grad anchor 并行执行，verifier 等待不会和
+数值对齐 replay 串行叠加。
 
 ```bash
 sensenova-forge rl-plan rl-plan-input.json

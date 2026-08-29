@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from sensenova_u1.rl.flow import sde_log_prob, sde_transition, text_policy_loss
+from sensenova_u1.rl.flow import sde_log_prob, sde_transition, text_kl_loss, text_policy_loss
 
 
 class RlFlowTest(unittest.TestCase):
@@ -39,6 +39,24 @@ class RlFlowTest(unittest.TestCase):
         self.assertAlmostEqual(result.metrics["ratio_mean"], 1.0)
         result.value.backward()
         self.assertTrue(torch.isfinite(current.grad).all())
+
+    def test_text_losses_average_actions_then_trajectories(self) -> None:
+        current = torch.zeros((2, 3), requires_grad=True)
+        old = current.detach().clone()
+        mask = torch.tensor([[True, False, False], [True, True, True]])
+        result = text_policy_loss(
+            log_probs=current,
+            old_log_probs=old,
+            advantages=torch.tensor([1.0, 3.0]),
+            response_mask=mask,
+            clip_range=0.2,
+        )
+        self.assertAlmostEqual(float(result.value.detach()), -2.0)
+
+        ref = torch.zeros_like(current)
+        kl_current = torch.tensor([[-21.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        kl = text_kl_loss(log_probs=kl_current, ref_log_probs=ref, response_mask=mask)
+        self.assertGreater(float(kl), 6.0e8)
 
 
 if __name__ == "__main__":

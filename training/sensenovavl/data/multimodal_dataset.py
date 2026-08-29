@@ -96,7 +96,7 @@ class LazySupervisedDataset(Dataset):
         cfg_img_uncond_drop_prob=0,
         cfg_txtimg_uncond_drop_prob=0,
         cfg_is_uncond_drop_independent=True,
-        enabel_und_loss=False,
+        enable_und_loss=False,
         language=None,
     ):
         super().__init__()
@@ -189,7 +189,7 @@ class LazySupervisedDataset(Dataset):
             IMG_START_TOKEN
         )
         self.image_end_token_id = self.tokenizer.convert_tokens_to_ids(IMG_END_TOKEN)
-        self.enabel_und_loss = enabel_und_loss
+        self.enable_und_loss = enable_und_loss
         self.language = language
 
         self._state_dict = {"file_shift": 0, "bytes_offset": 0, "line_shift": 0}
@@ -395,7 +395,7 @@ class LazySupervisedDataset(Dataset):
             is_image_duplicated_for_und_flags = [0]
 
             # disable this
-            # if self.enabel_und_loss:
+            # if self.enable_und_loss:
             #     # duplicate the gen image for the und branch with small probability so the model learns to predict <|im_end|>
             #     if random.random() < 0.1:
             #         image_for_gen_flags.append(0)
@@ -480,7 +480,7 @@ class LazySupervisedDataset(Dataset):
             is_image_duplicated_for_und_flags.extend([0] * len(image_path_list))
 
             # disable this
-            # if self.enabel_und_loss:
+            # if self.enable_und_loss:
             #     # duplicate the gen image for the und branch with small probability so the model learns to predict <|im_end|>
             #     if random.random() < 0.1:
             #         image_for_gen_flags.append(0)
@@ -586,7 +586,7 @@ class LazySupervisedDataset(Dataset):
                                     ]
                                 )
                             if (
-                                not self.enabel_und_loss
+                                not self.enable_und_loss
                                 or (
                                     conv["value"].endswith("<image>")
                                     and random.random() > 0.2
@@ -886,7 +886,7 @@ class LazySupervisedDataset(Dataset):
                 .tolist()
             )
 
-            if not self.enabel_und_loss:
+            if not self.enable_und_loss:
                 ret["labels"][0][:] = IGNORE_INDEX
             else:
                 assert not is_image_duplicated_for_und_flags[
@@ -907,7 +907,7 @@ class LazySupervisedDataset(Dataset):
                 .tolist()
             )
 
-            if not self.enabel_und_loss or is_cfg_drop_txt:
+            if not self.enable_und_loss or is_cfg_drop_txt:
                 ret["labels"][0][:] = IGNORE_INDEX
             else:
                 for image_i in range(len(image_for_gen_flags)):
@@ -1567,7 +1567,7 @@ def build_datasets(
                 cfg_txtimg_uncond_drop_prob=getattr(
                     data_args, "cfg_txtimg_uncond_drop_prob", 0
                 ),
-                enabel_und_loss=getattr(data_args, "enabel_und_loss", False),
+                enable_und_loss=getattr(data_args, "enable_und_loss", False),
                 language=ds_collections[ds_name].get("language", None),
             )
             paired_data.append(dataset)

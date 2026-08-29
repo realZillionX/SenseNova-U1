@@ -82,6 +82,7 @@ MODEL_NAME_OR_PATH=/models/SenseNova-U1.5-8B-MoT \
 VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
 TOKENIZER_PATH=/models/SenseNova-U1.5-8B-MoT \
 mm_data_path=/datasets/u15/meta.json \
+JOB_NAME=u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```
 
@@ -112,7 +113,10 @@ bash scripts/rl_engine/launch_server.sh
 ```
 
 The service exposes `/v1/chat/completions`, `/v1/rl/rollouts`, trace streaming,
-status, and online weight-control endpoints. See [serving](docs/serving.md).
+status, and online weight-control endpoints. Ordinary inference follows the
+published U1.5 task profiles; RL deliberately uses a neutral full-softmax text
+policy and a separately sealed hybrid SDE–ODE image schedule. See
+[serving](docs/serving.md).
 
 ### 4. GDPO / UniGDPO
 

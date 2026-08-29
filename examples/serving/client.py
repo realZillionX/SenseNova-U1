@@ -76,6 +76,34 @@ IMAGE_CONFIG_DEFAULT = {
     "width": -1,
 }
 
+OFFICIAL_TEXT_PROFILES = {
+    "vqa": {
+        "do_sample": True,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repetition_penalty": 1.05,
+        "max_tokens": 8192,
+    },
+    "generation": {
+        "do_sample": False,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": 1,
+        "repetition_penalty": 1.0,
+        "max_tokens": 8192,
+    },
+}
+
+OFFICIAL_IMAGE_PROFILE = {
+    "steps": 50,
+    "guidance_scale": 4.0,
+    "image_guidance_scale": 1.0,
+    "cfg_norm": "none",
+    "cfg_interval": (0.0, 1.0),
+    "timestep_shift": 3.0,
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenAI-compatible API test client for LightLLM + LightX2V.")
@@ -99,9 +127,12 @@ def parse_args() -> argparse.Namespace:
         default="./api_test_outputs",
         help="Directory to save generated images and raw responses.",
     )
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--top-p", type=float, default=0.95)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--do-sample", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--repetition-penalty", type=float, default=None)
+    parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument(
         "--enable-thinking",
         action=argparse.BooleanOptionalAction,
@@ -121,9 +152,29 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image-size",
-        default=IMAGE_CONFIG_DEFAULT["image_size"],
+        default=None,
         help="Image size preset for generation (e.g. 1.5K, 2K).",
     )
+    parser.add_argument("--steps", type=int, default=OFFICIAL_IMAGE_PROFILE["steps"])
+    parser.add_argument("--guidance-scale", type=float, default=OFFICIAL_IMAGE_PROFILE["guidance_scale"])
+    parser.add_argument(
+        "--image-guidance-scale",
+        type=float,
+        default=OFFICIAL_IMAGE_PROFILE["image_guidance_scale"],
+    )
+    parser.add_argument(
+        "--cfg-norm",
+        choices=["none", "cfg_zero_star", "global", "text_channel", "channel"],
+        default=OFFICIAL_IMAGE_PROFILE["cfg_norm"],
+    )
+    parser.add_argument(
+        "--cfg-interval",
+        type=float,
+        nargs=2,
+        default=OFFICIAL_IMAGE_PROFILE["cfg_interval"],
+        metavar=("START", "END"),
+    )
+    parser.add_argument("--timestep-shift", type=float, default=OFFICIAL_IMAGE_PROFILE["timestep_shift"])
     parser.add_argument(
         "--height",
         type=int,
@@ -140,17 +191,40 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_image_config(args: argparse.Namespace) -> dict[str, Any]:
+    image_size = args.image_size
+    if image_size is None:
+        image_size = "1.5K" if args.mode == "interleave" else IMAGE_CONFIG_DEFAULT["image_size"]
     image_config = {
         **IMAGE_CONFIG_DEFAULT,
         "aspect_ratio": args.aspect_ratio,
-        "image_size": args.image_size,
+        "image_size": image_size,
         "seed": args.seed,
         "height": args.height,
         "width": args.width,
+        "steps": args.steps,
+        "guidance_scale": args.guidance_scale,
+        "image_guidance_scale": args.image_guidance_scale,
+        "cfg_norm": args.cfg_norm,
+        "cfg_interval": args.cfg_interval,
+        "timestep_shift": args.timestep_shift,
     }
     if args.height > 0 and args.width > 0:
         image_config["dynamic_resolution"] = False
     return image_config
+
+
+def build_text_config(args: argparse.Namespace) -> dict[str, Any]:
+    profile = OFFICIAL_TEXT_PROFILES["vqa" if args.mode == "vqa" else "generation"]
+    return {
+        "do_sample": profile["do_sample"] if args.do_sample is None else args.do_sample,
+        "temperature": profile["temperature"] if args.temperature is None else args.temperature,
+        "top_p": profile["top_p"] if args.top_p is None else args.top_p,
+        "top_k": profile["top_k"] if args.top_k is None else args.top_k,
+        "repetition_penalty": (
+            profile["repetition_penalty"] if args.repetition_penalty is None else args.repetition_penalty
+        ),
+        "max_tokens": profile["max_tokens"] if args.max_tokens is None else args.max_tokens,
+    }
 
 
 def local_image_to_data_url(path: str) -> str:
@@ -204,15 +278,14 @@ def build_client(base_url: str, api_key: str) -> tuple[str, dict[str, str]]:
 def run_t2i(args: argparse.Namespace, out_dir: Path, timestamp: str) -> None:
     chat_url, headers = build_client(args.url, args.api_key)
     image_config = build_image_config(args)
+    text_config = build_text_config(args)
     payload = {
         "model": args.model,
         "messages": [{"role": "system", "content": GENERATION_SYSTEM_PROMPT}, {"role": "user", "content": args.prompt}],
         "modalities": ["image"],
         "stream": False,
         "n": 1,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "max_tokens": args.max_tokens,
+        **text_config,
         "chat_template_kwargs": {"enable_thinking": args.enable_thinking},
         "image_config": image_config,
     }
@@ -233,6 +306,7 @@ def run_it2i(args: argparse.Namespace, out_dir: Path, timestamp: str) -> None:
     chat_url, headers = build_client(args.url, args.api_key)
     assert args.image_path is not None, "image_path is required"
     image_config = build_image_config(args)
+    text_config = build_text_config(args)
     payload = {
         "model": args.model,
         "messages": [
@@ -248,9 +322,7 @@ def run_it2i(args: argparse.Namespace, out_dir: Path, timestamp: str) -> None:
         "modalities": ["image"],
         "stream": False,
         "n": 1,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "max_tokens": args.max_tokens,
+        **text_config,
         "chat_template_kwargs": {"enable_thinking": args.enable_thinking},
         "image_config": image_config,
     }
@@ -270,6 +342,7 @@ def run_it2i(args: argparse.Namespace, out_dir: Path, timestamp: str) -> None:
 def run_interleave_stream(args: argparse.Namespace, out_dir: Path, timestamp: str) -> None:
     chat_url, headers = build_client(args.url, args.api_key)
     image_config = build_image_config(args)
+    text_config = build_text_config(args)
     content = []
     if args.image_path:
         content.append({"type": "image_url", "image_url": {"url": local_image_to_data_url(args.image_path)}})
@@ -286,9 +359,7 @@ def run_interleave_stream(args: argparse.Namespace, out_dir: Path, timestamp: st
         "modalities": ["text", "image"],
         "stream": True,
         "n": 1,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "max_tokens": args.max_tokens,
+        **text_config,
         "chat_template_kwargs": {"enable_thinking": args.enable_thinking},
         "image_config": image_config,
         "seed": args.seed,
@@ -346,6 +417,7 @@ def run_vqa(args: argparse.Namespace, out_dir: Path, timestamp: str) -> None:
     payload = {
         "model": args.model,
         "messages": [{"role": "user", "content": content}],
+        **build_text_config(args),
     }
     response = requests.post(chat_url, headers=headers, json=payload, timeout=600)
     response.raise_for_status()
@@ -362,6 +434,9 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     print(f"[config] mode={args.mode}, model={args.model}, url={args.url}")
+    print(f"[config] text={json.dumps(build_text_config(args), sort_keys=True)}")
+    if args.mode != "vqa":
+        print(f"[config] image={json.dumps(build_image_config(args), sort_keys=True)}")
     if args.image_path is not None:
         print(f"[config] input image_path={args.image_path}")
     print(f"[config] output_dir={out_dir.resolve()}")

@@ -6,6 +6,11 @@ overlap, and native-resolution sequence packing. Language, understanding
 vision, generation vision, MoT generation blocks, and the pixel head all remain
 trainable.
 
+This SFT preset disables text, image and joint CFG-drop augmentation. U1.5's
+base checkpoint already provides CFG capability, while dropping conditions in
+DiVR cold-start data would delete authored reasoning and change the controlled
+TI2T/TI2TI supervision.
+
 Required inputs:
 
 | Variable | Meaning |
@@ -32,4 +37,7 @@ bash training/shell/train_u1/U1.5_8B_SFT.sh
 `enable_save_ckpt`, `checkpoint_every`, `checkpoint_snapshot_every`, loader
 worker counts, packing buffers, sequence length, image limits, learning rates,
 and activation-checkpoint fraction are environment overrides. Formal runs must
-retain optimizer, sampler and RNG state for resume.
+retain optimizer, sampler and RNG state for resume. `JOB_NAME` is mandatory and
+must be unique per independent arm; its checkpoint staging directory is also
+namespaced by the job. The launcher rejects missing checkpoint/tokenizer/data
+assets and incompatible `world_size` versus `wp*tp*pp` before torchrun starts.

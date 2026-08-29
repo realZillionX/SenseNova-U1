@@ -22,7 +22,7 @@ import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,7 @@ class StepResult:
     ratio_mean_error: float
     numeric_max_error: float
     rollout_seconds: float
+    anchor_seconds: float
     verifier_seconds: float
     replay_backward_seconds: float
     optimizer_seconds: float
@@ -176,6 +177,7 @@ class StepResult:
             "ratio_mean_error": self.ratio_mean_error,
             "numeric_max_error": self.numeric_max_error,
             "rollout_seconds": self.rollout_seconds,
+            "anchor_seconds": self.anchor_seconds,
             "verifier_seconds": self.verifier_seconds,
             "replay_backward_seconds": self.replay_backward_seconds,
             "optimizer_seconds": self.optimizer_seconds,
@@ -755,6 +757,66 @@ def _generate_and_anchor(
     return tuple(work_items), tuple(scoring_groups)
 
 
+def _anchor_api_work_items(
+    plan: RlPlan,
+    policy: U15Policy,
+    work_items: Sequence[ReplayWorkItem],
+    *,
+    context: DistributedContext,
+) -> tuple[ReplayWorkItem, ...]:
+    """Freeze API behavior likelihoods in FSDP replay geometry once."""
+
+    device = next(policy.model.parameters()).device
+    anchored_items: list[ReplayWorkItem] = []
+    alignment_max = alignment_sum = alignment_numeric = 0.0
+    alignment_actions = 0
+    for item in work_items:
+        prompt = item.row.for_modality(plan.modality)
+        anchor = policy.anchor_rollout_with_metrics(
+            prompt=prompt.prompt,
+            prompt_images=prompt.images,
+            modality=plan.modality,
+            system_message=prompt.system_message,
+            rollout=item.rollout,
+        )
+        anchored_items.append(replace(item, rollout=anchor.rollout))
+        if item.loss_weight:
+            alignment_max = max(alignment_max, anchor.behavior_ratio_max_error)
+            alignment_sum += anchor.behavior_ratio_mean_error * anchor.behavior_ratio_action_count
+            alignment_actions += anchor.behavior_ratio_action_count
+            alignment_numeric = max(alignment_numeric, anchor.numeric_max_error)
+    alignment_sums = torch.tensor(
+        [alignment_sum, float(alignment_actions)],
+        dtype=torch.float64,
+        device=device,
+    )
+    alignment_maxima = torch.tensor(
+        [alignment_max, alignment_numeric],
+        dtype=torch.float64,
+        device=device,
+    )
+    dist.all_reduce(alignment_sums, op=dist.ReduceOp.SUM)
+    dist.all_reduce(alignment_maxima, op=dist.ReduceOp.MAX)
+    if context.is_primary:
+        print(
+            json.dumps(
+                {
+                    "component": "sensenova_u1.rl",
+                    "event": "behavior_replay_anchor",
+                    "ratio_max_error": float(alignment_maxima[0]),
+                    "ratio_mean_error": (
+                        float(alignment_sums[0] / alignment_sums[1]) if float(alignment_sums[1]) else 0.0
+                    ),
+                    "numeric_max_error": float(alignment_maxima[1]),
+                    "actions": int(alignment_sums[1]),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    return tuple(anchored_items)
+
+
 def _primary_advantages(
     plan: RlPlan,
     rows: Sequence[PromptRow],
@@ -805,7 +867,6 @@ def _replay_backward(
     update_index: int,
     *,
     partitioned_replay: bool = False,
-    enforce_on_policy_ratio: bool = True,
 ) -> tuple[float, float, float, float]:
     trace_replay = os.environ.get("SENSENOVA_FORGE_FSDP_REPLAY_TRACE") == "1"
 
@@ -887,7 +948,7 @@ def _replay_backward(
             ratio_error_sum += replay.ratio_mean_error * replay.ratio_action_count
             ratio_action_count += replay.ratio_action_count
             numeric_error = max(numeric_error, replay.numeric_max_error)
-            if enforce_on_policy_ratio and update_index == 0 and ratio_error > 2e-4:
+            if update_index == 0 and ratio_error > 2e-4:
                 raise RuntimeError(f"pre-update old/current ratio is not one: {ratio_error:.6g}")
         advantage = advantages[item.advantage_index : item.advantage_index + 1]
         text_result = compute_uni_gdpo_loss(
@@ -901,8 +962,8 @@ def _replay_backward(
                 image_velocity_mse=0.0,
                 text_kl=plan.text_kl_beta,
             ),
-            image_clip_range=plan.clip_ranges[0],
-            text_clip_range=plan.clip_ranges[1],
+            image_clip_range=plan.image_clip_range,
+            text_clip_range=plan.text_clip_range,
         )
         text_loss = text_result.value * item.loss_weight / total
         if not bool(torch.isfinite(text_loss)):
@@ -945,7 +1006,7 @@ def _replay_backward(
                 ratio_error_sum += float(errors.sum().cpu())
                 ratio_action_count += errors.numel()
                 numeric_error = max(numeric_error, chunk_ratio_max)
-                if enforce_on_policy_ratio and update_index == 0 and ratio_error > 2e-4:
+                if update_index == 0 and ratio_error > 2e-4:
                     raise RuntimeError(f"pre-update old/current ratio is not one: {ratio_error:.6g}")
             image_result = compute_uni_gdpo_loss(
                 advantages=advantage,
@@ -959,8 +1020,8 @@ def _replay_backward(
                     image_velocity_mse=plan.velocity_mse_weight,
                     text_kl=0.0,
                 ),
-                image_clip_range=plan.clip_ranges[0],
-                text_clip_range=plan.clip_ranges[1],
+                image_clip_range=plan.image_clip_range,
+                text_clip_range=plan.text_clip_range,
             )
             chunk_actions = image_replay.trace.steps * image_replay.trace.batch_size
             image_loss = image_result.value * (chunk_actions / total_image_actions) * item.loss_weight / total
@@ -1049,10 +1110,44 @@ def execute_on_policy_batch(
                     images=rollout.generated_images,
                     seconds=rollout.seconds,
                 )
-    reward_payload = _broadcast_primary(
-        context,
-        lambda: _primary_advantages(plan, rows, scoring_groups, artifact_dir, ledger, reward_client),
-    )
+    # Reward evaluation is CPU/external work. Hide it under the mandatory
+    # no-grad old-policy anchor instead of serializing verifier latency and an
+    # extra full-model replay.
+    reward_executor: ThreadPoolExecutor | None = None
+    reward_future: Future[dict[str, object]] | None = None
+    anchor_seconds = 0.0
+    if context.is_primary:
+        reward_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sensenova-reward")
+        reward_future = reward_executor.submit(
+            _primary_advantages,
+            plan,
+            rows,
+            scoring_groups,
+            artifact_dir,
+            ledger,
+            reward_client,
+        )
+    try:
+        if rollout_client is not None:
+            anchor_started = time.perf_counter()
+            work_items = _anchor_api_work_items(
+                plan,
+                policy,
+                work_items,
+                context=context,
+            )
+            anchor_seconds = time.perf_counter() - anchor_started
+        reward_payload = _broadcast_primary(
+            context,
+            lambda: (
+                reward_future.result()
+                if reward_future is not None
+                else (_ for _ in ()).throw(RuntimeError("rank zero has no reward future"))
+            ),
+        )
+    finally:
+        if reward_executor is not None:
+            reward_executor.shutdown(wait=True, cancel_futures=True)
     if not isinstance(reward_payload, Mapping):
         raise RuntimeError("rank-zero reward broadcast is malformed")
     _set_ledger(ledger, reward_payload["budget"])
@@ -1070,11 +1165,6 @@ def execute_on_policy_batch(
             advantages,
             update_index,
             partitioned_replay=rollout_client is not None,
-            # Different inference kernels need not reproduce the local replay
-            # bit-for-bit.  Keep the API old likelihood in the actual PPO/GDPO
-            # ratio and report the measured error instead of overwriting it
-            # with a locally anchored value.
-            enforce_on_policy_ratio=rollout_client is None,
         )
         grad_norm = float(clip_global_grad_norm(parameters, plan.max_grad_norm))
         if not math.isfinite(grad_norm):
@@ -1104,6 +1194,7 @@ def execute_on_policy_batch(
                 ratio_mean_error=ratio_mean,
                 numeric_max_error=numeric,
                 rollout_seconds=rollout_seconds if update_index == 0 else 0.0,
+                anchor_seconds=anchor_seconds if update_index == 0 else 0.0,
                 verifier_seconds=float(reward_payload["verifier_seconds"]) if update_index == 0 else 0.0,
                 replay_backward_seconds=replay_seconds,
                 optimizer_seconds=optimizer_seconds,
@@ -1392,9 +1483,11 @@ def run_training_loop(
     active_policy_version = resume.policy_version if resume is not None else plan.rollout_policy_version
     serving_status = _broadcast_primary(
         context,
-        lambda: dict(publisher.status())
-        if publisher is not None
-        else (_ for _ in ()).throw(RuntimeError("rank zero has no serving weight publisher")),
+        lambda: (
+            dict(publisher.status())
+            if publisher is not None
+            else (_ for _ in ()).throw(RuntimeError("rank zero has no serving weight publisher"))
+        ),
     )
     if not isinstance(serving_status, Mapping):
         raise RuntimeError("SenseNova serving status broadcast is malformed")

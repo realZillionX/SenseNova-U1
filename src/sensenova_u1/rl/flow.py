@@ -41,12 +41,10 @@ are passed in explicitly rather than read off a scheduler object, which keeps
 the module usable with the U1 sampler and with any diffusers scheduler without
 importing diffusers.
 
-*token mean*: the text branch aggregates with ``token-mean`` -- the masked sum
-over every response token in the batch divided by the total number of unmasked
-tokens.  Every generated token contributes equally regardless of the length of
-the sequence it sits in.  The alternative (``seq-mean-token-mean``) would give
-a short TI2T answer the same total weight as a long interleaved TI2TI trace and
-so silently down-weight exactly the long-horizon behaviour this stack trains for.
+*trajectory mean*: each response first averages over its own sampled text
+actions, then the optimizer batch averages over trajectories.  This is the
+sealed ``seq-mean-token-mean`` reduction shared by TI2T and TI2TI; variable
+response length must not silently change a rollout's total weight.
 
 *reference regularization*: the text branch uses Schulman's k3 low-variance estimator,
 ``exp(ref - cur) - (ref - cur) - 1``, which is non-negative per token and
@@ -66,7 +64,6 @@ from torch import Tensor
 NOISE_LEVEL_DEFAULT: float = 0.7
 IMAGE_CLIP_RANGE_DEFAULT: float = 1e-4
 TEXT_CLIP_RANGE_DEFAULT: float = 0.2
-_K3_LOG_RATIO_CLAMP: float = 20.0
 
 ScalarLike = Union[float, Tensor]
 
@@ -433,13 +430,14 @@ def _broadcast_token_advantages(advantages: Tensor, like: Tensor) -> Tensor:
     return advantages.float()
 
 
-def _masked_token_mean(tensor: Tensor, mask: Tensor) -> Tensor:
-    """token-mean aggregation: masked sum over the batch / total unmasked tokens."""
+def _masked_trajectory_mean(tensor: Tensor, mask: Tensor) -> Tensor:
+    """Mean over actions inside each trajectory, then mean over trajectories."""
 
-    total = mask.sum()
-    if not bool(total > 0):
-        raise ValueError("response_mask selects no tokens; an empty response is a bug")
-    return (tensor * mask).sum() / total
+    counts = mask.sum(dim=1)
+    if bool((counts <= 0).any()):
+        raise ValueError("response_mask selects no tokens for at least one trajectory")
+    per_trajectory = (tensor * mask).sum(dim=1) / counts
+    return per_trajectory.mean()
 
 
 def _check_token_shapes(log_probs: Tensor, other: Tensor, other_name: str, response_mask: Tensor) -> None:
@@ -481,10 +479,9 @@ def text_policy_loss(
     Returns:
         ``LossTerm`` whose ``value`` is a 0-dim tensor.
 
-    Aggregation is ``token-mean``: the masked sum divided by the total number of
-    unmasked tokens in the batch, so every generated token carries the same
-    weight whatever the length of its sequence.  Both branches consume the
-    same detached trajectory advantage without branch-specific clipping.
+    Aggregation first takes the sampled-token mean inside each trajectory and
+    then the trajectory mean across the batch.  Both branches consume the same
+    detached trajectory advantage without branch-specific clipping.
     """
 
     _check_token_shapes(log_probs, old_log_probs, "old_log_probs", response_mask)
@@ -498,19 +495,19 @@ def text_policy_loss(
 
     unclipped = -adv * ratio
     clipped = -adv * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
-    value = _masked_token_mean(torch.maximum(unclipped, clipped), mask)
+    value = _masked_trajectory_mean(torch.maximum(unclipped, clipped), mask)
 
     with torch.no_grad():
         metrics = {
-            "ratio_mean": float(_masked_token_mean(ratio, mask)),
-            "clipfrac": float(_masked_token_mean((ratio - 1.0).abs().gt(clip_range).float(), mask)),
-            "approx_kl": float(_masked_token_mean(0.5 * log_ratio**2, mask)),
+            "ratio_mean": float(_masked_trajectory_mean(ratio, mask)),
+            "clipfrac": float(_masked_trajectory_mean((ratio - 1.0).abs().gt(clip_range).float(), mask)),
+            "approx_kl": float(_masked_trajectory_mean(0.5 * log_ratio**2, mask)),
         }
     return LossTerm(value=value, metrics=metrics)
 
 
 def text_kl_loss(*, log_probs: Tensor, ref_log_probs: Tensor, response_mask: Tensor) -> Tensor:
-    """Token-level KL to the reference policy, k3 estimator, token-mean reduced.
+    """Token-level KL to the reference policy, exact k3, trajectory-mean reduced.
 
     Args:
         log_probs: current per-token log-probs, ``(batch, seq)``.
@@ -523,19 +520,17 @@ def text_kl_loss(*, log_probs: Tensor, ref_log_probs: Tensor, response_mask: Ten
     Estimator: Schulman's k3, ``exp(r) - r - 1`` with ``r = ref - cur``.  It is
     non-negative for every token and unbiased for ``KL(cur || ref)``, unlike the
     raw ``cur - ref`` difference which is zero-mean only in expectation and can
-    go negative on a batch.  ``r`` is clamped to +/-20 before the exponential;
-    without it a single collapsed token overflows the loss.
+    go negative on a batch.  The sealed objective does not clip ``r``: a
+    non-finite result aborts the update instead of silently changing the KL.
     """
 
     _check_token_shapes(log_probs, ref_log_probs, "ref_log_probs", response_mask)
 
-    log_ratio = torch.clamp(
-        ref_log_probs.float() - log_probs.float(),
-        -_K3_LOG_RATIO_CLAMP,
-        _K3_LOG_RATIO_CLAMP,
-    )
-    per_token = torch.exp(log_ratio) - log_ratio - 1.0
-    return _masked_token_mean(per_token, response_mask.float())
+    log_ratio = ref_log_probs.float() - log_probs.float()
+    per_token = torch.expm1(log_ratio) - log_ratio
+    if not bool(torch.isfinite(per_token).all()):
+        raise ValueError("text k3 KL is non-finite")
+    return _masked_trajectory_mean(per_token, response_mask.float())
 
 
 @dataclass(frozen=True)

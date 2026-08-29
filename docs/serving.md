@@ -23,6 +23,19 @@ bash scripts/rl_engine/launch_server.sh
 Run `examples/serving/client.py` for protocol inspection and
 `examples/serving/rl_smoke.py` for rollout/trace/weight-control validation.
 
-The production profile is sealed at 512×512, 30 flow steps and timestep shift
-1.0 in `serving/configs/neopp_u15_forge_512.json`; inference, rollout and replay
-must use that same physical schedule.
+Ordinary inference and RL use different, explicit profiles:
+
+- VQA follows the published sampled text recipe: temperature 0.6, top-p 0.95,
+  top-k 20 and repetition penalty 1.05, including prompt tokens.
+- T2I, editing and interleave use greedy text decode. Image generation uses 50
+  flow steps, CFG 4, image CFG 1, `cfg_norm=none` and timestep shift 3; T2I and
+  editing use the 2K buckets while interleave defaults to the published 1.5K
+  buckets.
+- RL text uses the unmodified full-softmax categorical policy. RL image rollout
+  disables CFG and takes its resolution, step count, timestep shift, t-epsilon,
+  noise level and SDE window from the immutable plan.
+
+`serving/configs/neopp_u15_forge_512.json` is the 512×512, 30-step, shift-1 RL
+startup fallback. Every request now updates the live scheduler step count; the
+RL response reports the actual trace geometry, and replay refuses a schedule
+mismatch.

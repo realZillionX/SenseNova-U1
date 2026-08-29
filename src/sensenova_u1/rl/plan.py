@@ -23,11 +23,17 @@ class TorchrunSpec:
         return self.nproc_per_node * self.nnodes
 
     def validate(self) -> None:
+        if type(self.nproc_per_node) is not int or type(self.nnodes) is not int:
+            raise TypeError("torchrun sizes must be integers")
         if self.nproc_per_node < 1 or self.nnodes < 1:
             raise ValueError("torchrun sizes must be positive")
+        if type(self.node_rank) is not int:
+            raise TypeError("node_rank must be an integer")
         if not 0 <= self.node_rank < self.nnodes:
             raise ValueError("node_rank is outside nnodes")
-        if not self.master_addr or not 0 < self.master_port < 65536:
+        if not isinstance(self.master_addr, str) or not self.master_addr:
+            raise ValueError("invalid torchrun rendezvous address")
+        if type(self.master_port) is not int or not 0 < self.master_port < 65536:
             raise ValueError("invalid torchrun rendezvous")
 
 
@@ -70,7 +76,8 @@ class RlPlan:
     text_kl_beta: float = 0.0
     image_objective_weight: float = 0.0
     velocity_mse_weight: float = 0.0
-    clip_ranges: tuple[float, float] = (1e-4, 0.2)
+    image_clip_range: float = 1e-4
+    text_clip_range: float = 0.2
     sde_window_start: int = 0
     sde_window_end: int = 30
     sde_window_steps: int = 8
@@ -81,6 +88,7 @@ class RlPlan:
     torchrun: TorchrunSpec = TorchrunSpec()
 
     def __post_init__(self) -> None:
+        self.torchrun.validate()
         if self.modality not in {"ti2t", "ti2ti"}:
             raise ValueError("modality must be ti2t or ti2ti")
         if not self.reward_command:
@@ -108,6 +116,16 @@ class RlPlan:
         for value in self.reward_weights:
             if not math.isfinite(value):
                 raise ValueError("reward weights must be finite")
+        if not any(value != 0 for value in self.reward_weights):
+            raise ValueError("at least one reward weight must be non-zero")
+        for name, value in (
+            ("weight_decay", self.weight_decay),
+            ("text_kl_beta", self.text_kl_beta),
+            ("image_objective_weight", self.image_objective_weight),
+            ("velocity_mse_weight", self.velocity_mse_weight),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be non-negative and finite")
         for name in (
             "max_steps",
             "group_size",
@@ -121,10 +139,29 @@ class RlPlan:
             "image_replay_microbatch_size",
             "weight_update_bucket_bytes",
         ):
-            if int(getattr(self, name)) < 1:
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be positive")
-        if len(self.clip_ranges) != 2 or any(not 0 < value < 1 for value in self.clip_ranges):
-            raise ValueError("clip_ranges must contain image/text values inside (0, 1)")
+        if type(self.max_images) is not int or self.max_images < 0:
+            raise ValueError("max_images must be non-negative")
+        if self.group_size < 2:
+            raise ValueError("GDPO requires at least two rollouts per prompt group")
+        if self.prompts_per_batch < 2:
+            raise ValueError("GDPO batch normalization requires multiple prompt groups")
+        if self.prompts_per_batch != self.torchrun.world_size:
+            raise ValueError("production API rollout requires one prompt group per FSDP rank")
+        if self.max_steps % self.policy_updates_per_batch:
+            raise ValueError("max_steps must close a complete frozen-old PPO update batch")
+        if self.max_new_tokens >= self.max_sequence_length:
+            raise ValueError("max_new_tokens must leave room for the prompt")
+        if self.image_size % 32:
+            raise ValueError("image_size must be divisible by the U1.5 32-pixel generation grid")
+        for name, value in (
+            ("image_clip_range", self.image_clip_range),
+            ("text_clip_range", self.text_clip_range),
+        ):
+            if not math.isfinite(value) or not 0 < value < 1:
+                raise ValueError(f"{name} must lie inside (0, 1)")
         if not 0 <= self.sde_window_start < self.sde_window_end <= self.image_steps:
             raise ValueError("SDE window is outside the image schedule")
         if not 1 <= self.sde_window_steps <= self.sde_window_end - self.sde_window_start:
@@ -133,9 +170,14 @@ class RlPlan:
             raise ValueError("TI2T cannot enable image policy or velocity MSE")
         if self.device != "cuda":
             raise ValueError("full-parameter Forge RL requires CUDA")
+        if type(self.activation_checkpointing) is not bool:
+            raise TypeError("activation_checkpointing must be a boolean")
         if self.dtype != "bfloat16" or self.attention_backend not in {"flash", "sdpa"}:
             raise ValueError("unsupported dtype or attention backend")
-        self.torchrun.validate()
+        if self.weight_update_backend != "nccl":
+            raise ValueError("direct online policy publication requires NCCL")
+        if type(self.weight_update_base_port) is not int or not 0 < self.weight_update_base_port <= 65533:
+            raise ValueError("weight update base port must leave three valid ports")
 
     @property
     def plan_path(self) -> Path:
@@ -164,10 +206,9 @@ class RlPlan:
             "reward_command",
             "reward_dimension_names",
             "reward_weights",
-            "clip_ranges",
         ):
             values[name] = tuple(values[name])
-        values["torchrun"] = TorchrunSpec(**dict(values["torchrun"]))
+        values["torchrun"] = TorchrunSpec(**dict(values.get("torchrun") or {}))
         values["reward_context"] = dict(values.get("reward_context") or {})
         return cls(**values)
 

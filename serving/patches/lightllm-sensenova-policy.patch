@@ -1,0 +1,90 @@
+diff --git a/lightllm/server/api_rl.py b/lightllm/server/api_rl.py
+index 9a74c93b..40183ebc 100644
+--- a/lightllm/server/api_rl.py
++++ b/lightllm/server/api_rl.py
+@@ -75,6 +75,9 @@ async def _one_rollout(
+         temperature=1.0,
+         top_p=1.0,
+         top_k=-1,
++        presence_penalty=0.0,
++        frequency_penalty=0.0,
++        repetition_penalty=1.0,
+         do_sample=True,
+         seed=seed,
+         max_tokens=request.max_new_tokens,
+@@ -103,6 +106,13 @@ async def _one_rollout(
+             "temperature": 1.0,
+             "top_p": 1.0,
+             "top_k": -1,
++            # RL samples the unmodified categorical policy. Never inherit
++            # serving/checkpoint defaults here: every logits transform would
++            # also have to be reproduced by current/reference replay.
++            "presence_penalty": 0.0,
++            "frequency_penalty": 0.0,
++            "repetition_penalty": 1.0,
++            "input_penalty": False,
+             "max_new_tokens": remaining,
+             "add_special_tokens": False,
+             "seed": seed,
+diff --git a/lightllm/server/core/objs/x2i_params.py b/lightllm/server/core/objs/x2i_params.py
+index 205f924d..b32ea1ba 100644
+--- a/lightllm/server/core/objs/x2i_params.py
++++ b/lightllm/server/core/objs/x2i_params.py
+@@ -53,7 +53,9 @@ class X2IParams(ctypes.Structure):
+     _image_guidance_scale: float = 1.0
+     _seed: int = 42
+     _num_images: int = 1
+-    _cfg_norm: CfgNormType = CfgNormType.GLOBAL
++    # SenseNova's published full-step inference recipes use ``cfg_norm=none``.
++    # Callers may still request another normalization mode explicitly.
++    _cfg_norm: CfgNormType = CfgNormType.NONE
+     _cfg_interval: float = (0, 1)
+     _timestep_shift: float = 3.0
+     _dynamic_resolution: bool = True
+diff --git a/lightllm/server/x2i_server/lightx2v/adapter.py b/lightllm/server/x2i_server/lightx2v/adapter.py
+index 95a795f6..a2e503e2 100644
+--- a/lightllm/server/x2i_server/lightx2v/adapter.py
++++ b/lightllm/server/x2i_server/lightx2v/adapter.py
+@@ -92,6 +92,7 @@ class LightX2VServer:
+             cfg_norm=CfgNormType(param.cfg_norm).as_str(),
+             timestep_shift=param.timestep_shift,
+         )
++        self.pipe.runner.scheduler.infer_steps = int(param.steps)
+         past_kv_cache = self.past_kv_cache_client.get_kv_cache_for_x2i(
+             param.past_kvcache.get_all(), param.past_kvcache.token_len
+         )
+diff --git a/lightllm/server/x2i_server/manager.py b/lightllm/server/x2i_server/manager.py
+index d9f439ec..aab9c765 100644
+--- a/lightllm/server/x2i_server/manager.py
++++ b/lightllm/server/x2i_server/manager.py
+@@ -119,12 +119,15 @@ class X2IManager:
+             cfg_norm=CfgNormType(param.cfg_norm).as_str(),
+             timestep_shift=param.timestep_shift,
+         )
++        # ``steps`` is a per-request contract. The old path updated the
++        # scheduler only for RL requests, so ordinary requests that asked for
++        # the official 50-step profile silently ran the startup JSON's 30.
++        self.gen_pipe.runner.scheduler.infer_steps = int(param.steps)
+         images = []
+         trace_bundles = []
+         for i in range(param.num_images):
+             self.gen_pipe.runner.set_kvcache(past_kv_cache, past_kv_cache_text)
+             if hasattr(param, "rl_config"):
+-                self.gen_pipe.runner.scheduler.infer_steps = param.steps
+                 # X2IParams crosses shared memory with a signed C integer seed,
+                 # while NumPy's legacy RNG (used by LightX2V seed_all) accepts
+                 # only uint32 values. Preserve the seed's bit pattern so half
+@@ -164,12 +167,12 @@ class X2IManager:
+             cfg_norm=CfgNormType(param.cfg_norm).as_str(),
+             timestep_shift=param.timestep_shift,
+         )
++        self.gen_pipe.runner.scheduler.infer_steps = int(param.steps)
+         images = []
+         trace_bundles = []
+         for i in range(param.num_images):
+             self.gen_pipe.runner.set_kvcache_i2i(past_kv_cache, past_kv_cache_text, past_kv_cache_img)
+             if hasattr(param, "rl_config"):
+-                self.gen_pipe.runner.scheduler.infer_steps = param.steps
+                 rl_seed = int(param.seed + param.past_kvcache_img.img_len + i) & 0xFFFFFFFF
+                 image, trace = self.gen_pipe.generate_rl(
+                     rl_config=param.rl_config,

@@ -15,5 +15,14 @@ CUDA_VISIBLE_DEVICES=0,1 \
 bash scripts/rl_engine/launch_server.sh
 ```
 
-生产配置由 `serving/configs/neopp_u15_forge_512.json` 封存为 512×512、30 个
-flow step、timestep shift 1.0；inference、rollout 与 replay 必须共享这套物理调度。
+普通推理与 RL 使用两套显式 profile：VQA 对齐官方 sampled text 配方
+（temperature 0.6、top-p 0.95、top-k 20、repetition penalty 1.05，并计入 prompt
+token）；T2I、编辑和 interleave 使用 greedy 文本，图像采用 50 个 flow step、
+CFG 4、image CFG 1、`cfg_norm=none`、timestep shift 3，T2I/编辑使用 2K bucket，
+interleave 默认使用 1.5K bucket。
+
+RL 不继承上述 VQA penalty：文本固定为未修饰的 full-softmax 随机策略；图像关闭
+CFG，并从不可变 plan 读取分辨率、step、shift、t-epsilon、noise level 和 SDE
+window。`serving/configs/neopp_u15_forge_512.json` 只是 512×512、30-step、shift-1
+的 RL 启动 fallback；每个请求都会更新真实 scheduler step，RL 返回实际 trace
+geometry，replay 在调度不一致时直接拒绝。

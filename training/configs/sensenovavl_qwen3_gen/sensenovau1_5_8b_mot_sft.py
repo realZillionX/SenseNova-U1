@@ -235,7 +235,9 @@ ckpt = dict(
     # that prioritize restart latency over checkpoint write latency.
     local_mmap_load=env_bool("local_mmap_load", False),
     async_upload=True,
-    async_upload_tmp_folder="/dev/shm/sensenovalm_tmp_ckpt/",
+    async_upload_tmp_folder=os.environ.get(
+        "checkpoint_tmp_folder", f"/dev/shm/sensenovalm_tmp_ckpt/{JOB_NAME}"
+    ),
 )
 
 
@@ -308,7 +310,7 @@ data = dict(
     cfg_img_uncond_drop_prob=cfg_img_uncond_drop_prob,
     cfg_txtimg_uncond_drop_prob=cfg_txtimg_uncond_drop_prob,
     cfg_is_uncond_drop_independent=cfg_is_uncond_drop_independent,
-    enabel_und_loss=enable_und_loss,
+    enable_und_loss=enable_und_loss,
 )
 
 

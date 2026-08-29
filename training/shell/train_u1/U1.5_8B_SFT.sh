@@ -8,7 +8,7 @@
 #   NNODES=2 NODE_RANK=0 MASTER_ADDR=10.0.0.1 bash shell/train_u1/U1.5_8B_SFT.sh
 #   NNODES=2 NODE_RANK=1 MASTER_ADDR=10.0.0.1 bash shell/train_u1/U1.5_8B_SFT.sh
 
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/../.."  # repo root
 
 # ============================ Distributed (torchrun) ============================ #
@@ -20,10 +20,10 @@ export MASTER_PORT=${MASTER_PORT:-29500}
 
 # ============================ Model & data (placeholders — fill in!) ============================ #
 export CONFIG_NAME="configs/sensenovavl_qwen3_gen/sensenovau1_5_8b_mot_sft.py"
-export MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-"/path/to/SenseNova-U1.5-8B-MoT"}
-export VOCAB_FILE=${VOCAB_FILE:-"/path/to/qwen3/tokenizer"}
-export TOKENIZER_PATH=${TOKENIZER_PATH:-"/path/to/qwen3/tokenizer"}
-export mm_data_path=${mm_data_path:-"data/sample/sample_data_meta.json"}
+export MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:?set MODEL_NAME_OR_PATH to a complete U1.5 HF checkpoint}
+export VOCAB_FILE=${VOCAB_FILE:?set VOCAB_FILE to the matching tokenizer directory}
+export TOKENIZER_PATH=${TOKENIZER_PATH:?set TOKENIZER_PATH to the matching tokenizer directory}
+export mm_data_path=${mm_data_path:?set mm_data_path to the InternEvo data meta JSON}
 export load_optimizer=${load_optimizer:-"model"}
 
 # resume (uncomment to enable)
@@ -98,9 +98,12 @@ export noise_scale_max_value=16
 export use_pixel_head=true
 export P_mean=-0.8
 export P_std=0.8
-export cfg_txt_uncond_drop_prob=0.1
+# DiVR SFT supervises authored reasoning exactly. The base checkpoint already
+# owns CFG capability; unconditional-drop augmentation would delete the very
+# CoT whose text/visual medium defines the controlled arms.
+export cfg_txt_uncond_drop_prob=0
 export cfg_img_uncond_drop_prob=0
-export cfg_txtimg_uncond_drop_prob=0.1
+export cfg_txtimg_uncond_drop_prob=0
 export cfg_is_uncond_drop_independent='false'
 export ema_decay=0.9999
 export enable_ema=${enable_ema:-true}
@@ -115,11 +118,28 @@ export ce_loss_weight=${ce_loss_weight:-0.1}
 export enable_und_loss='true'
 
 # ============================ Job / logging ============================ #
-export JOB_NAME=${JOB_NAME:-"sensenova_u15_8b_mot_sft"}
+export JOB_NAME=${JOB_NAME:?set JOB_NAME to a unique arm/run namespace}
+export checkpoint_tmp_folder=${checkpoint_tmp_folder:-"/dev/shm/sensenovalm_tmp_ckpt/${JOB_NAME}"}
 # export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 # export WANDB_PROJECT="neo_unify"
 
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$(pwd)"
+
+# ============================ Fail-fast contract ============================ #
+[[ -d "$MODEL_NAME_OR_PATH" ]] || { echo "MODEL_NAME_OR_PATH is not a directory: $MODEL_NAME_OR_PATH" >&2; exit 2; }
+[[ -f "$MODEL_NAME_OR_PATH/config.json" ]] || { echo "model config.json is missing" >&2; exit 2; }
+[[ -f "$MODEL_NAME_OR_PATH/model.safetensors.index.json" ]] || { echo "model safetensors index is missing" >&2; exit 2; }
+[[ -d "$VOCAB_FILE" ]] || { echo "VOCAB_FILE is not a directory: $VOCAB_FILE" >&2; exit 2; }
+[[ -d "$TOKENIZER_PATH" ]] || { echo "TOKENIZER_PATH is not a directory: $TOKENIZER_PATH" >&2; exit 2; }
+[[ -f "$mm_data_path" ]] || { echo "mm_data_path is not a file: $mm_data_path" >&2; exit 2; }
+[[ -f "$CONFIG_NAME" ]] || { echo "training config is missing: $CONFIG_NAME" >&2; exit 2; }
+
+WORLD_SIZE=$((NPROC_PER_NODE * NNODES))
+MODEL_PARALLEL_SIZE=$((wp_size * tp_size * pp_size))
+(( WORLD_SIZE % MODEL_PARALLEL_SIZE == 0 )) || {
+    echo "world size $WORLD_SIZE is not divisible by wp*tp*pp=$MODEL_PARALLEL_SIZE" >&2
+    exit 2
+}
 
 # ============================ Launch ============================ #
 torchrun \

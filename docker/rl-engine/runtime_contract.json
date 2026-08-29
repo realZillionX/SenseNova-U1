@@ -14,6 +14,12 @@
     "lightllm": "63556eabf12fa862e271f9bb24612e453c3bd422",
     "lightx2v": "a46d6c4d0dc00659c597078f86fb34c1d5b0f481"
   },
+  "overlays": {
+    "lightllm_sensenova_policy": {
+      "path": "serving/patches/lightllm-sensenova-policy.patch",
+      "sha256": "92ef7f94c909caa9bb078aa1ef356158b7f3521276ca3ae4deafdf228199744d"
+    }
+  },
   "immutable_core": {
     "torch": "2.8.0",
     "torchvision": "0.23.0",

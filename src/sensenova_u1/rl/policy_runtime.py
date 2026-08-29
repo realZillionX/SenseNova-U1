@@ -84,6 +84,17 @@ class U15PolicyReplay:
     numeric_max_error: float
 
 
+@dataclass(frozen=True)
+class U15PolicyAnchor:
+    """Replay-geometry old-policy anchor plus serving/local alignment evidence."""
+
+    rollout: U15PolicyRollout
+    behavior_ratio_max_error: float
+    behavior_ratio_mean_error: float
+    behavior_ratio_action_count: int
+    numeric_max_error: float
+
+
 class U15Policy(Protocol):
     model: Any
 
@@ -132,6 +143,16 @@ class U15Policy(Protocol):
         system_message: str | None,
         rollout: U15PolicyRollout,
     ) -> U15PolicyRollout: ...
+
+    def anchor_rollout_with_metrics(
+        self,
+        *,
+        prompt: str,
+        prompt_images: tuple[str, ...],
+        modality: str,
+        system_message: str | None,
+        rollout: U15PolicyRollout,
+    ) -> U15PolicyAnchor: ...
 
 
 def _single_row_tokens(trace: TextRolloutTrace) -> list[int]:
@@ -1322,6 +1343,25 @@ class U15PolicyRuntime:
     ) -> U15PolicyRollout:
         """Freeze old-policy likelihoods in differentiable replay geometry."""
 
+        return self.anchor_rollout_with_metrics(
+            prompt=prompt,
+            prompt_images=prompt_images,
+            modality=modality,
+            system_message=system_message,
+            rollout=rollout,
+        ).rollout
+
+    def anchor_rollout_with_metrics(
+        self,
+        *,
+        prompt: str,
+        prompt_images: tuple[str, ...],
+        modality: str,
+        system_message: str | None = None,
+        rollout: U15PolicyRollout,
+    ) -> U15PolicyAnchor:
+        """Anchor frozen-old likelihoods and retain behavior/replay drift."""
+
         with torch.no_grad():
             replay = self.replay(
                 prompt=prompt,
@@ -1360,7 +1400,13 @@ class U15PolicyRuntime:
                 raise TypeError(f"unknown U1.5 policy event {type(event).__name__}")
         if text_offset != replay.text_log_probs.shape[1] or image_offset != len(replay.image_replays):
             raise RuntimeError("old-policy anchor did not consume the complete replay")
-        return replace(rollout, events=tuple(anchored_events))
+        return U15PolicyAnchor(
+            rollout=replace(rollout, events=tuple(anchored_events)),
+            behavior_ratio_max_error=replay.ratio_max_error,
+            behavior_ratio_mean_error=replay.ratio_mean_error,
+            behavior_ratio_action_count=replay.ratio_action_count,
+            numeric_max_error=replay.numeric_max_error,
+        )
 
 
 __all__ = [
@@ -1368,6 +1414,7 @@ __all__ = [
     "PolicyEvent",
     "TextEvent",
     "U15Policy",
+    "U15PolicyAnchor",
     "U15PolicyRuntime",
     "U15PolicyReplay",
     "U15PolicyRollout",

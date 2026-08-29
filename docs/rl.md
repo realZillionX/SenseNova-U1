@@ -53,11 +53,24 @@ belong to the provider. Forge rejects unscorable rows before GDPO.
 - reward dimensions normalize inside each prompt group before aggregation;
 - the aggregate normalizes once across the complete optimizer batch;
 - text and image branches consume the same detached trajectory advantage;
-- text uses token PPO clipping and optional k3 reference KL;
+- each branch averages its own actions per trajectory before averaging
+  trajectories; variable action count never changes rollout weight;
+- text uses token PPO clipping and exact, unclipped k3 reference KL;
 - image uses selected hybrid-SDE actions, RatioNorm clipping, and optional
   velocity-MSE to the fixed SFT reference;
 - branch-local reductions are combined with explicit weights;
-- old behavior likelihood remains fixed for every update on the batch.
+- serving likelihoods are rebuilt once in no-grad FSDP replay geometry before
+  the first update; that detached old anchor remains fixed for every update on
+  the batch and is never straight-through corrected during replay.
+
+The persistent reward provider runs concurrently with that mandatory no-grad
+anchor, so verifier latency and numerical alignment do not serialize on the
+critical path.
+
+RL text sampling is intentionally not the ordinary VQA profile. It is sealed
+as temperature 1, top-p 1, unrestricted top-k, zero presence/frequency penalty,
+and repetition penalty 1 so the serving sampler and replay implement the same
+categorical policy.
 
 ## Plan and run
 

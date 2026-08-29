@@ -151,10 +151,10 @@ def compute_uni_gdpo_loss(
 
     A TI2TI response may contain several generated images.  Each replay may
     have a different latent resolution, so image events are evaluated
-    separately and their policy/KL terms are action-count weighted.  This is
-    the visual analogue of the shared text branch's token-mean reduction:
-    every denoising action receives equal weight without requiring incompatible
-    latent tensors to be concatenated.
+    separately and their policy/KL terms are action-count weighted *inside the
+    trajectory*.  The trainer then averages trajectories, matching the text
+    branch's sequence-mean/token-mean reduction without concatenating
+    incompatible latent tensors.
     """
 
     if not isinstance(advantages, Tensor):
