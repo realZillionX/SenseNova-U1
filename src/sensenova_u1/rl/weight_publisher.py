@@ -391,13 +391,21 @@ class ServingWeightPublisher:
     def close(self) -> None:
         if not self.initialized:
             return
-        _request(
-            "POST",
-            f"{self.base_url}/destroy_weights_update_group",
-            payload={"group_name": self.group_name},
-        )
-        for group in self.groups.values():
-            dist.destroy_process_group(group)
+        # NCCL communicator destruction is collective across the independent
+        # publisher/consumer processes. Waiting for the HTTP consumers to
+        # finish before entering the publisher-side destroy deadlocks both
+        # halves. Dispatch control-plane teardown first, destroy our members
+        # while that request is live, then join the receipt.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(
+                _request,
+                "POST",
+                f"{self.base_url}/destroy_weights_update_group",
+                payload={"group_name": self.group_name},
+            )
+            for group in self.groups.values():
+                dist.destroy_process_group(group)
+            pending.result()
         self.groups.clear()
 
 
