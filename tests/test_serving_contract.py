@@ -56,6 +56,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("MAX_REQ_TOTAL_LEN:-16384", launcher)
         self.assertIn("LIGHTLLM_MEM_FRACTION:-0.70", launcher)
         self.assertIn('--mem_fraction "$LIGHTLLM_MEM_FRACTION"', launcher)
+        self.assertIn("LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1", launcher)
 
 
 if __name__ == "__main__":

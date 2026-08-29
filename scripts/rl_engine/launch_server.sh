@@ -44,6 +44,10 @@ MAX_REQ_TOTAL_LEN=${MAX_REQ_TOTAL_LEN:-16384}
 # the live model/KV/CUDA-graph footprint. 0.75 exhausted an 80 GiB H100 before
 # the first 192 MiB bucket; 0.70 preserves high KV capacity with update headroom.
 LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.70}
+# The pinned H100 runtime has no cached silu-and-mul config for U1.5's 12288
+# intermediate width. Adaptive level 1 tunes only missing kernels during the
+# existing warmup and reuses the selected config for steady-state serving.
+export LIGHTLLM_TRITON_AUTOTUNE_LEVEL=${LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1}
 
 "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
   --model-path "$MODEL_ROOT" \

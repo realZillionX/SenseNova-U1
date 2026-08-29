@@ -30,3 +30,7 @@ geometry，replay 在调度不一致时直接拒绝。
 LightLLM 默认只把加载权重后的 70% 可用显存交给 KV cache，剩余 headroom 属于
 online publication 合同：服务暂停后仍必须能接收完整参数 bucket 而不 OOM。只有
 同时测量 rollout 容量与最大权重 bucket 后，才可覆盖 `LIGHTLLM_MEM_FRACTION`。
+
+LightLLM 缺失的 Triton kernel config 会在既有启动 warmup 中自适应调优
+（`LIGHTLLM_TRITON_AUTOTUNE_LEVEL=1`），随后供稳态请求复用。只有 runtime 已
+包含当前 GPU 与 U1.5 精确 shape 的完整配置时，才应改回 level 0。

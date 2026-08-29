@@ -45,3 +45,8 @@ remaining headroom is part of the online-publication contract: a paused server
 must still receive a full-parameter bucket without OOM. Override
 `LIGHTLLM_MEM_FRACTION` only after measuring both rollout capacity and the
 largest planned weight bucket.
+
+Missing LightLLM Triton kernel configurations are adaptively tuned during the
+existing startup warmup (`LIGHTLLM_TRITON_AUTOTUNE_LEVEL=1`) and reused for
+steady-state requests. Set level 0 only when the pinned runtime already ships
+complete configs for the exact GPU and U1.5 shapes.
