@@ -28,6 +28,7 @@ EXPECTED_DISTRIBUTIONS = {
     "dill": "0.4.1",
     "imageio": "2.37.4",
     "timm": "1.0.28",
+    "httpx": "0.28.1",
     "protobuf": "7.35.1",
     "nvidia-cuda-runtime-cu12": "12.8.90",
     "nvidia-cusolver-cu12": "11.7.3.90",
@@ -158,9 +159,15 @@ def main() -> None:
 
     http_server = {"available": False, "module": None, "error": None}
     try:
-        import lightllm.server.api_http as api_http
+        if args.allow_no_gpu:
+            spec = importlib.util.find_spec("lightllm.server.api_http")
+            if spec is None:
+                raise ModuleNotFoundError("lightllm.server.api_http")
+            http_server.update(available=True, module=spec.name)
+        else:
+            import lightllm.server.api_http as api_http
 
-        http_server.update(available=True, module=api_http.__name__)
+            http_server.update(available=True, module=api_http.__name__)
     except Exception as exc:
         http_server["error"] = f"{type(exc).__name__}: {exc}"
 

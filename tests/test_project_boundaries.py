@@ -127,6 +127,8 @@ class ProjectBoundariesTest(unittest.TestCase):
         self.assertTrue(
             {
                 "dill==0.4.1",
+                "httpcore==1.0.9",
+                "httpx==0.28.1",
                 "imageio==2.37.4",
                 "timm==1.0.28",
             }
