@@ -124,6 +124,15 @@ class ProjectBoundariesTest(unittest.TestCase):
             project = tomllib.load(file)
         runtime = set(requirement_entries(REPO_ROOT / "docker" / "rl-engine" / "requirements.lock"))
         self.assertTrue(set(project["project"]["dependencies"]) <= runtime)
+        self.assertTrue(
+            {
+                "decord==0.6.0",
+                "dill==0.4.1",
+                "imageio==2.37.4",
+                "timm==1.0.28",
+            }
+            <= runtime
+        )
 
 
 if __name__ == "__main__":
