@@ -15,8 +15,17 @@ import concurrent.futures
 import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
+
+FORGE_ROOT = Path(__file__).resolve().parents[2]
+for dependency in (
+    FORGE_ROOT / "serving" / "third_party" / "LightLLM",
+    FORGE_ROOT / "serving" / "third_party" / "LightX2V",
+):
+    if str(dependency) not in sys.path:
+        sys.path.insert(0, str(dependency))
 
 import requests
 import torch
