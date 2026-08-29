@@ -126,7 +126,6 @@ class ProjectBoundariesTest(unittest.TestCase):
         self.assertTrue(set(project["project"]["dependencies"]) <= runtime)
         self.assertTrue(
             {
-                "decord==0.6.0",
                 "dill==0.4.1",
                 "imageio==2.37.4",
                 "timm==1.0.28",

@@ -25,7 +25,6 @@ EXPECTED_DISTRIBUTIONS = {
     "tokenizers": "0.22.1",
     "huggingface-hub": "0.36.2",
     "numpy": "2.5.2",
-    "decord": "0.6.0",
     "dill": "0.4.1",
     "imageio": "2.37.4",
     "timm": "1.0.28",
