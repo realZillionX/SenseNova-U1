@@ -22,3 +22,7 @@ bash scripts/rl_engine/launch_server.sh
 
 Run `examples/serving/client.py` for protocol inspection and
 `examples/serving/rl_smoke.py` for rollout/trace/weight-control validation.
+
+The production profile is sealed at 512×512, 30 flow steps and timestep shift
+1.0 in `serving/configs/neopp_u15_forge_512.json`; inference, rollout and replay
+must use that same physical schedule.

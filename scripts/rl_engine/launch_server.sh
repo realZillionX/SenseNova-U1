@@ -6,7 +6,10 @@ SOURCE_ROOT=${SOURCE_ROOT:-$SCRIPT_ROOT}
 MODEL_ROOT=${MODEL_ROOT:?set MODEL_ROOT to the SenseNova-U1.5-8B-MoT HF checkpoint}
 LIGHTLLM_ROOT="$SOURCE_ROOT/serving/third_party/LightLLM"
 LIGHTX2V_ROOT="$SOURCE_ROOT/serving/third_party/LightX2V"
+X2V_CONFIG=${X2V_CONFIG:-$SOURCE_ROOT/serving/configs/neopp_u15_forge_512.json}
 PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
+
+[[ -f "$X2V_CONFIG" ]] || { echo "Forge LightX2V config is missing: $X2V_CONFIG" >&2; exit 2; }
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
@@ -38,7 +41,7 @@ exec "$PYTHON_BIN" -m lightllm.server.api_server \
   --enable_multimodal_x2i \
   --x2i_server_deploy_mode separate \
   --x2i_server_used_gpus 1 \
-  --x2v_gen_model_config "$LIGHTX2V_ROOT/configs/neopp/neopp_dense.json" \
+  --x2v_gen_model_config "$X2V_CONFIG" \
   --host 0.0.0.0 \
   --port 8000 \
   --max_req_total_len "$MAX_REQ_TOTAL_LEN" \

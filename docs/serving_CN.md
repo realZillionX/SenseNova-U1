@@ -14,3 +14,6 @@ MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 CUDA_VISIBLE_DEVICES=0,1 \
 bash scripts/rl_engine/launch_server.sh
 ```
+
+生产配置由 `serving/configs/neopp_u15_forge_512.json` 封存为 512×512、30 个
+flow step、timestep shift 1.0；inference、rollout 与 replay 必须共享这套物理调度。
