@@ -3,6 +3,7 @@
 # Consumed by `train_sensenovau1.py --config`. Runtime-tuned knobs come from
 # environment variables (set by `shell/train_u1/U1.5_8B_SFT.sh`); the rest are constants.
 import os
+from pathlib import Path
 
 from sensenovalm.utils.config_helpers import env_bool
 
@@ -200,7 +201,8 @@ if llm_data_config is not None:
 # -----------------------------------------------------------------------------
 # Checkpoint
 # -----------------------------------------------------------------------------
-SAVE_CKPT_FOLDER = f"local:RUN/{JOB_NAME}"
+RUN_ROOT = Path(os.environ.get("RUN_ROOT", "RUN")).expanduser()
+SAVE_CKPT_FOLDER = f"local:{RUN_ROOT / JOB_NAME}"
 enable_save_ckpt = env_bool("enable_save_ckpt", True)
 CHECKPOINT_EVERY = int(os.environ.get("checkpoint_every", "100"))
 CHECKPOINT_SNAPSHOT_EVERY = int(

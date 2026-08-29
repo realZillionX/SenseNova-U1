@@ -19,10 +19,12 @@ class SftContractTest(unittest.TestCase):
         self.assertIn("cfg_img_uncond_drop_prob=0", launcher)
         self.assertIn("cfg_txtimg_uncond_drop_prob=0", launcher)
         self.assertIn("JOB_NAME=${JOB_NAME:?", launcher)
+        self.assertIn('RUN_ROOT=${RUN_ROOT:-"RUN"}', launcher)
         self.assertIn("model.safetensors.index.json", launcher)
         self.assertIn("WORLD_SIZE % MODEL_PARALLEL_SIZE", launcher)
         config = (ROOT / "training/configs/sensenovavl_qwen3_gen/sensenovau1_5_8b_mot_sft.py").read_text()
         self.assertIn('f"/dev/shm/sensenovalm_tmp_ckpt/{JOB_NAME}"', config)
+        self.assertIn('Path(os.environ.get("RUN_ROOT", "RUN"))', config)
         self.assertNotIn("enabel_und_loss", config)
 
     def test_only_u15_public_presets_remain(self) -> None:

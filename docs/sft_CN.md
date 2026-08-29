@@ -13,6 +13,7 @@ VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
 TOKENIZER_PATH=/models/SenseNova-U1.5-8B-MoT \
 mm_data_path=/datasets/u15/meta.json \
 JOB_NAME=u15-full-sft \
+RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```
 
@@ -21,3 +22,5 @@ meta JSON 使用 `root`、`annotation`、`repeat_time` 与 `task`，row 使用
 scheduler 与 RNG 续训状态。`JOB_NAME` 是必填项，两条独立 arm 必须使用不同
 namespace，checkpoint 中转目录也按该名称隔离。launcher 会在 torchrun 前拒绝
 缺失的 checkpoint/tokenizer/data 资产，以及与 `wp*tp*pp` 不兼容的 world size。
+`RUN_ROOT` 显式指定输出与 checkpoint 根；正式训练应指向封存的 run 目录，不把
+运行产物写入源码 checkout。

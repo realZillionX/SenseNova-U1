@@ -19,6 +19,7 @@ Required inputs:
 | `VOCAB_FILE`, `TOKENIZER_PATH` | Matching tokenizer directory |
 | `mm_data_path` | InternEvo-loader meta JSON |
 | `JOB_NAME` | New run namespace |
+| `RUN_ROOT` | Output/checkpoint root; defaults to local `RUN`, set it to the sealed run directory for formal training |
 
 The meta JSON points to datasets with `root`, `annotation`, `repeat_time`, and
 `task`. Rows use the established `conversations` and `image` fields. Mixed
@@ -31,6 +32,7 @@ VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
 TOKENIZER_PATH=/models/SenseNova-U1.5-8B-MoT \
 mm_data_path=/datasets/u15/meta.json \
 JOB_NAME=u15-full-sft \
+RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```
 

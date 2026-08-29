@@ -65,6 +65,7 @@ VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
 TOKENIZER_PATH=/models/SenseNova-U1.5-8B-MoT \
 mm_data_path=/datasets/u15/meta.json \
 JOB_NAME=u15-ti2t-sft \
+RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```
 

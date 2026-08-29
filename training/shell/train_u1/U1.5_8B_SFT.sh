@@ -119,6 +119,7 @@ export enable_und_loss='true'
 
 # ============================ Job / logging ============================ #
 export JOB_NAME=${JOB_NAME:?set JOB_NAME to a unique arm/run namespace}
+export RUN_ROOT=${RUN_ROOT:-"RUN"}
 export checkpoint_tmp_folder=${checkpoint_tmp_folder:-"/dev/shm/sensenovalm_tmp_ckpt/${JOB_NAME}"}
 # export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 # export WANDB_PROJECT="neo_unify"
