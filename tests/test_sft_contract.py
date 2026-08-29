@@ -13,6 +13,8 @@ class SftContractTest(unittest.TestCase):
         self.assertIn("freeze_backbone=false", launcher)
         self.assertIn("enable_und_loss='true'", launcher)
         self.assertIn("SenseNova-U1.5-8B-MoT", launcher)
+        self.assertIn("total_steps=${total_steps:-200000}", launcher)
+        self.assertIn("seq_len=${seq_len:-8192}", launcher)
 
     def test_only_u15_public_presets_remain(self) -> None:
         configs = sorted(path.name for path in (ROOT / "training/configs/sensenovavl_qwen3_gen").glob("*.py"))

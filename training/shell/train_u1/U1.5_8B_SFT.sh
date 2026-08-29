@@ -32,21 +32,21 @@ export load_optimizer=${load_optimizer:-"model"}
 # export resume_ds=true
 
 # ============================ Parallelism ============================ #
-export zero1_size=-1
-export wp_size=8
-export tp_size=1
-export pp_size=1
+export zero1_size=${zero1_size:--1}
+export wp_size=${wp_size:-8}
+export tp_size=${tp_size:-1}
+export pp_size=${pp_size:-1}
 
 # ============================ Optimization ============================ #
-export SEED=42
-export lr=2e-4
-export lr_scheduler_type="constant"
-export min_lr_ratio=0.5
-export mlp_lr_scale=1.0
-export weight_decay=0
-export grad_accm=1
-export total_steps=200000
-export init_steps=2000
+export SEED=${SEED:-42}
+export lr=${lr:-2e-4}
+export lr_scheduler_type=${lr_scheduler_type:-"constant"}
+export min_lr_ratio=${min_lr_ratio:-0.5}
+export mlp_lr_scale=${mlp_lr_scale:-1.0}
+export weight_decay=${weight_decay:-0}
+export grad_accm=${grad_accm:-1}
+export total_steps=${total_steps:-200000}
+export init_steps=${init_steps:-2000}
 export metric_interval_steps=${metric_interval_steps:-10}
 # H100 80 GB keeps enough headroom at 0.75 for the mixed 8192-token profile;
 # lower fractions remain workload-specific and should be selected by profiling.
@@ -56,17 +56,17 @@ export checkpoint_every=${checkpoint_every:-100}
 export checkpoint_snapshot_every=${checkpoint_snapshot_every:-1000}
 
 # ============================ Data / sequence ============================ #
-export num_imgs=144
-export seq_len=8192
-export max_sample_tokens=8192
+export num_imgs=${num_imgs:-144}
+export seq_len=${seq_len:-8192}
+export max_sample_tokens=${max_sample_tokens:-$seq_len}
 export dataset_replacement=true
 export dataloader_num_workers=${dataloader_num_workers:-8}
 export dataloader_prefetch_factor=${dataloader_prefetch_factor:-1}
 export dataloader_persistent_workers=${dataloader_persistent_workers:-false}
 export packed_buffer_max_size=${packed_buffer_max_size:-10}
 export packed_buffer_stale_threshold=${packed_buffer_stale_threshold:-200}
-export min_num_frame=1
-export max_num_frame=128
+export min_num_frame=${min_num_frame:-1}
+export max_num_frame=${max_num_frame:-128}
 export dynamic_image_version="native_resolution"
 export CONV_STYLE="sensenovalm2-chat-v3"
 export down_sample_ratio=0.5
