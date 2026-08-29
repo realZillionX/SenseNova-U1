@@ -5,6 +5,23 @@ SOURCE_ROOT=${1:?usage: prepare_runtime.sh SOURCE_ROOT}
 LIGHTLLM_ROOT="$SOURCE_ROOT/serving/third_party/LightLLM"
 LIGHTX2V_ROOT="$SOURCE_ROOT/serving/third_party/LightX2V"
 PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
+PYTHON_BOOTSTRAP=${PYTHON_BOOTSTRAP:-python3.12}
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  command -v "$PYTHON_BOOTSTRAP" >/dev/null || {
+    echo "Python 3.12 bootstrap interpreter is unavailable: $PYTHON_BOOTSTRAP" >&2
+    exit 2
+  }
+  "$PYTHON_BOOTSTRAP" -m venv "$(dirname "$(dirname "$PYTHON_BIN")")"
+fi
+
+export FORGE_ROOT=${FORGE_ROOT:-$SOURCE_ROOT}
+export FORGE_COMMIT=${FORGE_COMMIT:-$(git -C "$SOURCE_ROOT" rev-parse HEAD)}
+export FORGE_LIGHTLLM_ROOT=${FORGE_LIGHTLLM_ROOT:-$LIGHTLLM_ROOT}
+export FORGE_LIGHTX2V_ROOT=${FORGE_LIGHTX2V_ROOT:-$LIGHTX2V_ROOT}
+export FORGE_LIGHTLLM_COMMIT=${FORGE_LIGHTLLM_COMMIT:-$(git -C "$LIGHTLLM_ROOT" rev-parse HEAD)}
+export FORGE_LIGHTX2V_COMMIT=${FORGE_LIGHTX2V_COMMIT:-$(git -C "$LIGHTX2V_ROOT" rev-parse HEAD)}
+export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE:-sensenova-u15-forge:rl-serving-v1}
 
 bash "$SOURCE_ROOT/docker/rl-engine/build_runtime.sh" "$SOURCE_ROOT"
 
