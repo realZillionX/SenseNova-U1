@@ -32,7 +32,6 @@ import torch
 import torch.distributed as dist
 from client import INTERLEAVE_SYSTEM_PROMPT
 from lightllm.utils.dist_utils import init_custom_process_group
-from lightllm.utils.rl_weight_update import tensor_checksum
 from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file, save
@@ -105,7 +104,6 @@ def _make_entry(name, path, owner, target_spec):
         "path": str(path),
         "shape": list(tensor.shape),
         "dtype": str(tensor.dtype),
-        "checksum": tensor_checksum(tensor),
         "owner": owner,
         "numel": tensor.numel(),
         "element_size": tensor.element_size(),
@@ -226,7 +224,6 @@ def _build_buckets(entries, max_bytes=256 * 1024 * 1024):
                 "dtype": str(flat.dtype),
                 "numel": flat.numel(),
                 "entry_indices": indices,
-                "checksum": tensor_checksum(flat),
                 "consumers": [owner],
             }
         )
@@ -238,7 +235,6 @@ def _manifest_payload(entries, buckets, policy_version, group_name):
         "names": [entry["name"] for entry in entries],
         "dtypes": [entry["dtype"] for entry in entries],
         "shapes": [entry["shape"] for entry in entries],
-        "checksums": [entry["checksum"] for entry in entries],
         "assignments": {entry["name"]: [entry["owner"]] for entry in entries},
         "required": {
             consumer: [entry["name"] for entry in entries if entry["owner"] == consumer]
@@ -286,7 +282,7 @@ def _closure_from_init(receipt):
     }
 
 
-def _verify_update_receipts(response, expected_checksums, assignments):
+def _verify_update_receipts(response, assignments):
     receipts = response["receipts"]
     consumer_receipts = {
         "language": receipts["language"]["ranks"],
@@ -294,12 +290,12 @@ def _verify_update_receipts(response, expected_checksums, assignments):
         "x2v": [receipts["x2v"]],
     }
     for consumer, rank_receipts in consumer_receipts.items():
-        expected = {name: checksum for name, checksum in expected_checksums.items() if consumer in assignments[name]}
+        expected = {name for name, owners in assignments.items() if consumer in owners}
         for rank_receipt in rank_receipts:
-            actual = rank_receipt.get("checksums", {})
+            actual = set(rank_receipt.get("received_names", ()))
             if actual != expected:
                 raise AssertionError(
-                    f"{consumer} transport checksum ACK mismatch: expected={len(expected)}, actual={len(actual)}"
+                    f"{consumer} transport closure ACK mismatch: expected={len(expected)}, actual={len(actual)}"
                 )
     return response
 
@@ -359,11 +355,9 @@ def _tensor_bundle(entries, mutate=False):
     return tensors, originals, assignments
 
 
-def _post_tensor_update(base_url, tensors, assignments, version, required=None, checksums=None, expected=200):
-    checksums = checksums or {name: tensor_checksum(tensor) for name, tensor in tensors.items()}
+def _post_tensor_update(base_url, tensors, assignments, version, required=None, expected=200):
     body = {
         "serialized_safetensors": base64.b64encode(save(tensors)).decode("ascii"),
-        "checksums": checksums,
         "assignments": assignments,
         "required": required
         or {
@@ -421,7 +415,6 @@ def main():
         )
         receipt["stages"]["resume_version"] = _verify_update_receipts(
             resume_receipt,
-            {name: tensor_checksum(tensor) for name, tensor in resume_tensors.items()},
             resume_assignments,
         )
         rollout_version = "smoke-resume-v1"
@@ -446,7 +439,6 @@ def main():
         )
         _verify_update_receipts(
             update_receipt,
-            {entry["name"]: entry["checksum"] for entry in entries},
             {entry["name"]: [entry["owner"]] for entry in entries},
         )
         receipt["stages"]["full_weight_sync"] = {"seconds": seconds, "receipt": update_receipt}
@@ -524,27 +516,17 @@ def main():
     controlled_receipt = _post_tensor_update(base_url, changed, assignments, "smoke-controlled")
     receipt["stages"]["controlled_change"] = _verify_update_receipts(
         controlled_receipt,
-        {name: tensor_checksum(tensor) for name, tensor in changed.items()},
         assignments,
     )
     _request("POST", f"{base_url}/pause_generation")
     restore_v2 = _post_tensor_update(base_url, originals, assignments, "smoke-v2")
     receipt["stages"]["restore_v2"] = _verify_update_receipts(
         restore_v2,
-        {name: tensor_checksum(tensor) for name, tensor in originals.items()},
         assignments,
     )
 
     # Failure protection: every failure must leave the active version intact
     # and the server paused until a valid restore is committed.
-    _request("POST", f"{base_url}/pause_generation")
-    bad_checksums = {name: tensor_checksum(tensor) for name, tensor in originals.items()}
-    first_name = next(iter(bad_checksums))
-    bad_checksums[first_name] = "0" * 64
-    _post_tensor_update(base_url, originals, assignments, "bad-checksum", checksums=bad_checksums, expected=409)
-    receipt["stages"]["bad_checksum"] = _assert_failed_barrier(base_url, "smoke-v2")
-    receipt["stages"]["restore_v3"] = _post_tensor_update(base_url, originals, assignments, "smoke-v3")
-
     # Missing closure tensor: advertise the complete controlled closure while
     # omitting one tensor from the bundle.
     _request("POST", f"{base_url}/pause_generation")
@@ -563,19 +545,19 @@ def main():
         required=required,
         expected=409,
     )
-    receipt["stages"]["missing_tensor"] = _assert_failed_barrier(base_url, "smoke-v3")
-    receipt["stages"]["restore_v4"] = _post_tensor_update(base_url, originals, assignments, "smoke-v4")
+    receipt["stages"]["missing_tensor"] = _assert_failed_barrier(base_url, "smoke-v2")
+    receipt["stages"]["restore_v3"] = _post_tensor_update(base_url, originals, assignments, "smoke-v3")
 
-    # Correct bytes/checksum with a wrong model shape must fail at the owning
-    # consumer rather than being accepted by the transport layer.
+    # A wrong model shape must fail at the owning consumer rather than being
+    # accepted by the transport layer.
     _request("POST", f"{base_url}/pause_generation")
     malformed = {name: tensor.clone() for name, tensor in originals.items()}
     shape_name = smallest["x2v"]["name"]
     source = malformed[shape_name]
     malformed[shape_name] = source.reshape(-1) if source.ndim != 1 else source.reshape(source.numel(), 1)
     _post_tensor_update(base_url, malformed, assignments, "bad-shape", expected=409)
-    receipt["stages"]["wrong_shape"] = _assert_failed_barrier(base_url, "smoke-v4")
-    receipt["stages"]["final_restore"] = _post_tensor_update(base_url, originals, assignments, "smoke-v5")
+    receipt["stages"]["wrong_shape"] = _assert_failed_barrier(base_url, "smoke-v3")
+    receipt["stages"]["final_restore"] = _post_tensor_update(base_url, originals, assignments, "smoke-v4")
 
     for bundle_id in bundle_ids:
         _request("DELETE", f"{base_url}/v1/rl/traces/{bundle_id}")
