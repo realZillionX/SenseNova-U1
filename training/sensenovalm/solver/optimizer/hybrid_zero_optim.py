@@ -1030,6 +1030,7 @@ class HybridZeroOptimizer(BaseOptimizer):
             global_norm_groups[group_name] = global_norm / loss_scale
         return True, global_norm_groups
 
+    @torch.no_grad()
     def broadcast_params(self):
         handles = []
         # traverse according to rank firstly, which is conducive to overlapping broadcast communication.

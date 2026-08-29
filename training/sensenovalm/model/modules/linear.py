@@ -634,6 +634,7 @@ class ParallelLinearWithCommExt(nn.Linear):
         )
 
 
+@torch.no_grad()
 def reset_isp_linear_parameters(module) -> None:
     world_size = gpc.get_world_size(ParallelMode.WEIGHT)
 
@@ -835,9 +836,10 @@ class RewardModelLinear(ScaleColumnParallelLinear):
         # broadcast parameters for reward model head layer.
         parallel_mode = get_head_parallel_mode()
         process_group = gpc.get_group(parallel_mode)
-        dist.broadcast(self.weight, gpc.get_ranks_in_group(parallel_mode)[0], process_group)
-        if bias:
-            dist.broadcast(self.bias, gpc.get_ranks_in_group(parallel_mode)[0], process_group)
+        with torch.no_grad():
+            dist.broadcast(self.weight, gpc.get_ranks_in_group(parallel_mode)[0], process_group)
+            if bias:
+                dist.broadcast(self.bias, gpc.get_ranks_in_group(parallel_mode)[0], process_group)
 
 
 class GroupedParallelLinearWithCommExt(ParallelLinearWithCommExt):

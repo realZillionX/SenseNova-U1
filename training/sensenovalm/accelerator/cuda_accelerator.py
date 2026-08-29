@@ -1,6 +1,8 @@
 # Copyright (c) SenseNovaLM contributors. Licensed under Apache-2.0.
 # Derived from InternEvo (OpenGVLab, Apache-2.0); CUDA accelerator
 # interface inspired by DeepSpeed (Microsoft, Apache-2.0).
+from functools import partial
+
 from .abstract_accelerator import Accelerator, AcceleratorType
 
 try:
@@ -369,12 +371,12 @@ class CUDA_Accelerator(Accelerator):
 
     def return_custom_bwd(self):
         """
-        Returns the custom backward hook function from torch.cuda.amp, if available.
+        Returns the CUDA custom backward decorator through the current AMP API.
         """
-        return torch.cuda.amp.custom_bwd
+        return partial(torch.amp.custom_bwd, device_type="cuda")
 
     def return_custom_fwd(self):
         """
-        Returns the custom forward hook function from torch.cuda.amp, if available.
+        Returns the CUDA custom forward decorator through the current AMP API.
         """
-        return torch.cuda.amp.custom_fwd
+        return partial(torch.amp.custom_fwd, device_type="cuda")

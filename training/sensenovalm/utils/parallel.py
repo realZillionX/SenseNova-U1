@@ -106,6 +106,7 @@ def should_reduce_replica_param(p):
     return _reduce
 
 
+@torch.no_grad()
 def sync_model_param(model):
     r"""Make sure data parameters are consistent during Data Parallel Mode.
 
@@ -124,6 +125,7 @@ def sync_model_param(model):
             dist.broadcast(param, src=ranks[0], group=gpc.get_group(sync_parallel_mode))
 
 
+@torch.no_grad()
 def sync_model_replica_param_group(model):
     r"""This function is changed from colossalai, which is ``sync_model_param``.
 
