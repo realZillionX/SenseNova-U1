@@ -25,6 +25,12 @@ class ProjectBoundariesTest(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def test_runtime_patches_use_stable_line_endings(self) -> None:
+        offenders = [
+            str(path.relative_to(REPO_ROOT)) for path in REPO_ROOT.rglob("*.patch") if b"\r\n" in path.read_bytes()
+        ]
+        self.assertEqual(offenders, [])
+
     def test_training_is_an_independent_uv_project(self) -> None:
         self.assertTrue((REPO_ROOT / "training" / "pyproject.toml").is_file())
         self.assertTrue((REPO_ROOT / "training" / "uv.lock").is_file())
