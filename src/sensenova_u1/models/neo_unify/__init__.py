@@ -41,7 +41,7 @@ def register() -> None:
     """Register NEO-Unify types with ``transformers.Auto*``.
 
     After calling this (or simply ``import sensenova_u1``), users can load a
-    SenseNova-U1 checkpoint via plain ``AutoConfig.from_pretrained`` /
+    SenseNova-U1.5 checkpoint via plain ``AutoConfig.from_pretrained`` /
     ``AutoModel.from_pretrained``.
     """
     global _REGISTERED

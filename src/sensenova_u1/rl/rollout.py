@@ -7,7 +7,7 @@ two conventions: ``sigma = 1 - t`` and the U1.5 velocity is negated before it
 is passed to the shared SDE algebra.
 
 The functions here intentionally accept predictor callbacks instead of
-copying the official model implementation.  A runtime binding owns U1.5's KV
+copying the model implementation.  A runtime binding owns U1.5's KV
 caches, pixel-head calls, CFG branches, patchify/unpatchify operations and
 generated-image re-encoding.  Forge owns stochastic action sampling, the
 stored old-policy likelihoods, and differentiable replay.
@@ -94,9 +94,9 @@ def u15_sde_transition(
     sigma_max: float,
     noise_level: float,
 ) -> SdeTransition:
-    """Map one official U1.5 flow step onto the shared reverse-SDE formula.
+    """Map one U1.5 flow step onto the shared reverse-SDE formula.
 
-    At ``noise_level=0`` the returned mean is exactly the official Euler step
+    At ``noise_level=0`` the returned mean is exactly the model Euler step
     ``sample + (t_next - t) * velocity``.  A zero-noise transition has no
     density, so it is useful only for this deterministic identity; RLVR
     rollouts must use a positive noise level.
@@ -425,7 +425,7 @@ def sample_image_sde(
 
     ``initial_sample`` is the patchified U1.5 pixel latent ``z``.  The runtime
     remains responsible for initial pixel-noise scaling and for decoding the
-    returned final latent with the official pixel head geometry.
+    returned final latent with the U1.5 pixel head geometry.
     """
 
     _require_float_tensor(initial_sample, name="initial_sample")
@@ -640,7 +640,7 @@ def slice_image_sde_trace(
 ) -> ImageSdeTrace:
     """Return one exact action slice of a single-rollout image trace.
 
-    The official policy runtime replays one rollout at a time, so an action is
+    The U1.5 policy runtime replays one rollout at a time, so an action is
     one selected SDE step.  Keeping this restriction explicit prevents an
     accidental slice through the batch axis from changing the loss reduction.
     """

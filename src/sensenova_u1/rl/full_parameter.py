@@ -1,11 +1,11 @@
 """Full-parameter FSDP2 state for native SenseNova-U1.5 RLVR.
 
-The official U1.5 runtime calls the language model, vision model and flow
+The U1.5 runtime calls the language model, vision model and flow
 modules directly instead of routing every operation through
 ``NEOChatModel.forward``.  A single root FSDP wrapper would therefore be
 incorrect: several trainable parameters would be used without entering the
 root all-gather hooks.  This module shards every decoder/vision block and then
-wraps each remaining parameter-owning execution root that the official runtime
+wraps each remaining parameter-owning execution root that the U1.5 runtime
 actually calls.
 """
 
@@ -171,7 +171,7 @@ def shard_full_parameter_policy(
         fully_shard(module, **kwargs)
         wrapped.append(name)
 
-    # The official image-velocity helper calls ``language_model.model``
+    # The image-velocity helper calls ``language_model.model``
     # directly, so that backbone is an execution root in its own right. Wrap it
     # after its decoder blocks and keep its remaining embedding/final-norm
     # parameters gathered through backward. This also keeps direct embedding
@@ -201,7 +201,7 @@ def shard_full_parameter_policy(
     fully_shard(language_model, mp_policy=policy, reshard_after_forward=True)
     wrapped.append("language_model")
 
-    # Flow heads and any remaining official execution leaves are invoked
+    # Flow heads and any remaining U1.5 execution leaves are invoked
     # directly. Work bottom-up so every unclaimed direct parameter receives
     # hooks at the smallest callable module that owns it.
     for name, module in reversed(named_modules):

@@ -1,6 +1,6 @@
-"""Flow-GDPO and the UniGDPO loss core (SenseNova-U1 line).
+"""Flow-GDPO and the UniGDPO loss core (SenseNova-U1.5 line).
 
-SenseNova-U1 (NEO-unify) is pixel-space flow matching: the LLM itself is the
+SenseNova-U1.5 (NEO-unify) is pixel-space flow matching: the LLM itself is the
 denoiser and text tokens and image patch tokens share one sequence and one
 backward pass.  UniGDPO therefore optimizes, on the *same* rollout, a
 token-level GDPO objective on the text branch and a Flow-GDPO objective on the

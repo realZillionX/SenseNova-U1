@@ -45,7 +45,7 @@ class ParamCountResult:
     groups: tuple[ParamGroupStat, ...]
 
 
-# NOTE on architecture (SenseNova-U1, MoT):
+# NOTE on architecture (SenseNova-U1.5, MoT):
 #   * vision_model.*                       -> visual und.
 #   * fm_modules.*                         -> generation-only (visual gen., fm_head, timestep/noise embedders)
 #   * language_model.* w/ "_mot_gen"       -> generation expert inside the LLM backbone

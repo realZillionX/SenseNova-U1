@@ -12,7 +12,7 @@ import requests
 
 DEFAULT_BASE_URL = "http://0.0.0.0:8000/v1"
 DEFAULT_API_KEY = "dummy"
-DEFAULT_MODEL = "sensenova-u1"
+DEFAULT_MODEL = "SenseNova-U1.5-8B-MoT"
 
 INTERLEAVE_SYSTEM_PROMPT = (
     "You are a multimodal assistant capable of reasoning with both text and images. "

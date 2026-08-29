@@ -12,7 +12,7 @@ Required inputs:
 | --- | --- |
 | `MODEL_NAME_OR_PATH` | Complete U1.5 Hugging Face checkpoint |
 | `VOCAB_FILE`, `TOKENIZER_PATH` | Matching tokenizer directory |
-| `mm_data_path` | Official-loader meta JSON |
+| `mm_data_path` | InternEvo-loader meta JSON |
 | `JOB_NAME` | New run namespace |
 
 The meta JSON points to datasets with `root`, `annotation`, `repeat_time`, and

@@ -136,7 +136,7 @@ class U15Policy(Protocol):
 
 def _single_row_tokens(trace: TextRolloutTrace) -> list[int]:
     if trace.batch_size != 1:
-        raise ValueError("official U1.5 runtime replays one rollout at a time")
+        raise ValueError("U1.5 runtime replays one rollout at a time")
     return [int(value) for value in trace.token_ids[0][trace.response_mask[0]].detach().cpu().tolist()]
 
 
@@ -149,7 +149,7 @@ def _checkpointed_selected_log_probs(
 ) -> Tensor:
     """Select FP32 token log-probabilities without a full FP32 ``[B,T,V]``.
 
-    The official causal-LM forward returns BF16 vocabulary logits. Converting
+    The U1.5 causal-LM forward returns BF16 vocabulary logits. Converting
     that complete tensor to FP32 and then materializing a complete log-softmax
     briefly retains two FP32 ``[B,T,V]`` tensors. Replay only consumes one
     target probability per position, so compute those values in bounded token
@@ -247,7 +247,7 @@ def _validate_full_parameter_closure(model: Any) -> tuple[str, ...]:
     adapter = [name for name, _parameter in named if "lora_" in name.lower()]
     if frozen or unsharded or adapter:
         raise ValueError(
-            "official U1.5 full-parameter closure is invalid: "
+            "U1.5 full-parameter closure is invalid: "
             f"frozen={frozen[:8]}, unsharded={unsharded[:8]}, adapter={adapter[:8]}"
         )
     return tuple(name for name, _parameter in named)
@@ -275,12 +275,12 @@ class _ExpandedReadOnlyCache(Cache):
         return cls(layers=layers)
 
 
-class _OfficialSession:
-    """One prompt-local official cache used for either rollout or replay."""
+class _PolicySession:
+    """One prompt-local policy cache used for either rollout or replay."""
 
     def __init__(
         self,
-        runtime: OfficialU15Policy,
+        runtime: U15Policy,
         *,
         prompt: str,
         prompt_images: tuple[str, ...],
@@ -295,7 +295,7 @@ class _OfficialSession:
         self.modality = modality
         self.device = runtime.device
         self.dtype = runtime.dtype
-        self.official = runtime.official_module
+        self.model_module = runtime.model_module
         self.img_start_id = runtime.img_start_id
         self.eos_id = runtime.eos_id
 
@@ -308,9 +308,9 @@ class _OfficialSession:
 
         pixel_values: list[Tensor] = []
         grid_hw: list[Tensor] = []
-        loader = getattr(self.official, "load_image_native", None)
+        loader = getattr(self.model_module, "load_image_native", None)
         if not callable(loader):
-            raise TypeError("official U1.5 module has no load_image_native helper")
+            raise TypeError("U1.5 module has no load_image_native helper")
         for image_path in images:
             pixels, grid = loader(
                 image_path,
@@ -326,13 +326,13 @@ class _OfficialSession:
             pixel_values.append(pixels.to(self.device, dtype=self.dtype))
             grid_hw.append(grid.to(self.device))
 
-        get_template = getattr(self.official, "get_conv_template", None)
+        get_template = getattr(self.model_module, "get_conv_template", None)
         if not callable(get_template):
-            raise TypeError("official U1.5 module has no conversation template helper")
+            raise TypeError("U1.5 module has no conversation template helper")
         template = get_template(self.model.template)
         # Condition the rollout on exactly the system turn this modality's SFT
         # rows carry, from the same table the exporter reads.  TI2TI ships the
-        # official interleaved-generation system message because the official
+        # U1.5 interleaved-generation system message because the model
         # corpus does; TI2T may supply a caller-authored text-think analogue, the
         # one place the mode is declared now that the task Prompt no longer
         # describes the response envelope.  Replaying anything else here would
@@ -348,7 +348,7 @@ class _OfficialSession:
 
         pixels_tensor = torch.cat(pixel_values) if pixel_values else None
         grid_tensor = torch.cat(grid_hw) if grid_hw else None
-        # The official builder performs a direct embedding lookup before it
+        # The U1.5 builder performs a direct embedding lookup before it
         # enters the language-model backbone. Gather that FSDP2 execution root
         # before the lookup; its following forward owns the backward hooks and
         # keeps the small non-block parameter group gathered through backward.
@@ -392,7 +392,7 @@ class _OfficialSession:
         decoder_layers = tuple(self.model.language_model.model.layers)
         cache_layers = tuple(self.cache.layers)
         if len(cache_layers) != len(decoder_layers):
-            raise RuntimeError("official U1.5 decoder/cache layer counts disagree during replay")
+            raise RuntimeError("U1.5 decoder/cache layer counts disagree during replay")
         for decoder, cache_layer in zip(decoder_layers, cache_layers, strict=True):
             tensors = tuple(
                 value
@@ -419,7 +419,7 @@ class _OfficialSession:
     def constrained_logits(self) -> Tensor:
         logits = self.next_logits.float()
         if logits.ndim != 2 or logits.shape[0] != 1:
-            raise RuntimeError(f"official U1.5 returned invalid next-token logits {tuple(logits.shape)}")
+            raise RuntimeError(f"U1.5 returned invalid next-token logits {tuple(logits.shape)}")
         if self.modality == "ti2t":
             logits[:, self.img_start_id] = torch.finfo(logits.dtype).min
         return logits
@@ -439,10 +439,10 @@ class _OfficialSession:
         """
 
         if token_ids.shape != (1,):
-            raise ValueError("official U1.5 session advances one token at a time")
+            raise ValueError("U1.5 session advances one token at a time")
         if accepted is not None:
             if accepted.shape != (1,):
-                raise ValueError("official U1.5 session advances one token at a time")
+                raise ValueError("U1.5 session advances one token at a time")
             if not bool(accepted[0]):
                 return
         self.model.language_model.model.current_index = self.t_index
@@ -646,7 +646,7 @@ class _OfficialSession:
             )
             if velocity.shape != sample_model.shape:
                 raise RuntimeError(
-                    f"official U1.5 velocity shape {tuple(velocity.shape)} != latent shape {tuple(sample_model.shape)}"
+                    f"U1.5 velocity shape {tuple(velocity.shape)} != latent shape {tuple(sample_model.shape)}"
                 )
             return velocity.float()
 
@@ -663,15 +663,15 @@ class _OfficialSession:
         return predict
 
     def _prepare_image_cache(self, sequence_length: int) -> None:
-        helper = getattr(self.official, "prepare_flash_kv_cache", None)
+        helper = getattr(self.model_module, "prepare_flash_kv_cache", None)
         if not callable(helper):
-            raise TypeError("official U1.5 module has no flash-cache preparation helper")
+            raise TypeError("U1.5 module has no flash-cache preparation helper")
         helper(self.cache, current_len=sequence_length, batch_size=1)
 
     def _clear_image_cache(self) -> None:
-        helper = getattr(self.official, "clear_flash_kv_cache", None)
+        helper = getattr(self.model_module, "clear_flash_kv_cache", None)
         if not callable(helper):
-            raise TypeError("official U1.5 module has no flash-cache cleanup helper")
+            raise TypeError("U1.5 module has no flash-cache cleanup helper")
         helper(self.cache)
 
     def _append_generated_image(
@@ -714,9 +714,9 @@ class _OfficialSession:
         )
         inputs = torch.cat([embeddings, image_end], dim=1)
         image_tokens = int(embeddings.shape[1])
-        position_helper = getattr(self.official, "build_abs_positions_from_grid_hw", None)
+        position_helper = getattr(self.model_module, "build_abs_positions_from_grid_hw", None)
         if not callable(position_helper):
-            raise TypeError("official U1.5 module has no image-position helper")
+            raise TypeError("U1.5 module has no image-position helper")
         absolute_w, absolute_h = position_helper(
             grid // merge_size,
             device=self.device,
@@ -808,7 +808,7 @@ class _OfficialSession:
             schedule[event.trace.sde_indices + 1].float(),
             event.trace.next_timesteps.float(),
         ):
-            raise ValueError("official U1.5 timestep schedule changed during replay")
+            raise ValueError("U1.5 timestep schedule changed during replay")
         return grid_h, grid_w, indexes, noise_scale, height, width
 
     def replay_reference_image(self, event: ImageEvent) -> Tensor:
@@ -859,10 +859,10 @@ class _OfficialSession:
             image_width=width,
             replay_cache=cache_snapshot,
         )
-        # The official preallocated flash cache is inference-only: every
+        # The U1.5 preallocated flash cache is inference-only: every
         # denoising forward overwrites the same current-token slice in place.
         # Differentiable replay retains all step graphs until backward, so it
-        # must use the official non-preallocated torch.cat fallback instead.
+        # must use the U1.5 non-preallocated torch.cat fallback instead.
         replay = replay_image_sde_batched(
             event.trace,
             predict_velocity=predictor,
@@ -925,7 +925,7 @@ class _OfficialSession:
         return replay
 
 
-class OfficialU15Policy:
+class U15PolicyRuntime:
     """FSDP-sharded full-parameter policy backed by published U1.5."""
 
     def __init__(
@@ -935,7 +935,7 @@ class OfficialU15Policy:
         model: Any,
         core_model: Any,
         tokenizer: Any,
-        official_module: Any,
+        model_module: Any,
         reference_parameter_shards: dict[str, Tensor],
         compute_dtype: torch.dtype,
     ) -> None:
@@ -943,14 +943,14 @@ class OfficialU15Policy:
         self.model = model
         self.core_model = core_model
         self.tokenizer = tokenizer
-        self.official_module = official_module
+        self.model_module = model_module
         self.reference_parameter_shards = reference_parameter_shards
         self.device = next(model.parameters()).device
         self.dtype = compute_dtype
         self.img_start_id = int(tokenizer.convert_tokens_to_ids("<img>"))
         self.img_context_id = int(tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>"))
         self.img_end_id = int(tokenizer.convert_tokens_to_ids("</img>"))
-        template = official_module.get_conv_template(core_model.template)
+        template = model_module.get_conv_template(core_model.template)
         self.eos_id = int(tokenizer.convert_tokens_to_ids(template.sep.strip()))
         self.pad_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else self.eos_id)
         for label, token_id in (
@@ -961,7 +961,7 @@ class OfficialU15Policy:
             ("padding", self.pad_id),
         ):
             if token_id < 0:
-                raise ValueError(f"official U1.5 tokenizer has no {label} token")
+                raise ValueError(f"U1.5 tokenizer has no {label} token")
 
     @contextmanager
     def reference_parameters(self):
@@ -993,23 +993,24 @@ class OfficialU15Policy:
         plan: RlPlan,
         *,
         device: str | torch.device | None = None,
-    ) -> OfficialU15Policy:
-        import sensenova_u1  # import registers AutoModel classes
+    ) -> U15PolicyRuntime:
+        import sensenova_u1
         from sensenova_u1.utils import load_model_and_tokenizer
 
+        sensenova_u1.register_models()
         attention = importlib.import_module("sensenova_u1.models.neo_unify.modeling_qwen3")
         setter = getattr(attention, "set_attn_backend", None)
         effective = getattr(attention, "effective_attn_backend", None)
         if not callable(setter) or not callable(effective):
-            raise TypeError("official U1.5 runtime has no attention backend control")
+            raise TypeError("U1.5 runtime has no attention backend control")
         setter(plan.attention_backend)
         if effective() != plan.attention_backend:
-            raise RuntimeError("official U1.5 attention backend differs from the plan")
+            raise RuntimeError("U1.5 attention backend differs from the plan")
 
         dtype = {"bfloat16": torch.bfloat16, "float32": torch.float32}[plan.dtype]
         runtime_device = torch.device(device if device is not None else plan.device)
         if runtime_device.type != "cuda":
-            raise ValueError("official U1.5 full-parameter policy requires CUDA")
+            raise ValueError("U1.5 full-parameter policy requires CUDA")
         base_model, tokenizer = load_model_and_tokenizer(
             model_path=str(plan.policy_init),
             dtype=dtype,
@@ -1019,7 +1020,7 @@ class OfficialU15Policy:
         base_model.img_context_token_id = int(tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>"))
         base_model.img_start_token_id = int(tokenizer.convert_tokens_to_ids("<img>"))
         base_model.config.t_eps = plan.t_eps
-        official_module = importlib.import_module(type(base_model).__module__)
+        model_module = importlib.import_module(type(base_model).__module__)
 
         base_model.requires_grad_(True)
         # RLVR uses gradients in eval mode: stochastic layer state would break
@@ -1040,7 +1041,7 @@ class OfficialU15Policy:
             model=base_model,
             core_model=base_model,
             tokenizer=tokenizer,
-            official_module=official_module,
+            model_module=model_module,
             reference_parameter_shards=reference_parameter_shards,
             compute_dtype=dtype,
         )
@@ -1063,7 +1064,7 @@ class OfficialU15Policy:
         image_count = 0
         remaining = self.plan.max_new_tokens
         with torch.no_grad():
-            session = _OfficialSession(
+            session = _PolicySession(
                 self,
                 prompt=prompt,
                 prompt_images=prompt_images,
@@ -1111,7 +1112,7 @@ class OfficialU15Policy:
                 # still close its think block and emit the Answer line, so the
                 # loop continues until EOS or the token budget stops it.
         if not events:
-            raise RuntimeError("official U1.5 rollout emitted no policy action")
+            raise RuntimeError("U1.5 rollout emitted no policy action")
         return U15PolicyRollout(
             candidate=CandidateResponse(modality=modality, items=tuple(items)),
             events=tuple(events),
@@ -1158,7 +1159,7 @@ class OfficialU15Policy:
         reference_images: list[Tensor] = []
         if include_reference:
             with torch.no_grad(), self.reference_parameters():
-                reference_session = _OfficialSession(
+                reference_session = _PolicySession(
                     self,
                     prompt=prompt,
                     prompt_images=prompt_images,
@@ -1173,7 +1174,7 @@ class OfficialU15Policy:
                     else:  # pragma: no cover - frozen policy-event union is closed
                         raise TypeError(f"unknown U1.5 policy event {type(event).__name__}")
 
-        session = _OfficialSession(
+        session = _PolicySession(
             self,
             prompt=prompt,
             prompt_images=prompt_images,
@@ -1273,7 +1274,7 @@ class OfficialU15Policy:
         if reference_velocities and len(reference_velocities) != len(image_events):
             raise ValueError("reference/current image event counts disagree")
 
-        session = _OfficialSession(
+        session = _PolicySession(
             self,
             prompt=prompt,
             prompt_images=prompt_images,
@@ -1364,10 +1365,10 @@ class OfficialU15Policy:
 
 __all__ = [
     "ImageEvent",
-    "OfficialU15Policy",
     "PolicyEvent",
     "TextEvent",
     "U15Policy",
+    "U15PolicyRuntime",
     "U15PolicyReplay",
     "U15PolicyRollout",
 ]

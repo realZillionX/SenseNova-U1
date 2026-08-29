@@ -1,5 +1,5 @@
 # Copyright (c) SenseNovaLM contributors. Licensed under Apache-2.0.
-# Main training entry point for SenseNova-U1.
+# Main training entry point for SenseNova-U1.5.
 import logging
 import os
 import time

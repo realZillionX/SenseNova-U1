@@ -47,11 +47,12 @@ def load_model_and_tokenizer(
 
     from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-    from .. import check_checkpoint_compatibility
+    from .. import check_checkpoint_compatibility, register_models
     from ..models.neo_unify.transformers_compat import pretrained_dtype_kwargs
 
     target = accel.best_available_device() if device is None else torch.device(device)
     resolved = _resolve_local_model_path(model_path)
+    register_models()
     config = AutoConfig.from_pretrained(resolved)
     check_checkpoint_compatibility(config)
     tokenizer = AutoTokenizer.from_pretrained(resolved)

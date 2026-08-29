@@ -1,26 +1,27 @@
 """Full-parameter GDPO/UniGDPO infrastructure for SenseNova-U1.5-8B-MoT."""
 
-from .advantage import GdpoAdvantageResult, compute_gdpo_advantage
-from .flow import (
-    BranchWeights,
-    RegularizationWeights,
-    UniGdpoLoss,
-    uni_gdpo_loss,
-)
-from .plan import RlPlan, TorchrunSpec
-from .types import CandidateResponse, ImageSegment, RewardBatch, TextSegment
+from importlib import import_module
 
-__all__ = [
-    "BranchWeights",
-    "CandidateResponse",
-    "GdpoAdvantageResult",
-    "ImageSegment",
-    "RegularizationWeights",
-    "RewardBatch",
-    "RlPlan",
-    "TextSegment",
-    "TorchrunSpec",
-    "UniGdpoLoss",
-    "compute_gdpo_advantage",
-    "uni_gdpo_loss",
-]
+_MODULE_EXPORTS = {
+    "advantage": ("GdpoAdvantageResult", "compute_gdpo_advantage"),
+    "flow": (
+        "BranchWeights",
+        "RegularizationWeights",
+        "UniGdpoLoss",
+        "uni_gdpo_loss",
+    ),
+    "plan": ("RlPlan", "TorchrunSpec"),
+    "types": ("CandidateResponse", "ImageSegment", "RewardBatch", "TextSegment"),
+}
+_EXPORTS = {name: module for module, names in _MODULE_EXPORTS.items() for name in names}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str):
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(name)
+    value = getattr(import_module(f"{__name__}.{module}"), name)
+    globals()[name] = value
+    return value

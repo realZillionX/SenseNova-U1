@@ -109,7 +109,7 @@ export thinking_method="tag"
 # ============================ Understanding ============================ #
 # Mixed understanding/generation corpora can give an individual data rank no
 # generation tokens even when other ranks have them. Keep the trainable MoT
-# branch collective-safe with the official zero-loss dummy image.
+# branch collective-safe with the U1.5 zero-loss dummy image.
 export pad_dummy_image_gen=${pad_dummy_image_gen:-true}
 export ce_loss_weight=${ce_loss_weight:-0.1}
 export enable_und_loss='true'

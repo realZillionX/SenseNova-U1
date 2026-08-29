@@ -49,9 +49,9 @@ from .objective import (
 from .plan import RlPlan
 from .policy_runtime import (
     ImageEvent,
-    OfficialU15Policy,
     U15Policy,
     U15PolicyRollout,
+    U15PolicyRuntime,
 )
 from .types import RewardBatch
 from .weight_publisher import (
@@ -1541,7 +1541,7 @@ def _run_plan(plan: RlPlan, context: DistributedContext) -> None:
     if any(row.modality != plan.modality for row in rows):
         raise ValueError("RL prompt asset crossed independent arms")
     _seed_process(plan.seed)
-    policy = OfficialU15Policy.load(plan, device=context.device)
+    policy = U15PolicyRuntime.load(plan, device=context.device)
     optimizer = torch.optim.AdamW(
         full_parameter_groups(
             policy.model,
