@@ -472,13 +472,13 @@ def main():
         "image_policy": {
             "height": 512,
             "width": 512,
-            "image_steps": 8,
-            "timestep_shift": 3.0,
+            "image_steps": 30,
+            "timestep_shift": 1.0,
             "t_eps": 0.02,
             "image_noise_level": 0.7,
             "sde_window_start": 0,
-            "sde_window_end": 8,
-            "sde_selected_steps": 4,
+            "sde_window_end": 30,
+            "sde_selected_steps": 8,
         },
     }
     ti2ti = _request("POST", f"{base_url}/v1/rl/rollouts", json=ti2ti_request, timeout=3600)

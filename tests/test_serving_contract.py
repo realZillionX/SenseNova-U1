@@ -19,6 +19,10 @@ class ServingContractTest(unittest.TestCase):
         self.assertEqual(config["min_pixels"], 512 * 512)
         self.assertEqual(config["max_pixels"], 512 * 512)
         self.assertEqual(config["attn_type"], "flash_attn3")
+        smoke = (ROOT / "examples" / "serving" / "rl_smoke.py").read_text()
+        self.assertIn('"image_steps": 30', smoke)
+        self.assertIn('"timestep_shift": 1.0', smoke)
+        self.assertIn('"sde_window_end": 30', smoke)
 
 
 if __name__ == "__main__":
