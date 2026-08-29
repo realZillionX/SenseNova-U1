@@ -16,9 +16,11 @@ peft==0.17.1
 numpy==2.5.2
 pillow==12.0.0
 safetensors==0.7.0
+sentencepiece==0.2.1
 opencv-python==5.0.0.93
 packaging==25.0
 protobuf==7.35.1
+tqdm==4.67.1
 
 # Resolver-closed LightLLM + LightX2V inference runtime.
 annotated-types==0.8.0

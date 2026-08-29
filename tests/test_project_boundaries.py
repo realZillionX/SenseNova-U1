@@ -119,6 +119,12 @@ class ProjectBoundariesTest(unittest.TestCase):
                 )
                 self.assertIn(f"--extra-index-url {index_url}", contents)
 
+    def test_rl_serving_lock_contains_every_direct_runtime_dependency(self) -> None:
+        with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+            project = tomllib.load(file)
+        runtime = set(requirement_entries(REPO_ROOT / "docker" / "rl-engine" / "requirements.lock"))
+        self.assertTrue(set(project["project"]["dependencies"]) <= runtime)
+
 
 if __name__ == "__main__":
     unittest.main()
