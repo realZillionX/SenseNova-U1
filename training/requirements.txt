@@ -1,0 +1,20 @@
+# This file is generated from pyproject.toml by scripts/render_requirements.py.
+# Source: training/pyproject.toml [project].dependencies
+# Direct dependencies only; use uv.lock for an exact reproducible environment.
+
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch==2.5.1
+torchvision==0.20.1
+transformers>=4.43,<4.44
+numpy>=1.24,<3
+einops>=0.7
+safetensors>=0.4
+tqdm
+pillow
+timm>=0.9
+opencv-python
+imageio
+decord
+dill
+tensorboard

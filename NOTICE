@@ -1,0 +1,12 @@
+SenseNova-U1.5-8B-MoT Forge
+Copyright (c) Forge contributors
+
+Licensed under the Apache License, Version 2.0. This distribution includes or
+derives from components whose copyrights and licenses remain with their
+respective authors, including InternEvo, InternVL, PyTorch, Transformers,
+Flash-Attention, Ring-Flash-Attention, LightLLM, LightX2V, ColossalAI,
+DeepSpeed, FastChat, NVIDIA Apex, Megatron-LM, OpenMMLab, and timm.
+
+The detailed training notices are in training/NOTICE. LightLLM and LightX2V
+retain their own LICENSE and NOTICE files in their pinned submodules. Per-file
+headers are authoritative for derived source.

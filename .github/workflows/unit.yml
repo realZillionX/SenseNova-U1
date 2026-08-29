@@ -1,0 +1,21 @@
+name: Unit tests
+
+on: [push, pull_request]
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv venv --python 3.12
+      - name: Install CPU test runtime
+        run: |
+          uv pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+          uv pip install transformers==4.57.1 tokenizers==0.22.1 accelerate==1.12.0 huggingface-hub==0.36.2 safetensors==0.7.0 numpy==2.5.2 pillow==12.0.0 sentencepiece==0.2.1 packaging==25.0 pytest einops dill timm==1.0.28 opencv-python==5.0.0.93
+          uv pip install -e . --no-deps
+          uv pip install -e training --no-deps
+      - run: .venv/bin/python -m compileall -q src training scripts examples/serving tests
+      - run: .venv/bin/python -m pytest -q tests

@@ -1,0 +1,109 @@
+[project]
+name = "sensenova-u15-forge"
+version = "0.1.0"
+description = "High-performance SFT, GDPO/UniGDPO RL, and serving for SenseNova-U1.5-8B-MoT."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "realZillionX" }]
+keywords = [
+    "multimodal",
+    "vision-language-model",
+    "unified-model",
+    "understanding-and-generation",
+    "native-vlm",
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core dependencies are pinned to the RL + serving runtime identity.
+dependencies = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "transformers==4.57.1",
+    "tokenizers==0.22.1",
+    "accelerate==1.12.0",
+    "huggingface-hub==0.36.2",
+    "safetensors==0.7.0",
+    "sentencepiece==0.2.1",
+    "numpy==2.5.2",
+    "pillow==12.0.0",
+    "tqdm==4.67.1",
+    "packaging==25.0",
+    "websockets==15.0.1",
+]
+
+[project.optional-dependencies]
+# Optional flash-attention acceleration. When absent, the model transparently
+# falls back to torch SDPA; see src/sensenova_u1/models/neo_unify/modeling_qwen3.py.
+#
+# PyPI does not host CUDA-specific wheels, so users will typically install this
+# from a local cp312 wheel that matches the Torch 2.8 runtime, e.g.:
+#
+#   uv pip install /path/to/flash_attn-2.8.3+cu12torch28cxx11abitrue-cp312-cp312-*.whl
+flash = ["flash-attn==2.8.3"]
+dev = [
+    "ruff",
+    "pytest",
+    "pre-commit",
+    "tomli>=2; python_version < '3.11'",
+]
+
+[project.urls]
+Homepage = "https://github.com/realZillionX/SenseNova-U1.5-8B-MoT-Forge"
+Repository = "https://github.com/realZillionX/SenseNova-U1.5-8B-MoT-Forge"
+
+[project.scripts]
+sensenova-forge = "sensenova_u1.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sensenova_u1"]
+
+# -----------------------------------------------------------------------------
+# uv configuration: pin torch / torchvision to the PyTorch cu128 index.
+#
+# This makes `uv sync` reproducibly install the CUDA 12.8 build of
+# torch==2.8.0 (+cu128), matching the reference env exactly. If your NVIDIA
+# driver is too old for CUDA 12.8, swap the URL below to e.g.
+# `https://download.pytorch.org/whl/cu126` and adjust torch/torchvision
+# versions accordingly.
+# -----------------------------------------------------------------------------
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "src/sensenova_u1/models/neo_unify",
+    # Third-party submodules — keep diff-clean from upstream.
+    "serving/third_party/LightLLM",
+    "serving/third_party/LightX2V",
+    # Training code is derived from InternEvo and was originally formatted with
+    # black/flake8/isort; keep diff-clean from those upstreams rather than churn
+    # the whole subtree through ruff-format.
+    "training",
+]
+
+[tool.ruff.lint]
+select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

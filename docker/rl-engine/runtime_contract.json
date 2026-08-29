@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "base_image": "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04",
+  "saved_image": "sensenova-u15-forge:rl-serving-v1",
+  "python": "/opt/sensenova-forge-py312/bin/python",
+  "platform": {
+    "python_version": "3.12",
+    "cuda": "12.8",
+    "cxx11_abi": true,
+    "serving_gpu_count": 2
+  },
+  "sources": {
+    "forge": "build-arg:FORGE_COMMIT",
+    "lightllm": "63556eabf12fa862e271f9bb24612e453c3bd422",
+    "lightx2v": "a46d6c4d0dc00659c597078f86fb34c1d5b0f481"
+  },
+  "immutable_core": {
+    "torch": "2.8.0",
+    "torchvision": "0.23.0",
+    "triton": "3.4.0",
+    "transformers": "4.57.1",
+    "tokenizers": "0.22.1",
+    "huggingface-hub": "0.36.2",
+    "numpy": "2.5.2",
+    "protobuf": "7.35.1"
+  },
+  "compiled_runtime": {
+    "flash-attn": "2.8.3",
+    "flash-attn-3": "3.0.0",
+    "flashinfer-python": "0.6.8.post1",
+    "sgl-kernel": "0.3.21"
+  },
+  "flash_attn_3": {
+    "repository": "https://github.com/WANDY666/flash-attention.git",
+    "commit": "e2077ee6e568e64d0d01c6b44d8ce4ee24e7932b",
+    "features": ["hopper", "sm90", "bf16", "head_dim_128", "image_token_end"],
+    "disabled": ["backward", "sm80", "fp16", "fp8"]
+  }
+}
