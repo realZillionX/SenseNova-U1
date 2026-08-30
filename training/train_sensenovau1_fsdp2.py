@@ -59,6 +59,21 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     return value
 
 
+def _reshard_after_forward() -> bool | int:
+    raw = os.environ.get("FSDP2_RESHARD_AFTER_FORWARD", "true").strip().lower()
+    if raw in {"true", "1", "yes", "on"}:
+        return True
+    if raw in {"false", "0", "no", "off"}:
+        return False
+    value = int(raw)
+    world_size = dist.get_world_size()
+    if value <= 1 or value >= world_size or world_size % value:
+        raise ValueError(
+            "integer FSDP2_RESHARD_AFTER_FORWARD must be a non-trivial divisor of world_size"
+        )
+    return value
+
+
 def _seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -150,7 +165,7 @@ def _shard_model(model: nn.Module) -> tuple[nn.Module, tuple[str, ...]]:
         output_dtype=None,
         cast_forward_inputs=True,
     )
-    reshard_after_forward = _env_bool("FSDP2_RESHARD_AFTER_FORWARD", True)
+    reshard_after_forward = _reshard_after_forward()
     wrapped: list[tuple[str, FSDPModule]] = []
     seen: set[int] = set()
     for name, module in tuple(model.named_modules()):
@@ -614,7 +629,7 @@ def main(args: Any) -> None:
             "bf16_compute": True,
             "bf16_gradient_reduction": True,
             "fp32_optimizer_master": True,
-            "reshard_after_forward": _env_bool("FSDP2_RESHARD_AFTER_FORWARD", True),
+            "reshard_after_forward": _reshard_after_forward(),
             "prefetch_depth": _env_int("FSDP2_PREFETCH_DEPTH", 1),
             "fused_adamw": _env_bool("FSDP2_FUSED_ADAMW", True),
             "wrapped_modules": list(wrapped_modules),

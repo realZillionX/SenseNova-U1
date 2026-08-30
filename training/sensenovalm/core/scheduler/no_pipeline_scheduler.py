@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable, List, Optional
 
 import torch
 
+from sensenovalm.core.context import ParallelMode
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.core.engine import Engine
 from sensenovalm.model.moe import SenseNovaVLMoE
@@ -287,7 +288,13 @@ class NonPipelineScheduler(BaseScheduler):
             if os.environ.get("SFT_ABLATION_DETERMINISTIC_MICROBATCH", "false").lower() == "true":
                 base_seed = int(os.environ.get("SEED", "42"))
                 batch_index = int(getattr(gpc.config, "batch_count", 0))
-                global_position = batch_index * self._grad_accum_size + _current_accum_step
+                data_parallel_size = gpc.get_world_size(ParallelMode.WEIGHT_DATA)
+                data_parallel_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+                global_position = (
+                    batch_index * self._grad_accum_size * data_parallel_size
+                    + data_parallel_rank * self._grad_accum_size
+                    + _current_accum_step
+                )
                 sample_seed = base_seed + global_position
                 torch.manual_seed(sample_seed)
                 torch.cuda.manual_seed_all(sample_seed)

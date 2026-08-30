@@ -619,6 +619,14 @@ class TrainerBuilder(Trainer):
             "bf16_gradient_reduction": gpc.config.reduce_comm_dtype == torch.bfloat16,
             "fp32_optimizer_master": True,
             "weight_parallel_size": gpc.get_world_size(ParallelMode.WEIGHT),
+            "weight_data_parallel_size": gpc.get_world_size(ParallelMode.WEIGHT_DATA),
+            "zero1_parallel_size": gpc.get_world_size(ParallelMode.ZERO1),
+            "weight_overlap": bool(gpc.config.parallel.weight.overlap),
+            "weight_memory_pool": bool(gpc.config.parallel.weight.memory_pool),
+            "overlap_sync_grad": bool(gpc.config.hybrid_zero_optimizer.overlap_sync_grad),
+            "overlap_sync_param": bool(gpc.config.hybrid_zero_optimizer.overlap_sync_param),
+            "reduce_bucket_size": int(gpc.config.hybrid_zero_optimizer.reduce_bucket_size),
+            "mlp_layer_fusion": bool(gpc.config.model.mlp_layer_fusion),
             "warmup_steps": warmup_steps,
             "records": self.sft_benchmark_records,
             "aggregate": _benchmark_aggregate(records),
@@ -713,11 +721,30 @@ class TrainerBuilder(Trainer):
             _benchmark_scalar(value)
             for value in (mtp_loss, boi_loss, moe_loss, moe_z_loss, moe_coef_loss, image_gen_loss)
         )
+        main_loss_value = _benchmark_scalar(loss)
+        if os.environ.get("SFT_BENCHMARK_REPORT"):
+            weight_data_size = gpc.get_world_size(ParallelMode.WEIGHT_DATA)
+            weight_data_group = gpc.get_group(ParallelMode.WEIGHT_DATA)
+            counts = torch.tensor(
+                [physical_tokens, supervised_tokens, int(num_samples)],
+                device=get_current_device(),
+                dtype=torch.int64,
+            )
+            dist.all_reduce(counts, op=dist.ReduceOp.SUM, group=weight_data_group)
+            physical_tokens, supervised_tokens, num_samples = (int(value) for value in counts.tolist())
+            losses = torch.tensor(
+                [main_loss_value, auxiliary_loss],
+                device=get_current_device(),
+                dtype=torch.float64,
+            )
+            dist.all_reduce(losses, op=dist.ReduceOp.SUM, group=weight_data_group)
+            losses.div_(weight_data_size)
+            main_loss_value, auxiliary_loss = (float(value) for value in losses.tolist())
         benchmark_record = {
             "step": batch_count + 1,
             "seconds": float(time_per_sample),
-            "loss": _benchmark_scalar(loss) + auxiliary_loss,
-            "main_loss": _benchmark_scalar(loss),
+            "loss": main_loss_value + auxiliary_loss,
+            "main_loss": main_loss_value,
             "auxiliary_loss": auxiliary_loss,
             "grad_norm": _benchmark_grad_norm(grad_norm_groups),
             "physical_tokens": physical_tokens,

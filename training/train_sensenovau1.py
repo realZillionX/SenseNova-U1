@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 
 from sensenovalm.accelerator import get_accelerator
+from sensenovalm.core.context import ParallelMode
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.core.trainer_builder import TrainerBuilder
 from sensenovalm.initialize import initialize_distributed_env
@@ -49,18 +50,69 @@ class FixedBatchLoader:
             raise ValueError("unsupported fixed SFT batch artifact")
         if int(payload["sequence_length"]) != int(gpc.config.data.seq_len):
             raise ValueError("fixed SFT batch sequence length differs from the live config")
-        if int(payload["microbatches_per_optimizer_step"]) != int(gpc.config.data.micro_num):
-            raise ValueError("fixed SFT batch width differs from grad_accm")
+        data_parallel_size = gpc.get_world_size(ParallelMode.WEIGHT_DATA)
+        local_microbatches = int(gpc.config.data.micro_num)
+        global_microbatches = local_microbatches * data_parallel_size
+        if int(payload["microbatches_per_optimizer_step"]) != global_microbatches:
+            raise ValueError(
+                "fixed SFT batch width differs from grad_accm * weight-data parallel size"
+            )
         if Path(payload["data_meta"]).resolve() != Path(gpc.config.data.meta_path).resolve():
             raise ValueError("fixed SFT batch data meta differs from the live config")
+        data_parallel_rank = gpc.get_local_rank(ParallelMode.WEIGHT_DATA)
+        start = data_parallel_rank * local_microbatches
+        stop = start + local_microbatches
+
+        def select(value):
+            if isinstance(value, torch.Tensor):
+                return value[start:stop]
+            if isinstance(value, (list, tuple)):
+                return value[start:stop]
+            if isinstance(value, bool):
+                return value
+            raise TypeError(f"unsupported fixed SFT batch value: {type(value)!r}")
+
+        selected_batches = []
+        for data, labels in payload["batches"]:
+            selected_data = {
+                name: select(value)
+                for name, value in data.items()
+                if name not in {"num_samples", "num_padding_tokens"}
+            }
+            input_ids = selected_data["input_ids"]
+            cu_seqlens = selected_data["cu_seqlens"]
+            valid_samples = 0
+            padding_tokens = 0
+            for row, offsets in zip(input_ids, cu_seqlens):
+                for left, right in zip(offsets[:-1], offsets[1:]):
+                    segment = row[int(left) : int(right)]
+                    if bool((segment != 0).any()):
+                        valid_samples += 1
+                    else:
+                        padding_tokens += int(right) - int(left)
+            selected_data["num_samples"] = valid_samples
+            selected_data["num_padding_tokens"] = padding_tokens
+            if isinstance(labels, torch.Tensor):
+                selected_labels = labels[start:stop]
+            elif isinstance(labels, dict):
+                selected_labels = {
+                    name: value[start:stop] if value.dim() else value
+                    for name, value in labels.items()
+                }
+            else:
+                selected_labels = labels
+            selected_batches.append((selected_data, selected_labels))
+
         self.base_loader = base_loader
-        self.batches = payload["batches"]
+        self.batches = selected_batches
         self.ordered_microbatch_sha256 = payload["ordered_microbatch_sha256"]
         self.identity = {
             "path": str(fixed_path),
             "bytes": int(identity["bytes"]),
             "sha256": str(identity["sha256"]),
             "ordered_microbatch_sha256": self.ordered_microbatch_sha256,
+            "weight_data_parallel_size": data_parallel_size,
+            "weight_data_parallel_rank": data_parallel_rank,
         }
 
     def __iter__(self):

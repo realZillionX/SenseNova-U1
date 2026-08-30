@@ -64,10 +64,18 @@ load_optimizer = os.environ.get('load_optimizer', None)
 ce_loss_weight = float(os.environ.get('ce_loss_weight', 1.0))
 metric_interval_steps = int(os.environ.get('metric_interval_steps', '10'))
 activation_checkpoint_fraction = float(os.environ.get('activation_checkpoint_fraction', '1'))
+mlp_layer_fusion = env_bool('mlp_layer_fusion', False)
+overlap_sync_grad = env_bool('overlap_sync_grad', True)
+overlap_sync_param = env_bool('overlap_sync_param', False)
+reduce_bucket_size_mb = int(os.environ.get('reduce_bucket_size_mb', '256'))
+weight_overlap = env_bool('weight_overlap', True)
+weight_memory_pool = env_bool('weight_memory_pool', False)
 if metric_interval_steps < 1:
     raise ValueError('metric_interval_steps must be a positive integer')
 if not 0 <= activation_checkpoint_fraction <= 1:
     raise ValueError('activation_checkpoint_fraction must be in [0, 1]')
+if reduce_bucket_size_mb < 1:
+    raise ValueError('reduce_bucket_size_mb must be positive')
 
 
 # -----------------------------------------------------------------------------
@@ -347,7 +355,7 @@ model = dict(
     embed_grad_scale=1,
     embed_split_hidden=True,
     parallel_output=True,
-    mlp_layer_fusion=False,
+    mlp_layer_fusion=mlp_layer_fusion,
     attention_selective_checkpoint=False,
     num_chunks=1,
     # activation checkpointing fraction: True/False/[0-1]
@@ -502,9 +510,9 @@ grad_scaler = dict(
 )
 
 hybrid_zero_optimizer = dict(
-    overlap_sync_grad=True,
-    overlap_sync_param=False,
-    reduce_bucket_size=256 * 1024 * 1024,
+    overlap_sync_grad=overlap_sync_grad,
+    overlap_sync_param=overlap_sync_param,
+    reduce_bucket_size=reduce_bucket_size_mb * 1024 * 1024,
     clip_grad_norm=1.0,
 )
 
@@ -528,7 +536,7 @@ parallel = dict(
     zero1=dict(size=zero1_size, fsdp=False),
     tensor=dict(size=tp_size, mode=tensor_parallel_mode),
     pipeline=dict(size=pp_size, interleaved_overlap=True),
-    weight=dict(size=wp_size, overlap=True, memory_pool=False),
+    weight=dict(size=wp_size, overlap=weight_overlap, memory_pool=weight_memory_pool),
     expert=dict(size=1),
     expert_zero1=dict(size=1),
     expert_weight=dict(size=1, overlap=True, launch_allgather_before="wo", forward_overlap_per="layer"),
