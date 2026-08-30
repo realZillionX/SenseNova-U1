@@ -373,6 +373,8 @@ class TrainerBuilder(Trainer):
             train_dl, train_state, self.ckpt_manager, self.sensenovavl_dl_resume_mode
         )
         if resume_report:
+            if self.ckpt_manager.load_ckpt_info.get("path") is None:
+                raise ValueError("resume benchmark did not resolve a checkpoint")
             torch.cuda.synchronize()
             dist.barrier()
             resume_seconds = torch.tensor(
@@ -392,7 +394,7 @@ class TrainerBuilder(Trainer):
                             "trainer": "internevo",
                             "seconds": float(resume_seconds.item()),
                             "checkpoint": self.ckpt_manager.load_ckpt_info["path"],
-                            "contents": list(self.ckpt_manager.load_ckpt_info["content"]),
+                            "contents": repr(self.ckpt_manager.load_ckpt_info["content"]),
                             "python": sys.version,
                             "torch": torch.__version__,
                             "cuda": torch.version.cuda,
