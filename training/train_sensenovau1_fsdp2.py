@@ -28,9 +28,10 @@ from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.utils import packed_data_normalizer
 from sensenovalm.initialize import initialize_distributed_env
 from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
+from sensenovalm.train.pipeline import initialize_llm_profile
 from sensenovalm.utils.common import move_to_device, parse_args
 from sensenovavl.data import build_train_loader_with_data_type
-from sensenovavl.train.pipeline import get_model, initialize_llm_profile
+from sensenovavl.train.pipeline import get_model
 from sensenovavl.utils.utils import check_image_fn, init_pil
 
 
