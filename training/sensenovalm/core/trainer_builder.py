@@ -335,6 +335,13 @@ class TrainerBuilder(Trainer):
         # initialize checkpoint manager and try resume training
         # NOTE: create averaged model AFTER resume so it tracks the correct (injected) model weights.
         self.ckpt_manager = self._initialize_checkpoint_manager(model, optimizer, lr_scheduler, train_dl, config_lines)
+        resume_report = os.environ.get("SFT_BENCHMARK_RESUME_REPORT")
+        if resume_report and Path(resume_report).exists():
+            raise FileExistsError(f"refusing to overwrite resume benchmark: {resume_report}")
+        if resume_report:
+            torch.cuda.synchronize()
+            dist.barrier()
+            resume_started = time.perf_counter()
         self.ckpt_manager.try_resume_training(train_state, self.current_time)
         check_parallel_statistic_equality(model)
 
@@ -365,6 +372,38 @@ class TrainerBuilder(Trainer):
         self.sensenovavl_dl_custom_infos = sensenovavl_resume_dataloader(
             train_dl, train_state, self.ckpt_manager, self.sensenovavl_dl_resume_mode
         )
+        if resume_report:
+            torch.cuda.synchronize()
+            dist.barrier()
+            resume_seconds = torch.tensor(
+                time.perf_counter() - resume_started,
+                device=get_current_device(),
+                dtype=torch.float64,
+            )
+            dist.all_reduce(resume_seconds, op=dist.ReduceOp.MAX)
+            if gpc.get_global_rank() == 0:
+                resume_path = Path(resume_report)
+                resume_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = resume_path.with_suffix(resume_path.suffix + ".tmp")
+                temporary.write_text(
+                    json.dumps(
+                        {
+                            "schema": "sensenova_u15.sft_resume_ablation.v1",
+                            "trainer": "internevo",
+                            "seconds": float(resume_seconds.item()),
+                            "checkpoint": self.ckpt_manager.load_ckpt_info["path"],
+                            "contents": list(self.ckpt_manager.load_ckpt_info["content"]),
+                            "python": sys.version,
+                            "torch": torch.__version__,
+                            "cuda": torch.version.cuda,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(temporary, resume_path)
         # sensenovavl records consumed samples num
         self.sensenovavl_consumed_samples = 0
 
