@@ -113,7 +113,7 @@ def try_load_moe_checkpoint(folder, model, state_dict, expert_mp_rank, pp_rank):
                 fn in available_moe_files
             ), f"{os.path.join(folder, fn)} is not found! existing max moe layer id is {max_available_moe_layer}"
             fp = os.path.join(folder, fn)
-            expert_state_dict = llm_load(fp, map_location=get_current_device())
+            expert_state_dict = llm_load(fp, map_location=get_current_device(), weights_only=False)
             # Updating global -> local expert ids
             moe_str_prefix = ".moe_layer.experts.wrapped_experts."
             for key in list(expert_state_dict.keys()):
@@ -260,7 +260,7 @@ def _load_rank_model_states(folder, model):
 
     # for FSDP shards loading, we need to set process group
     with load_with_process_group(gpc.get_group(ParallelMode.ZERO1)):
-        states = llm_load(fp, map_location=get_current_device())
+        states = llm_load(fp, map_location=get_current_device(), weights_only=False)
 
     # Merge MoE expert weights if needed
     if gpc.config.model.use_moe:
@@ -720,12 +720,12 @@ def load_optimizer_checkpoint(folder, optim):
         else:
             fp = f"optimizer_tp{tp_rank}_pp{pp_rank}_zo{zero_rank}.pt"
 
-    states = llm_load(os.path.join(folder, fp), map_location=get_current_device())
+    states = llm_load(os.path.join(folder, fp), map_location=get_current_device(), weights_only=False)
 
     if isinstance(optim, HybridZeroOptimizer):
         fp_meta = os.path.join(folder, optim.rank_unique_id)
         try:
-            zero_devide_optim_plan = llm_load(fp_meta)
+            zero_devide_optim_plan = llm_load(fp_meta, weights_only=False)
             states.update({"zero_devide_optim_plan": zero_devide_optim_plan})
         except Exception as e:
             if gpc.is_rank_for_log():
@@ -809,7 +809,7 @@ def save_optimizer_checkpoint(optim, state_path):
 
 
 def load_sampler(ckpt_path: str, sampler):
-    sampler_states = llm_load(os.path.join(ckpt_path, "sampler.pt"))
+    sampler_states = llm_load(os.path.join(ckpt_path, "sampler.pt"), weights_only=False)
     sampler.load_state_dict(sampler_states)
     if gpc.is_rank_for_log():
         pstate = copy.deepcopy(sampler_states)
@@ -820,7 +820,7 @@ def load_sampler(ckpt_path: str, sampler):
 
 
 def load_context(ckpt_path: str, train_state: TrainState):
-    context_stuffs = llm_load(os.path.join(ckpt_path, "context.pt"))
+    context_stuffs = llm_load(os.path.join(ckpt_path, "context.pt"), weights_only=False)
     train_state.load_state_dict(context_stuffs)
     if gpc.is_rank_for_log():
         logger.info(f"reload train_state:{train_state}")
@@ -829,7 +829,7 @@ def load_context(ckpt_path: str, train_state: TrainState):
 
 def load_scheduler(ckpt_path: str, lr_scheduler, optimizer, train_state: TrainState):
     learning_rate = train_state.lr
-    scheduler_states = llm_load(os.path.join(ckpt_path, "schedulder.pt"))
+    scheduler_states = llm_load(os.path.join(ckpt_path, "schedulder.pt"), weights_only=False)
 
     if learning_rate != scheduler_states["base_lrs"][0] and gpc.is_rank_for_log():
         logger.warning(
