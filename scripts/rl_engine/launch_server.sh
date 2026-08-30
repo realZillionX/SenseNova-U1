@@ -19,11 +19,11 @@ PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
 export PYTHONPATH="$LIGHTLLM_ROOT:$LIGHTX2V_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE:-sensenova-u15-forge:unified-v3}
+export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE_OVERRIDE:-sensenova-u15-forge:unified-v3}
 export FORGE_ROOT="$SOURCE_ROOT"
-export FORGE_COMMIT=${FORGE_COMMIT:-$(git -C "$SOURCE_ROOT" rev-parse HEAD)}
-export FORGE_LIGHTLLM_COMMIT=${FORGE_LIGHTLLM_COMMIT:-$(git -C "$LIGHTLLM_SOURCE_ROOT" rev-parse HEAD)}
-export FORGE_LIGHTX2V_COMMIT=${FORGE_LIGHTX2V_COMMIT:-$(git -C "$LIGHTX2V_ROOT" rev-parse HEAD)}
+export FORGE_COMMIT=$(git -C "$SOURCE_ROOT" rev-parse HEAD)
+export FORGE_LIGHTLLM_COMMIT=$(git -C "$LIGHTLLM_SOURCE_ROOT" rev-parse HEAD)
+export FORGE_LIGHTX2V_COMMIT=$(git -C "$LIGHTX2V_ROOT" rev-parse HEAD)
 export FORGE_LIGHTLLM_ROOT="$LIGHTLLM_ROOT"
 export FORGE_LIGHTX2V_ROOT="$LIGHTX2V_ROOT"
 # The pinned serving engine reads these two transport aliases internally;
