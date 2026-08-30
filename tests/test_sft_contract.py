@@ -33,6 +33,17 @@ class SftContractTest(unittest.TestCase):
         self.assertEqual(configs, ["sensenovau1_5_8b_mot_sft.py"])
         self.assertEqual(launchers, ["U1.5_8B_SFT.sh"])
 
+    def test_fsdp2_comparator_keeps_the_internevo_objective(self) -> None:
+        launcher = (ROOT / "training/shell/ablation/U1.5_8B_SFT_FSDP2.sh").read_text()
+        runner = (ROOT / "training/train_sensenovau1_fsdp2.py").read_text()
+        self.assertIn("tensor_parallel_mode=mtp", launcher)
+        self.assertIn("SFT_PER_RANK_LOSS_REDUCTION", launcher)
+        self.assertIn("SFT_MATERIALIZE_ONLY", launcher)
+        self.assertIn("SFT_ABLATION_BATCHES", runner)
+        self.assertIn("ordered_microbatch_sha256", runner)
+        self.assertIn("FSDP2_PREFETCH_DEPTH", runner)
+        self.assertIn("reduce_dtype=torch.bfloat16", runner)
+
 
 if __name__ == "__main__":
     unittest.main()

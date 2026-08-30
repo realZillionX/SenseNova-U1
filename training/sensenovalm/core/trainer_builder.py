@@ -872,5 +872,5 @@ class TrainerBuilder(Trainer):
         return success_update, grad_norm_groups
 
     def _update_profilers(self, batch_count: int, prof):
-        if batch_count % 2 == 0:
+        if self.profiling:
             prof.step()

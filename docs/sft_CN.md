@@ -24,3 +24,24 @@ namespace，checkpoint 中转目录也按该名称隔离。launcher 会在 torch
 缺失的 checkpoint/tokenizer/data 资产，以及与 `wp*tp*pp` 不兼容的 world size。
 `RUN_ROOT` 显式指定输出与 checkpoint 根；正式训练应指向封存的 run 目录，不把
 运行产物写入源码 checkout。
+
+## 受控 Trainer 消融
+
+`training/shell/ablation/U1.5_8B_SFT_FSDP2.sh` 是优化后的 Torch 2.8
+FSDP2 对照入口。它复用与 InternEvo 完全相同的 U1.5 模型、原生分辨率 packed
+loader、forward、loss、BF16 通信、FP32 optimizer master、EMA 与 activation
+checkpoint 比例；只改变 Trainer 拓扑：每个 data rank 处理一条完整 packed row、
+block-level FSDP2、显式 forward prefetch 与 fused AdamW。loss 在各 rank 内先按
+InternEvo 的 microbatch 口径归约，再由 FSDP 汇总梯度。
+
+该入口把 `FSDP2_RESHARD_AFTER_FORWARD`、`FSDP2_PREFETCH_DEPTH` 与
+`FSDP2_FUSED_ADAMW` 作为必须封存的调优输入。公平对拍先用
+`SFT_MATERIALIZE_ONLY=true` 生成与 world size 无关的 optimizer batch，再让两种
+Trainer 都通过 `SFT_ABLATION_BATCHES` 消费；InternEvo 同时开启
+`SFT_ABLATION_DETERMINISTIC_MICROBATCH`。该资产固定每一条有序 packed row、图像
+tensor、label、padding 布局与位置级 RNG seed，并由 sidecar 绑定文件身份和逐
+microbatch 身份。
+
+该入口目前是消融 runner，不是正式 SFT 交接入口。替换 InternEvo 之前，还必须补齐
+封存的 DCP 精确续训 lineage，以及 RL 消费的同等 full-model Hugging Face
+发布与 receipt 合同。

@@ -43,3 +43,26 @@ retain optimizer, sampler and RNG state for resume. `JOB_NAME` is mandatory and
 must be unique per independent arm; its checkpoint staging directory is also
 namespaced by the job. The launcher rejects missing checkpoint/tokenizer/data
 assets and incompatible `world_size` versus `wp*tp*pp` before torchrun starts.
+
+## Controlled trainer ablation
+
+`training/shell/ablation/U1.5_8B_SFT_FSDP2.sh` is the optimized Torch 2.8
+FSDP2 comparator. It reuses the same U1.5 model, native-resolution packed
+loader, forward, losses, BF16 communication, FP32 optimizer masters, EMA, and
+activation-checkpoint fraction as the InternEvo entry. It changes only the
+trainer topology: one full packed row per data rank, block-level FSDP2,
+explicit forward prefetch, and fused AdamW. Per-rank loss denominators preserve
+InternEvo's equal-microbatch reduction before FSDP averages gradients.
+
+The comparator accepts `FSDP2_RESHARD_AFTER_FORWARD`,
+`FSDP2_PREFETCH_DEPTH`, and `FSDP2_FUSED_ADAMW` as sealed tuning inputs. A
+fair comparison first materializes world-size-independent optimizer batches
+with `SFT_MATERIALIZE_ONLY=true`, then passes the artifact to both trainers via
+`SFT_ABLATION_BATCHES` and enables `SFT_ABLATION_DETERMINISTIC_MICROBATCH` on
+InternEvo. The artifact fixes every ordered packed row, image tensor, label,
+padding layout, and per-position RNG seed; its sidecar binds the byte identity
+and ordered microbatch identities.
+
+This entry remains an ablation runner rather than the production SFT handoff.
+Replacing InternEvo also requires a sealed DCP resume lineage and the same
+validated full-model Hugging Face publication/receipt consumed by RL.
