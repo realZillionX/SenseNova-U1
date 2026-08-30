@@ -688,7 +688,13 @@ def initialize_llm_profile(profiling: bool = False, start_time: str = None):
     """Initialize and return the profiler context manager instance."""
 
     if profiling and gpc.get_local_rank(ParallelMode.DATA) == 0 and gpc.get_local_rank(ParallelMode.TENSOR) == 0:
-        schedule_config = {"wait": 1, "warmup": 1, "active": 1, "repeat": 1, "skip_first": 3}
+        schedule_config = {
+            "wait": int(os.environ.get("SFT_BENCHMARK_PROFILE_WAIT", "1")),
+            "warmup": int(os.environ.get("SFT_BENCHMARK_PROFILE_WARMUP", "1")),
+            "active": int(os.environ.get("SFT_BENCHMARK_PROFILE_ACTIVE", "1")),
+            "repeat": 1,
+            "skip_first": int(os.environ.get("SFT_BENCHMARK_PROFILE_SKIP_FIRST", "3")),
+        }
         trace_root = os.environ.get("SFT_BENCHMARK_TRACE_ROOT", "RUN")
         trace_path = (
             f"{trace_root}/{gpc.config.JOB_NAME}/{start_time}/traces/rank{gpc.get_global_rank()}_"
@@ -715,13 +721,14 @@ def initialize_llm_profile(profiling: bool = False, start_time: str = None):
             )
             logger.info(f"Do profiling for NPU on rank {gpc.get_global_rank()}!")
         else:
+            light_profile = os.environ.get("SFT_BENCHMARK_PROFILE_LIGHT", "false").lower() == "true"
             llm_profile = torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
                 schedule=torch.profiler.schedule(**schedule_config),
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_path),
-                with_stack=True,
-                with_modules=True,
-                profile_memory=True,
+                with_stack=not light_profile,
+                with_modules=not light_profile,
+                profile_memory=not light_profile,
             )
             logger.info(f"Do profiling for GPU on rank {gpc.get_global_rank()}!")
     else:
