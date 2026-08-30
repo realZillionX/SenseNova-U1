@@ -506,6 +506,14 @@ def main(args: Any) -> None:
                 output, _mtp_outputs, *_extra = model(**micro_data)
                 loss_weight = micro_data.pop("loss_weight", None)
                 loss_reduction_all_gather = micro_data.pop("loss_reduction_all_gather", False)
+                if _env_bool("SFT_PER_RANK_LOSS_REDUCTION", True):
+                    # InternEvo runs one packed row at a time on a single data
+                    # replica and averages those row losses over grad_accm.
+                    # FSDP2 maps the same ordered rows to data ranks, so each
+                    # rank must keep its own denominator before FSDP averages
+                    # gradients. A DATA-group denominator would silently
+                    # change the objective to a global token-weighted mean.
+                    loss_reduction_all_gather = False
                 loss = criterion(
                     output,
                     micro_labels,

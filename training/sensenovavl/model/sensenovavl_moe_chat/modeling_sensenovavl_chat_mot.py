@@ -35,6 +35,8 @@ logger = get_logger(__name__)
 
 
 # NOTE:
+import os
+
 import torch
 import torch.nn.functional as F
 
@@ -45,6 +47,8 @@ except ImportError:
 
 
 def global_all_reduce_loss(local_sum, local_cnt) -> torch.Tensor:
+    if os.environ.get("SFT_PER_RANK_LOSS_REDUCTION", "false").lower() == "true":
+        return local_sum / local_cnt.clamp_min(1)
     dist.all_reduce(local_cnt, op=dist.ReduceOp.AVG, group=gpc.get_group(ParallelMode.DATA))
     return local_sum / local_cnt.clamp_min(1)
 

@@ -27,6 +27,7 @@ export tp_size=1
 export pp_size=1
 export tensor_parallel_mode=mtp
 export grad_accm=${grad_accm:-1}
+export SFT_PER_RANK_LOSS_REDUCTION=${SFT_PER_RANK_LOSS_REDUCTION:-true}
 
 export SEED=${SEED:-42}
 export lr=${lr:-2e-4}
