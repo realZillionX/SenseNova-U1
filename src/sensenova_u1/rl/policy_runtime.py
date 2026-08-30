@@ -26,6 +26,7 @@ from transformers.cache_utils import Cache
 
 from .full_parameter import (
     local_parameter_view,
+    reshard_full_parameter_policy,
     shard_full_parameter_policy,
     snapshot_reference_shards,
 )
@@ -996,6 +997,10 @@ class U15PolicyRuntime:
         named = dict(self.model.named_parameters())
         if set(named) != set(self.reference_parameter_shards):
             raise RuntimeError("U1.5 full reference parameter closure changed")
+        # ``language_model.model`` deliberately keeps parameters gathered
+        # after forward.  Reference snapshots are local shards, so establish
+        # the sharded representation before both the swap and the restore.
+        reshard_full_parameter_policy(self.model)
         live = {name: local_parameter_view(parameter).detach().clone() for name, parameter in named.items()}
         try:
             with torch.no_grad():
@@ -1005,6 +1010,7 @@ class U15PolicyRuntime:
             yield
         finally:
             with torch.no_grad():
+                reshard_full_parameter_policy(self.model)
                 for name, parameter in named.items():
                     local_parameter_view(parameter).copy_(live[name])
 

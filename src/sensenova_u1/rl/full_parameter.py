@@ -241,6 +241,27 @@ def local_parameter_view(parameter: Tensor) -> Tensor:
     return value
 
 
+def reshard_full_parameter_policy(model: nn.Module) -> None:
+    """Return every FSDP2 execution root to its local-shard representation.
+
+    Roots configured with ``reshard_after_forward=False`` intentionally keep
+    gathered parameters live across a forward/backward boundary.  Reference
+    swapping, however, owns BF16 *local-shard* snapshots, so copying before
+    explicitly resharding would compare a full gathered tensor with one local
+    shard.  Work bottom-up to release nested gathered views before their
+    parents and make the operation idempotent for roots that are already
+    sharded.
+    """
+
+    from torch.distributed.fsdp import FSDPModule
+
+    modules = tuple(module for module in model.modules() if isinstance(module, FSDPModule))
+    if not modules:
+        raise ValueError("SenseNova full-parameter policy exposes no FSDP2 execution roots")
+    for module in reversed(modules):
+        module.reshard()
+
+
 def snapshot_reference_shards(model: nn.Module) -> dict[str, Tensor]:
     """Capture the fixed SFT reference as one BF16 local shard per parameter."""
 
