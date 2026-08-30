@@ -1,9 +1,14 @@
 # Copyright (c) SenseNovaLM contributors. Licensed under Apache-2.0.
 # Derived from InternEvo (OpenGVLab, Apache-2.0).
 import gc
+import json
 import logging
 import os
+import statistics
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 from typing import Dict, List, Optional, Union
 
@@ -57,6 +62,43 @@ _DATALOADER_WORKER_FAILURE_HINTS = (
     "killed by signal",
     "Connection reset by peer",
 )
+
+
+def _benchmark_scalar(value):
+    if value is None:
+        return 0.0
+    if isinstance(value, list):
+        return sum(_benchmark_scalar(item) for item in value)
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().float().item())
+    return float(value)
+
+
+def _benchmark_grad_norm(value):
+    if isinstance(value, dict):
+        result = {}
+        for name, item in value.items():
+            result[str(name)] = _benchmark_scalar(item)
+        return result
+    return _benchmark_scalar(value)
+
+
+def _benchmark_aggregate(records):
+    seconds = [float(record["seconds"]) for record in records]
+    elapsed = sum(seconds)
+    physical = sum(int(record["physical_tokens"]) for record in records)
+    supervised = sum(int(record["supervised_tokens"]) for record in records)
+    samples = sum(int(record["samples"]) for record in records)
+    return {
+        "steps": len(records),
+        "seconds": elapsed,
+        "step_seconds_mean": statistics.fmean(seconds),
+        "step_seconds_median": statistics.median(seconds),
+        "step_seconds_p95": sorted(seconds)[max(0, int(0.95 * len(seconds)) - 1)],
+        "physical_tokens_per_second": physical / elapsed,
+        "supervised_tokens_per_second": supervised / elapsed,
+        "samples_per_second": samples / elapsed,
+    }
 
 
 def _is_dataloader_worker_failure(exc: BaseException) -> bool:
@@ -449,6 +491,7 @@ class TrainerBuilder(Trainer):
         self.optimizer = optimizer
         self.beta2_scheduler = beta2_scheduler
         self.isp_communicator = isp_communicator
+        self.sft_benchmark_records = []
 
     def fit(self):
         """
@@ -462,6 +505,9 @@ class TrainerBuilder(Trainer):
         check_cuda_env()
         train_iter = iter(self.train_dl)
         self.train_start_time = time.perf_counter()
+        benchmark_path = os.environ.get("SFT_BENCHMARK_REPORT")
+        if benchmark_path and Path(benchmark_path).exists():
+            raise FileExistsError(f"refusing to overwrite benchmark report: {benchmark_path}")
 
         # sensenovavl update the start step id
         if self.sensenovavl_dl_resume_mode == "v0":
@@ -489,6 +535,60 @@ class TrainerBuilder(Trainer):
                     break
 
         self.ckpt_manager.wait_async_upload_finish()
+        if benchmark_path:
+            self._write_sft_benchmark_report(Path(benchmark_path))
+
+    def _write_sft_benchmark_report(self, path: Path):
+        warmup_steps = int(os.environ.get("SFT_BENCHMARK_WARMUP_STEPS", "3"))
+        records = self.sft_benchmark_records[warmup_steps:]
+        if not records:
+            raise ValueError("InternEvo SFT benchmark has no measured steps")
+        peak = torch.tensor(
+            float(torch.cuda.max_memory_allocated()),
+            device=get_current_device(),
+            dtype=torch.float64,
+        )
+        dist.all_reduce(peak, op=dist.ReduceOp.MAX)
+        if gpc.get_global_rank() != 0:
+            return
+        forge_root = Path(__file__).resolve().parents[3]
+        revision = subprocess.check_output(
+            ["git", "-C", str(forge_root), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+        fixed = None
+        if hasattr(self.train_dl, "identity"):
+            fixed = self.train_dl.identity
+        report = {
+            "schema": "sensenova_u15.sft_trainer_ablation.v1",
+            "trainer": "internevo",
+            "python": sys.version,
+            "torch": torch.__version__,
+            "cuda": torch.version.cuda,
+            "forge_revision": revision,
+            "world_size": gpc.get_world_size(ParallelMode.GLOBAL),
+            "seed": int(os.environ.get("SEED", "42")),
+            "job_name": gpc.config.JOB_NAME,
+            "model_path": gpc.config.model.model_name_or_path,
+            "data_meta": gpc.config.data.meta_path,
+            "sequence_length": int(gpc.config.data.seq_len),
+            "gradient_accumulation": int(gpc.config.data.micro_num),
+            "activation_checkpoint_fraction": float(gpc.config.model.checkpoint),
+            "bf16_compute": True,
+            "bf16_gradient_reduction": gpc.config.reduce_comm_dtype == torch.bfloat16,
+            "fp32_optimizer_master": True,
+            "weight_parallel_size": gpc.get_world_size(ParallelMode.WEIGHT),
+            "warmup_steps": warmup_steps,
+            "records": self.sft_benchmark_records,
+            "aggregate": _benchmark_aggregate(records),
+            "peak_memory_bytes": int(peak.item()),
+            "fixed_batches": fixed,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+        print(json.dumps({"component": "sensenova_u15.sft_internevo", "event": "complete", **report["aggregate"]}, sort_keys=True), flush=True)
 
     def _maybe_recover_dataloader_worker_failure(self, batch_count: int, train_iter, exc, consecutive_worker_failures):
         if not _is_dataloader_worker_failure(exc):
@@ -542,6 +642,10 @@ class TrainerBuilder(Trainer):
 
         gpc.config.batch_count = batch_count
         batch, train_iter, num_samples, num_padding_tokens = self._load_and_prepare_batch(batch_count, train_iter)
+        if batch_count == 0 and os.environ.get("SFT_BENCHMARK_REPORT"):
+            torch.cuda.reset_peak_memory_stats()
+        physical_tokens = int(batch[0]["input_ids"].numel())
+        supervised_tokens = int((batch[1] != -100).sum().item()) if isinstance(batch[1], torch.Tensor) else 0
         if self.batch_skipper(batch_count):
             if gpc.is_rank_for_log():
                 logger.info(f"Skip batch count:`{batch_count}`...")
@@ -556,6 +660,44 @@ class TrainerBuilder(Trainer):
 
         step_end_time = time.perf_counter()
         time_per_sample = step_end_time - step_start_time
+        if os.environ.get("SFT_BENCHMARK_REPORT"):
+            benchmark_seconds = torch.tensor(
+                float(time_per_sample),
+                device=get_current_device(),
+                dtype=torch.float64,
+            )
+            dist.all_reduce(benchmark_seconds, op=dist.ReduceOp.MAX)
+            time_per_sample = float(benchmark_seconds.item())
+        auxiliary_loss = sum(
+            _benchmark_scalar(value)
+            for value in (mtp_loss, boi_loss, moe_loss, moe_z_loss, moe_coef_loss, image_gen_loss)
+        )
+        benchmark_record = {
+            "step": batch_count + 1,
+            "seconds": float(time_per_sample),
+            "loss": _benchmark_scalar(loss) + auxiliary_loss,
+            "main_loss": _benchmark_scalar(loss),
+            "auxiliary_loss": auxiliary_loss,
+            "grad_norm": _benchmark_grad_norm(grad_norm_groups),
+            "physical_tokens": physical_tokens,
+            "supervised_tokens": supervised_tokens,
+            "samples": int(num_samples),
+        }
+        if os.environ.get("SFT_BENCHMARK_REPORT"):
+            self.sft_benchmark_records.append(benchmark_record)
+            if gpc.is_rank_for_log():
+                print(
+                    json.dumps(
+                        {
+                            "component": "sensenova_u15.sft_internevo",
+                            "event": "step_complete",
+                            "measured": batch_count >= int(os.environ.get("SFT_BENCHMARK_WARMUP_STEPS", "3")),
+                            **benchmark_record,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
         time_per_sample_avg = (step_end_time - self.train_start_time) / self.sensenovavl_consumed_samples
         consumed_samples_for_eta = self.sensenovavl_consumed_samples * gpc.get_world_size(ParallelMode.DATA)
         while consumed_samples_for_eta >= 5e6:

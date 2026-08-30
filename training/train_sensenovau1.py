@@ -56,6 +56,12 @@ class FixedBatchLoader:
         self.base_loader = base_loader
         self.batches = payload["batches"]
         self.ordered_microbatch_sha256 = payload["ordered_microbatch_sha256"]
+        self.identity = {
+            "path": str(fixed_path),
+            "bytes": int(identity["bytes"]),
+            "sha256": str(identity["sha256"]),
+            "ordered_microbatch_sha256": self.ordered_microbatch_sha256,
+        }
 
     def __iter__(self):
         return iter(self.batches)
