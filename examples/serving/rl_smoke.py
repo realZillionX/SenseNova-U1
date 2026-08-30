@@ -267,7 +267,12 @@ def _publish_full_checkpoint(base_url, groups, entries, buckets, policy_version,
                 ).contiguous()
                 dist.broadcast(tensor, src=0, group=group)
         receipt = pending.result()
-    return receipt, time.perf_counter() - started
+    commit = _request(
+        "POST",
+        f"{base_url}/commit_weights_update",
+        json={"policy_version": policy_version},
+    )
+    return {**receipt, "committed": True, "commit": commit}, time.perf_counter() - started
 
 
 def _closure_from_init(receipt):
@@ -367,7 +372,20 @@ def _post_tensor_update(base_url, tensors, assignments, version, required=None, 
         "policy_version": version,
         "full_update": False,
     }
-    return _request("POST", f"{base_url}/update_weights_from_tensor", json=body, expected=expected)
+    receipt = _request(
+        "POST",
+        f"{base_url}/update_weights_from_tensor",
+        json=body,
+        expected=expected,
+    )
+    if expected != 200:
+        return receipt
+    commit = _request(
+        "POST",
+        f"{base_url}/commit_weights_update",
+        json={"policy_version": version},
+    )
+    return {**receipt, "committed": True, "commit": commit}
 
 
 def _assert_failed_barrier(base_url, active_version):

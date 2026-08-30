@@ -40,6 +40,8 @@ from .full_parameter import (
     full_parameter_groups,
     initialize_distributed,
     load_dcp,
+    offload_optimizer_state,
+    restore_optimizer_state,
     save_dcp,
 )
 from .objective import (
@@ -598,17 +600,18 @@ def _generate_and_anchor(
     artifact_dir: Path,
     *,
     context: DistributedContext,
-    rollout_client: SenseNovaRlApiClient | None = None,
+    rollout_clients: Sequence[SenseNovaRlApiClient] = (),
 ) -> tuple[tuple[ReplayWorkItem, ...], tuple[tuple[U15PolicyRollout, ...], ...]]:
     scoring_groups: list[tuple[U15PolicyRollout, ...]] = []
     work_items: list[ReplayWorkItem] = []
     device = next(policy.model.parameters()).device
-    if rollout_client is not None and context.world_size != len(rows):
+    clients = tuple(rollout_clients)
+    if clients and context.world_size != len(rows):
         raise ValueError("API rollout data parallelism requires one prompt group per FSDP rank")
 
     rollout_futures: list[Future[tuple[dict[str, object], ...]]] = []
     rollout_executor: ThreadPoolExecutor | None = None
-    if rollout_client is not None and context.is_primary:
+    if clients and context.is_primary:
         # Submit the complete prompt batch at once.  Each request contributes
         # G members, so LightLLM sees prompts_per_batch * group_size requests
         # concurrently and its native continuous scheduler owns admission,
@@ -619,6 +622,7 @@ def _generate_and_anchor(
             thread_name_prefix="sensenova-rollout-group",
         )
         for prompt_index, row in enumerate(rows):
+            rollout_client = clients[prompt_index % len(clients)]
             prompt = row.for_modality(plan.modality)
             seeds = tuple(
                 _rollout_seed(plan, batch_index, prompt_index, position) for position in range(plan.group_size)
@@ -651,7 +655,8 @@ def _generate_and_anchor(
     try:
         for prompt_index, row in enumerate(rows):
             prompt = row.for_modality(plan.modality)
-            if rollout_client is not None:
+            if clients:
+                rollout_client = clients[prompt_index % len(clients)]
                 payload = _broadcast_primary(
                     context,
                     lambda prompt_index=prompt_index: rollout_futures[prompt_index].result(),
@@ -700,7 +705,7 @@ def _generate_and_anchor(
     finally:
         if rollout_executor is not None:
             rollout_executor.shutdown(wait=True, cancel_futures=True)
-    if rollout_client is not None:
+    if clients:
         schedule = _build_fsdp_replay_schedule(
             rows,
             payload_groups,
@@ -729,6 +734,7 @@ def _generate_and_anchor(
         try:
             for wave in schedule:
                 for owner_rank, slot in enumerate(wave):
+                    rollout_client = clients[slot.prompt_index % len(clients)]
                     raw = payload_groups[slot.prompt_index][slot.position]
                     owned = rollout_client.materialize_group_for_rank(
                         (raw,),
@@ -750,7 +756,8 @@ def _generate_and_anchor(
                             )
                         )
         finally:
-            rollout_client.release_payload_traces(payload_groups)
+            for prompt_index, payload in enumerate(payload_groups):
+                clients[prompt_index % len(clients)].release_payload_traces((payload,))
         if len(work_items) != len(schedule):
             raise RuntimeError("FSDP rank received the wrong replay wave count")
         return tuple(work_items), tuple(scoring_groups)
@@ -924,7 +931,6 @@ def _replay_backward(
     # parameter shard and can nearly double peak memory even when both
     # reference-based coefficients are zero.
     has_image_actions = any(isinstance(event, ImageEvent) for item in work_items for event in item.rollout.events)
-    include_reference = bool(plan.text_kl_beta or (has_image_actions and plan.velocity_mse_weight))
     policy.model.zero_grad(set_to_none=True)
     loss_total = ratio_error = numeric_error = 0.0
     ratio_error_sum = 0.0
@@ -933,67 +939,118 @@ def _replay_backward(
         row, rollout = item.row, item.rollout
         prompt = row.for_modality(plan.modality)
         emit_trace("policy_replay_start", item_index=item_index, item=item)
-        replay = policy.replay(
+        references = policy.reference_replay(
             prompt=prompt.prompt,
             prompt_images=prompt.images,
             modality=plan.modality,
             system_message=prompt.system_message,
             rollout=rollout,
-            include_reference=include_reference,
-            include_image_policy=False,
+            include_text=bool(plan.text_kl_beta),
+            include_images=bool(has_image_actions and plan.velocity_mse_weight),
         )
-        emit_trace("policy_replay_end", item_index=item_index, item=item)
-        if item.loss_weight:
-            ratio_error = max(ratio_error, replay.ratio_max_error)
-            ratio_error_sum += replay.ratio_mean_error * replay.ratio_action_count
-            ratio_action_count += replay.ratio_action_count
-            numeric_error = max(numeric_error, replay.numeric_max_error)
-            if update_index == 0 and ratio_error > 2e-4:
-                raise RuntimeError(f"pre-update old/current ratio is not one: {ratio_error:.6g}")
         advantage = advantages[item.advantage_index : item.advantage_index + 1]
-        text_result = compute_uni_gdpo_loss(
-            advantages=advantage,
-            image_replay=None,
-            text_trace=replay.text_trace,
-            text_log_probs=replay.text_log_probs,
-            text_ref_log_probs=replay.text_ref_log_probs,
-            weights=BranchWeights(image=0.0, text=1.0),
-            regularization=RegularizationWeights(
-                image_velocity_mse=0.0,
-                text_kl=plan.text_kl_beta,
-            ),
-            image_clip_range=plan.image_clip_range,
-            text_clip_range=plan.text_clip_range,
+        total_text_actions = sum(
+            int(event.trace.response_mask.sum().item())
+            for event in rollout.events
+            if not isinstance(event, ImageEvent)
         )
-        text_loss = text_result.value * item.loss_weight / total
-        if not bool(torch.isfinite(text_loss)):
-            raise RuntimeError("SenseNova text GDPO loss is non-finite")
-        emit_trace("text_backward_start", item_index=item_index, item=item)
-        text_loss.backward()
-        emit_trace("text_backward_end", item_index=item_index, item=item)
-        loss_total += float(text_loss.detach())
+        replayed_text_actions = 0
+        text_spans = policy.iter_text_replay_spans(
+            prompt=prompt.prompt,
+            prompt_images=prompt.images,
+            modality=plan.modality,
+            system_message=prompt.system_message,
+            rollout=rollout,
+            reference_log_probs=references.text_log_probs,
+        )
+        for text_span in text_spans:
+            current = text_span.log_probs
+            old = text_span.trace.old_log_probs[text_span.trace.response_mask].reshape(1, -1)
+            span_actions = int(text_span.trace.response_mask.sum().item())
+            if item.loss_weight:
+                ratio = torch.exp(current.detach().float() - old.detach().float())
+                if not bool(torch.isfinite(ratio).all()):
+                    raise RuntimeError("text policy ratio is non-finite")
+                errors = (ratio - 1.0).abs()
+                span_ratio_max = float(errors.max().cpu())
+                ratio_error = max(ratio_error, span_ratio_max)
+                ratio_error_sum += float(errors.sum().cpu())
+                ratio_action_count += errors.numel()
+                numeric_error = max(numeric_error, text_span.numeric_max_error)
+                if update_index == 0 and ratio_error > 2e-4:
+                    raise RuntimeError(
+                        f"pre-update old/current ratio is not one: {ratio_error:.6g}"
+                    )
+            text_result = compute_uni_gdpo_loss(
+                advantages=advantage,
+                image_replay=None,
+                text_trace=text_span.trace,
+                text_log_probs=current,
+                text_ref_log_probs=text_span.ref_log_probs,
+                weights=BranchWeights(image=0.0, text=1.0),
+                regularization=RegularizationWeights(
+                    image_velocity_mse=0.0,
+                    text_kl=plan.text_kl_beta,
+                ),
+                image_clip_range=plan.image_clip_range,
+                text_clip_range=plan.text_clip_range,
+            )
+            text_loss = (
+                text_result.value
+                * (span_actions / total_text_actions)
+                * item.loss_weight
+                / total
+            )
+            if not bool(torch.isfinite(text_loss)):
+                raise RuntimeError("SenseNova text GDPO loss is non-finite")
+            emit_trace("text_backward_start", item_index=item_index, item=item)
+            text_loss.backward(retain_graph=not text_span.is_last)
+            emit_trace("text_backward_end", item_index=item_index, item=item)
+            loss_total += float(text_loss.detach())
+            replayed_text_actions += span_actions
+            del text_loss, text_result, current, old, text_span
+        if replayed_text_actions != total_text_actions:
+            raise RuntimeError(
+                f"SenseNova text replay yielded {replayed_text_actions} actions, "
+                f"expected {total_text_actions}"
+            )
+        emit_trace("policy_replay_end", item_index=item_index, item=item)
 
         emit_trace("image_replay_start", item_index=item_index, item=item)
-        image_replays = policy.replay_image_action_microbatches(
+        image_microbatches_per_event = tuple(
+            math.ceil(event.trace.steps / plan.image_replay_microbatch_size)
+            for event in rollout.events
+            if isinstance(event, ImageEvent)
+        )
+        image_microbatch_count = sum(image_microbatches_per_event)
+        image_backward_boundaries: set[int] = set()
+        cumulative_microbatches = 0
+        for count in image_microbatches_per_event:
+            cumulative_microbatches += count
+            image_backward_boundaries.add(cumulative_microbatches)
+        image_replays = policy.iter_image_action_microbatches(
             prompt=prompt.prompt,
             prompt_images=prompt.images,
             modality=plan.modality,
             system_message=prompt.system_message,
             rollout=rollout,
             microbatch_size=plan.image_replay_microbatch_size,
-            reference_velocities=(replay.image_reference_velocities if include_reference else ()),
+            reference_velocities=references.image_velocities,
         )
         emit_trace(
-            "image_replay_end",
+            "image_replay_stream_start",
             item_index=item_index,
             item=item,
-            image_microbatches=len(image_replays),
+            image_microbatches=image_microbatch_count,
         )
         total_image_actions = sum(
-            replay_item.trace.steps * replay_item.trace.batch_size for replay_item in image_replays
+            event.trace.steps * event.trace.batch_size
+            for event in rollout.events
+            if isinstance(event, ImageEvent)
         )
-        image_losses: list[Tensor] = []
-        for image_replay in image_replays:
+        replayed_microbatches = 0
+        pending_image_losses: list[Tensor] = []
+        for microbatch_index, image_replay in enumerate(image_replays):
             current = image_replay.log_probs
             old = image_replay.trace.old_log_probs
             ratio = torch.exp(current.detach().float() - old.detach().float())
@@ -1024,25 +1081,51 @@ def _replay_backward(
                 text_clip_range=plan.text_clip_range,
             )
             chunk_actions = image_replay.trace.steps * image_replay.trace.batch_size
-            image_loss = image_result.value * (chunk_actions / total_image_actions) * item.loss_weight / total
+            image_loss = (
+                image_result.value
+                * (chunk_actions / total_image_actions)
+                * item.loss_weight
+                / total
+            )
             if not bool(torch.isfinite(image_loss)):
                 raise RuntimeError("SenseNova image GDPO loss is non-finite")
-            image_losses.append(image_loss)
             loss_total += float(image_loss.detach())
-        if image_losses:
-            emit_trace(
-                "image_backward_start",
-                item_index=item_index,
-                item=item,
-                image_microbatches=len(image_losses),
+            pending_image_losses.append(image_loss)
+            replayed_microbatches += 1
+            del image_loss, image_result, current, old, ratio, image_replay
+            if replayed_microbatches in image_backward_boundaries:
+                emit_trace(
+                    "image_backward_start",
+                    item_index=item_index,
+                    item=item,
+                    image_microbatches=len(pending_image_losses),
+                )
+                image_backward_loss = torch.stack(pending_image_losses).sum()
+                image_backward_loss.backward(
+                    retain_graph=replayed_microbatches < image_microbatch_count
+                )
+                emit_trace(
+                    "image_backward_end",
+                    item_index=item_index,
+                    item=item,
+                    image_microbatches=len(pending_image_losses),
+                )
+                del image_backward_loss
+                pending_image_losses.clear()
+        if replayed_microbatches != image_microbatch_count:
+            raise RuntimeError(
+                "SenseNova image replay yielded "
+                f"{replayed_microbatches} microbatches, expected {image_microbatch_count}"
             )
-            torch.stack(image_losses).sum().backward()
-            emit_trace(
-                "image_backward_end",
-                item_index=item_index,
-                item=item,
-                image_microbatches=len(image_losses),
-            )
+        if pending_image_losses:
+            raise RuntimeError("SenseNova image replay stopped inside an image event")
+        emit_trace(
+            "image_replay_stream_end",
+            item_index=item_index,
+            item=item,
+            image_microbatches=image_microbatch_count,
+        )
+        del references, text_spans, image_replays
     emit_trace("metrics_all_reduce_start")
     sums = torch.tensor(
         [loss_total, ratio_error_sum, float(ratio_action_count)],
@@ -1079,7 +1162,7 @@ def execute_on_policy_batch(
     ledger: BudgetLedger,
     reward_client: RewardClient = score_with_verifier_worker,
     context: DistributedContext | None = None,
-    rollout_client: SenseNovaRlApiClient | None = None,
+    rollout_clients: Sequence[SenseNovaRlApiClient] = (),
     **_unused: object,
 ) -> tuple[StepResult, ...]:
     """Execute one frozen-old multi-prompt batch on one sharded policy."""
@@ -1097,7 +1180,7 @@ def execute_on_policy_batch(
         batch_index,
         artifact_dir,
         context=context,
-        rollout_client=rollout_client,
+        rollout_clients=rollout_clients,
     )
     dist.barrier()
     rollout_seconds = time.perf_counter() - rollout_started
@@ -1128,7 +1211,7 @@ def execute_on_policy_batch(
             reward_client,
         )
     try:
-        if rollout_client is not None:
+        if rollout_clients:
             anchor_started = time.perf_counter()
             work_items = _anchor_api_work_items(
                 plan,
@@ -1155,16 +1238,35 @@ def execute_on_policy_batch(
     if advantages.shape != (plan.prompts_per_batch * plan.group_size,):
         raise RuntimeError("broadcast GDPO advantage has wrong shape")
     parameters = tuple(parameter for parameter in policy.model.parameters() if parameter.requires_grad)
+    maximum_images = torch.tensor(
+        max(
+            (item.rollout.generated_images for item in work_items if item.loss_weight),
+            default=0,
+        ),
+        device=context.device,
+        dtype=torch.int64,
+    )
+    dist.all_reduce(maximum_images, op=dist.ReduceOp.MAX)
+    use_optimizer_cpu_offload = (
+        int(maximum_images.item()) >= plan.optimizer_cpu_offload_min_images
+    )
     results: list[StepResult] = []
     for update_index in range(plan.policy_updates_per_batch):
         replay_started = time.perf_counter()
+        offload_seconds = 0.0
+        offloaded_bytes = offloaded_tensors = 0
+        if use_optimizer_cpu_offload:
+            offload_started = time.perf_counter()
+            offloaded_bytes, offloaded_tensors = offload_optimizer_state(optimizer)
+            torch.cuda.empty_cache()
+            offload_seconds = time.perf_counter() - offload_started
         loss, ratio, ratio_mean, numeric = _replay_backward(
             plan,
             policy,
             work_items,
             advantages,
             update_index,
-            partitioned_replay=rollout_client is not None,
+            partitioned_replay=bool(rollout_clients),
         )
         grad_norm = float(clip_global_grad_norm(parameters, plan.max_grad_norm))
         if not math.isfinite(grad_norm):
@@ -1172,8 +1274,35 @@ def execute_on_policy_batch(
             raise RuntimeError("SenseNova GDPO gradient norm is non-finite")
         replay_seconds = time.perf_counter() - replay_started
         optimizer_started = time.perf_counter()
+        restored_bytes = restored_tensors = 0
+        if use_optimizer_cpu_offload:
+            restored_bytes, restored_tensors = restore_optimizer_state(
+                optimizer,
+                device=context.device,
+            )
+            if (restored_bytes, restored_tensors) != (
+                offloaded_bytes,
+                offloaded_tensors,
+            ):
+                raise RuntimeError("optimizer CPU offload/restore closure changed")
         optimizer.step()
         optimizer_seconds = time.perf_counter() - optimizer_started
+        if context.is_primary and use_optimizer_cpu_offload:
+            print(
+                json.dumps(
+                    {
+                        "component": "sensenova_u1.rl",
+                        "event": "optimizer_state_offload",
+                        "update_index": update_index,
+                        "bytes": offloaded_bytes,
+                        "tensors": offloaded_tensors,
+                        "offload_seconds": offload_seconds,
+                        "restore_and_step_seconds": optimizer_seconds,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         step = batch_index * plan.policy_updates_per_batch + update_index + 1
         results.append(
             StepResult(
@@ -1184,8 +1313,8 @@ def execute_on_policy_batch(
                 modality=plan.modality,
                 fsdp_world_size=context.world_size,
                 rollout_policy_version=(
-                    rollout_client.expected_policy_version
-                    if rollout_client is not None
+                    rollout_clients[0].expected_policy_version
+                    if rollout_clients
                     else plan.rollout_policy_version
                 ),
                 loss=loss,
@@ -1400,7 +1529,7 @@ def _publish_live_policy(
     policy_version: str,
     context: DistributedContext,
 ) -> Mapping[str, object]:
-    """Collectively export the current policy and atomically commit serving."""
+    """Collectively export the current policy to every serving replica."""
 
     started = time.perf_counter()
     try:
@@ -1413,7 +1542,7 @@ def _publish_live_policy(
     finally:
         torch.cuda.empty_cache()
     if not isinstance(response, Mapping):
-        raise RuntimeError("serving weight publication returned malformed data")
+        raise RuntimeError("serving replica-set publication returned malformed data")
     dist.barrier()
     if context.is_primary:
         print(
@@ -1422,6 +1551,7 @@ def _publish_live_policy(
                     "component": "sensenova_u1.rl",
                     "event": "serving_policy_published",
                     "policy_version": policy_version,
+                    "replicas": (publisher.replica_count if publisher is not None else 0),
                     "seconds": time.perf_counter() - started,
                 },
                 sort_keys=True,
@@ -1465,7 +1595,7 @@ def run_training_loop(
     active_reward = reward_owner or reward_client
     publisher = (
         ServingWeightPublisher(
-            base_url=plan.rollout_api_base_url,
+            base_urls=plan.rollout_api_base_urls,
             master_address=plan.weight_update_master_address,
             base_port=plan.weight_update_base_port,
             backend=plan.weight_update_backend,
@@ -1481,19 +1611,30 @@ def run_training_loop(
         else None
     )
     active_policy_version = resume.policy_version if resume is not None else plan.rollout_policy_version
-    serving_status = _broadcast_primary(
+    serving_statuses = _broadcast_primary(
         context,
         lambda: (
-            dict(publisher.status())
+            [dict(status) for status in publisher.statuses()]
             if publisher is not None
             else (_ for _ in ()).throw(RuntimeError("rank zero has no serving weight publisher"))
         ),
     )
-    if not isinstance(serving_status, Mapping):
-        raise RuntimeError("SenseNova serving status broadcast is malformed")
-    observed_version = serving_status.get("active_policy_version")
-    if serving_status.get("paused") or serving_status.get("pending_policy_version"):
-        raise RuntimeError("SenseNova serving is not in a stable active state")
+    if not isinstance(serving_statuses, list) or len(serving_statuses) != len(plan.rollout_api_base_urls):
+        raise RuntimeError("SenseNova serving replica status broadcast is malformed")
+    observed_versions = set()
+    for replica_index, serving_status in enumerate(serving_statuses):
+        if not isinstance(serving_status, Mapping):
+            raise RuntimeError(f"SenseNova serving replica {replica_index} returned malformed status")
+        if serving_status.get("replica_id") != replica_index:
+            raise RuntimeError(
+                f"SenseNova serving URL {replica_index} reports replica_id={serving_status.get('replica_id')!r}"
+            )
+        observed_versions.add(serving_status.get("active_policy_version"))
+        if serving_status.get("paused") or serving_status.get("pending_policy_version"):
+            raise RuntimeError(f"SenseNova serving replica {replica_index} is not in a stable active state")
+    if len(observed_versions) != 1:
+        raise RuntimeError("SenseNova serving replicas expose different active policy versions")
+    observed_version = next(iter(observed_versions))
     if resume is None:
         # Bootstrap every fresh arm from the live FSDP policy before admitting
         # its first rollout.  Besides preventing a stale serving copy, this
@@ -1516,9 +1657,12 @@ def run_training_loop(
             policy_version=active_policy_version,
             context=context,
         )
-    rollout_client = SenseNovaRlApiClient(
-        base_url=plan.rollout_api_base_url,
-        expected_policy_version=active_policy_version,
+    rollout_clients = tuple(
+        SenseNovaRlApiClient(
+            base_url=base_url,
+            expected_policy_version=active_policy_version,
+        )
+        for base_url in plan.rollout_api_base_urls
     )
     if context.is_primary:
         if scratch.exists():
@@ -1546,7 +1690,7 @@ def run_training_loop(
                     ledger=ledger,
                     reward_client=active_reward,
                     context=context,
-                    rollout_client=rollout_client,
+                    rollout_clients=rollout_clients,
                 )
                 completed = results[-1].step
                 if context.is_primary:
@@ -1565,7 +1709,8 @@ def run_training_loop(
                     policy_version=active_policy_version,
                     context=context,
                 )
-                rollout_client.expected_policy_version = active_policy_version
+                for rollout_client in rollout_clients:
+                    rollout_client.expected_policy_version = active_policy_version
             except BaseException as exc:
                 batch_failed = True
                 print(

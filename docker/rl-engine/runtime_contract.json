@@ -8,11 +8,12 @@
     "cuda": "12.8",
     "cxx11_abi": true,
     "gpu": "NVIDIA H200",
-    "serving_gpu_count": 2
+    "serving_gpu_pair_size": 2,
+    "serving_gpu_pair_count": "dynamic"
   },
   "sources": {
     "forge": "build-arg:FORGE_COMMIT",
-    "lightllm": "63556eabf12fa862e271f9bb24612e453c3bd422",
+    "lightllm": "32359540f094520519a5da98c71541c5631b11f0",
     "lightx2v": "a46d6c4d0dc00659c597078f86fb34c1d5b0f481"
   },
   "overlays": {

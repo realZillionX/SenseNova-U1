@@ -58,8 +58,36 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("LIGHTLLM_MEM_FRACTION:-0.80", launcher)
         self.assertIn('--mem_fraction "$LIGHTLLM_MEM_FRACTION"', launcher)
         self.assertIn("LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1", launcher)
+        self.assertIn("FORGE_SERVING_REPLICAS", launcher)
+        self.assertIn("FORGE_SERVING_PORT_BASE", launcher)
+        self.assertIn("FORGE_SERVING_REPLICA_ID_OFFSET", launcher)
+        self.assertIn('device_pair="${VISIBLE_GPUS[$((2 * local_index))]},${VISIBLE_GPUS[$((2 * local_index + 1))]}"', launcher)
+        self.assertIn('MOVA_RL_TRACE_DIR="$TRACE_ROOT/replica-$replica_id"', launcher)
+        self.assertIn('--port "$port"', launcher)
+        manager = (
+            ROOT
+            / "serving/third_party/LightLLM/lightllm/server/httpserver/manager.py"
+        ).read_text()
+        self.assertIn('replica_count = int(payload.get("replica_count", 1))', manager)
+        self.assertIn('"language_rank_base": 1 + replica_index', manager)
+        self.assertIn('expected_world = 1 + 3 * replica_count', manager)
+        self.assertIn('"replica_id": int(os.getenv("MOVA_RL_REPLICA_ID", "0"))', manager)
+        self.assertIn("async def commit_weights_update", manager)
+        api_http = (
+            ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
+        ).read_text()
+        self.assertIn('@app.post("/commit_weights_update")', api_http)
+        api_start = (
+            ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py"
+        ).read_text()
+        self.assertIn('internal_port_start = 10000 + replica_id * 2048', api_start)
+        self.assertIn('from_port_num=internal_port_start', api_start)
         preflight = (ROOT / "scripts" / "rl_engine" / "preflight.py").read_text()
         self.assertIn("supports only NVIDIA H200", preflight)
+        self.assertIn('parser.add_argument("--require-rdma", action="store_true")', preflight)
+        self.assertIn('ctypes.CDLL("libibverbs.so.1")', preflight)
+        dockerfile = (ROOT / "docker/rl-engine/Dockerfile").read_text()
+        self.assertIn("libibverbs1 ibverbs-providers librdmacm1 rdma-core", dockerfile)
 
 
 if __name__ == "__main__":

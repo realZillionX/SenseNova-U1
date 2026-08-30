@@ -91,8 +91,9 @@ publishes the ordinary policy weights as a complete HF directory. See
 
 ### 3. Production serving
 
-Build the self-contained Torch 2.8/CUDA 12.8 runtime and start the two-GPU
-service:
+Build the self-contained Torch 2.8/CUDA 12.8 runtime and start one or more
+two-GPU serving replicas. The launcher pairs each even-index GPU with the
+following odd-index GPU and exposes consecutive HTTP ports:
 
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
@@ -100,7 +101,8 @@ docker build -f docker/rl-engine/Dockerfile \
   -t sensenova-u15-forge:unified-v2 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
-CUDA_VISIBLE_DEVICES=0,1 \
+FORGE_REQUIRE_RDMA=true \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash scripts/rl_engine/launch_server.sh
 ```
 
@@ -124,6 +126,11 @@ TI2T uses the text GDPO branch. TI2TI uses the same detached trajectory
 advantage for text tokens and selected image SDE actions, with independent
 ratio clipping, text KL, velocity-MSE, and explicit branch weights. See
 [RL](docs/rl.md).
+
+The production RL plan uses one eight-H200 FSDP2 policy. High-image batches
+temporarily park initialized rank-local AdamW state on CPU during replay and
+restore the exact DTensor/Tensor closure before the optimizer step; ordinary
+batches keep optimizer state on GPU.
 
 ## Runtime profiles
 

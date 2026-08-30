@@ -32,7 +32,7 @@ export MOVA_SENSENOVA_COMMIT="$FORGE_COMMIT"
 export MOVA_LIGHTLLM_COMMIT="$FORGE_LIGHTLLM_COMMIT"
 export MOVA_LIGHTX2V_COMMIT="$FORGE_LIGHTX2V_COMMIT"
 export MOVA_IMAGE_DIGEST="$FORGE_RUNTIME_IMAGE"
-export MOVA_RL_TRACE_DIR=${FORGE_RL_TRACE_DIR:-/dev/shm/sensenova_forge_rl_traces}
+TRACE_ROOT=${FORGE_RL_TRACE_DIR:-/dev/shm/sensenova_forge_rl_traces}
 export MOVA_RL_TRACE_TTL=${FORGE_RL_TRACE_TTL:-3600}
 # Transformers applies repetition penalty to prompt tokens as well. Keep
 # ordinary VQA aligned while the RL route explicitly disables every penalty.
@@ -47,19 +47,97 @@ LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.80}
 # reuses the selected config for steady-state serving.
 export LIGHTLLM_TRITON_AUTOTUNE_LEVEL=${LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1}
 
-"$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
-  --model-path "$MODEL_ROOT" \
-  --expected-gpus 2 \
-  --output "${PREFLIGHT_OUTPUT:-/tmp/sensenova-u15-forge-preflight.json}"
+IFS=',' read -r -a VISIBLE_GPUS <<< "$CUDA_VISIBLE_DEVICES"
+for device in "${VISIBLE_GPUS[@]}"; do
+  [[ "$device" =~ ^[0-9]+$ ]] || {
+    echo "CUDA_VISIBLE_DEVICES must be a comma-separated physical GPU index list" >&2
+    exit 2
+  }
+done
+(( ${#VISIBLE_GPUS[@]} >= 2 && ${#VISIBLE_GPUS[@]} % 2 == 0 )) || {
+  echo "SenseNova serving requires an even number of GPUs (LightLLM, LightX2V pairs)" >&2
+  exit 2
+}
+AVAILABLE_REPLICAS=$((${#VISIBLE_GPUS[@]} / 2))
+REPLICA_COUNT=${FORGE_SERVING_REPLICAS:-$AVAILABLE_REPLICAS}
+[[ "$REPLICA_COUNT" =~ ^[0-9]+$ ]] || {
+  echo "FORGE_SERVING_REPLICAS must be an integer" >&2
+  exit 2
+}
+(( REPLICA_COUNT >= 1 && REPLICA_COUNT <= AVAILABLE_REPLICAS )) || {
+  echo "FORGE_SERVING_REPLICAS must be in [1, $AVAILABLE_REPLICAS]" >&2
+  exit 2
+}
+PORT_BASE=${FORGE_SERVING_PORT_BASE:-8000}
+REPLICA_ID_OFFSET=${FORGE_SERVING_REPLICA_ID_OFFSET:-0}
+[[ "$PORT_BASE" =~ ^[0-9]+$ && "$REPLICA_ID_OFFSET" =~ ^[0-9]+$ ]] || {
+  echo "FORGE_SERVING_PORT_BASE and FORGE_SERVING_REPLICA_ID_OFFSET must be non-negative integers" >&2
+  exit 2
+}
+(( PORT_BASE >= 1 && PORT_BASE + REPLICA_COUNT - 1 <= 65535 )) || {
+  echo "Forge serving replica HTTP ports fall outside [1, 65535]" >&2
+  exit 2
+}
+(( REPLICA_ID_OFFSET + REPLICA_COUNT - 1 <= 26 )) || {
+  echo "Forge serving replica ids must fit the isolated internal port ranges [0, 26]" >&2
+  exit 2
+}
 
-exec "$PYTHON_BIN" -m lightllm.server.api_server \
-  --model_dir "$MODEL_ROOT" \
-  --enable_multimodal_x2i \
-  --x2i_server_deploy_mode separate \
-  --x2i_server_used_gpus 1 \
-  --x2v_gen_model_config "$X2V_CONFIG" \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --max_req_total_len "$MAX_REQ_TOTAL_LEN" \
-  --mem_fraction "$LIGHTLLM_MEM_FRACTION" \
-  --tp 1
+launch_replica() {
+  local local_index=$1
+  local replica_id=$((REPLICA_ID_OFFSET + local_index))
+  local port=$((PORT_BASE + local_index))
+  local device_pair="${VISIBLE_GPUS[$((2 * local_index))]},${VISIBLE_GPUS[$((2 * local_index + 1))]}"
+  local preflight_output
+  if (( REPLICA_COUNT == 1 )) && [[ -n ${PREFLIGHT_OUTPUT:-} ]]; then
+    preflight_output=$PREFLIGHT_OUTPUT
+  else
+    preflight_output="${PREFLIGHT_OUTPUT_DIR:-/tmp}/sensenova-u15-forge-preflight-r${replica_id}.json"
+  fi
+  export CUDA_VISIBLE_DEVICES=$device_pair
+  export MOVA_RL_REPLICA_ID=$replica_id
+  export MOVA_RL_TRACE_DIR="$TRACE_ROOT/replica-$replica_id"
+  local rdma_args=()
+  if [[ ${FORGE_REQUIRE_RDMA:-false} == true ]]; then
+    rdma_args+=(--require-rdma)
+  fi
+  "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
+    --model-path "$MODEL_ROOT" \
+    --expected-gpus 2 \
+    "${rdma_args[@]}" \
+    --output "$preflight_output"
+  echo "starting Forge serving replica=$replica_id GPUs=$device_pair port=$port" >&2
+  exec "$PYTHON_BIN" -m lightllm.server.api_server \
+    --model_dir "$MODEL_ROOT" \
+    --enable_multimodal_x2i \
+    --x2i_server_deploy_mode separate \
+    --x2i_server_used_gpus 1 \
+    --x2v_gen_model_config "$X2V_CONFIG" \
+    --host 0.0.0.0 \
+    --port "$port" \
+    --max_req_total_len "$MAX_REQ_TOTAL_LEN" \
+    --mem_fraction "$LIGHTLLM_MEM_FRACTION" \
+    --tp 1
+}
+
+PIDS=()
+for ((replica = 0; replica < REPLICA_COUNT; replica++)); do
+  launch_replica "$replica" &
+  PIDS+=("$!")
+done
+terminate_replicas() {
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+}
+trap terminate_replicas INT TERM EXIT
+set +e
+wait -n "${PIDS[@]}"
+status=$?
+set -e
+terminate_replicas
+for pid in "${PIDS[@]}"; do
+  wait "$pid" 2>/dev/null || true
+done
+trap - INT TERM EXIT
+exit "$status"

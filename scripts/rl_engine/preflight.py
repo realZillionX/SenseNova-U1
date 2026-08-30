@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-fast runtime/provenance check for the two-GPU RL serving stack."""
+"""Fail-fast runtime/provenance check for one RL serving GPU pair."""
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import importlib.util
 import inspect
 import json
@@ -144,11 +145,33 @@ def _lightllm_policy_overlay() -> dict[str, object]:
     return {"available": not missing, "missing": missing}
 
 
+def _rdma_status() -> dict[str, object]:
+    devices_root = Path("/sys/class/infiniband")
+    try:
+        devices = sorted(path.name for path in devices_root.iterdir())
+    except OSError:
+        devices = []
+    verbs_error = None
+    try:
+        ctypes.CDLL("libibverbs.so.1")
+        verbs_available = True
+    except OSError as exc:
+        verbs_available = False
+        verbs_error = str(exc)
+    return {
+        "available": bool(verbs_available and devices),
+        "libibverbs": verbs_available,
+        "devices": devices,
+        "error": verbs_error,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path")
     parser.add_argument("--expected-gpus", type=int, default=2)
     parser.add_argument("--allow-no-gpu", action="store_true")
+    parser.add_argument("--require-rdma", action="store_true")
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -252,6 +275,7 @@ def main() -> None:
 
     checkpoint_manifest = _checkpoint_manifest(args.model_path)
     lightllm_policy_overlay = _lightllm_policy_overlay()
+    rdma = _rdma_status()
     payload = {
         "python": sys.version,
         "python_executable": sys.executable,
@@ -288,6 +312,7 @@ def main() -> None:
         "model_exists": bool(args.model_path and Path(args.model_path).is_dir()),
         "model_checkpoint": checkpoint_manifest,
         "lightllm_policy_overlay": lightllm_policy_overlay,
+        "rdma": rdma,
     }
 
     errors = []
@@ -325,6 +350,11 @@ def main() -> None:
         errors.append(f"LightLLM HTTP server import closure failed: {http_server['error']}")
     if not lightllm_policy_overlay["available"]:
         errors.append(f"SenseNova LightLLM policy overlay is incomplete: {lightllm_policy_overlay['missing']}")
+    if args.require_rdma and not rdma["available"]:
+        errors.append(
+            "multi-node RL serving requires libibverbs.so.1 and a visible InfiniBand/RoCE device: "
+            f"{rdma}"
+        )
     if payload["runtime_manifest"]["requirements_sha256"] is None:
         errors.append(f"runtime manifest is missing under {MANIFEST_DIR}")
     provenance = payload["provenance"]

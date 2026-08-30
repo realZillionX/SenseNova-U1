@@ -58,6 +58,45 @@ class RlFlowTest(unittest.TestCase):
         kl = text_kl_loss(log_probs=kl_current, ref_log_probs=ref, response_mask=mask)
         self.assertGreater(float(kl), 6.0e8)
 
+    def test_action_weighted_span_stream_matches_full_text_objective(self) -> None:
+        current = torch.tensor([[-1.0, -1.5, -2.0, -2.5, -3.0]])
+        old = current + torch.tensor([[0.02, -0.01, 0.03, -0.02, 0.01]])
+        ref = current + torch.tensor([[0.1, -0.2, 0.05, -0.1, 0.2]])
+        advantage = torch.tensor([0.7])
+        mask = torch.ones_like(current, dtype=torch.bool)
+        full_policy = text_policy_loss(
+            log_probs=current,
+            old_log_probs=old,
+            advantages=advantage,
+            response_mask=mask,
+            clip_range=0.2,
+        ).value
+        full_kl = text_kl_loss(
+            log_probs=current,
+            ref_log_probs=ref,
+            response_mask=mask,
+        )
+
+        split_policy = current.new_zeros(())
+        split_kl = current.new_zeros(())
+        for start, stop in ((0, 2), (2, 5)):
+            weight = (stop - start) / current.shape[1]
+            split_policy = split_policy + weight * text_policy_loss(
+                log_probs=current[:, start:stop],
+                old_log_probs=old[:, start:stop],
+                advantages=advantage,
+                response_mask=mask[:, start:stop],
+                clip_range=0.2,
+            ).value
+            split_kl = split_kl + weight * text_kl_loss(
+                log_probs=current[:, start:stop],
+                ref_log_probs=ref[:, start:stop],
+                response_mask=mask[:, start:stop],
+            )
+
+        torch.testing.assert_close(split_policy, full_policy)
+        torch.testing.assert_close(split_kl, full_kl)
+
 
 if __name__ == "__main__":
     unittest.main()

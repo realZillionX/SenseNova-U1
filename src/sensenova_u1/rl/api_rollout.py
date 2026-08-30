@@ -364,7 +364,6 @@ class SenseNovaRlApiClient:
             request,
             timeout=self.timeout_seconds,
         )
-        elapsed = time.perf_counter() - started
         if response.get("policy_version") != self.expected_policy_version:
             raise RuntimeError("SenseNova RL API crossed the policy-version barrier")
         if response.get("modality") != modality:
@@ -401,6 +400,23 @@ class SenseNovaRlApiClient:
         )
         if set(trace_payloads) != set(bundle_ids):
             raise RuntimeError("SenseNova SDE stream returned a different trace closure")
+        elapsed = time.perf_counter() - started
+        trace_wire_bytes = sum(len(payload) for payload in trace_payloads.values())
+        print(
+            json.dumps(
+                {
+                    "component": "sensenova_u1.rl",
+                    "event": "rollout_group_transport",
+                    "base_url": self.base_url,
+                    "rollouts": len(normalized_seeds),
+                    "generated_images": len(bundle_ids),
+                    "trace_wire_bytes": trace_wire_bytes,
+                    "seconds": elapsed,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         trace_tensors: dict[str, dict[str, torch.Tensor]] = {}
         for bundle_id in bundle_ids:
             try:

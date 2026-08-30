@@ -15,7 +15,7 @@ import math
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -72,8 +72,9 @@ def _init_custom_process_group(
     group_name: str,
     device: torch.device,
     warmup: bool,
+    world_size: int = 2,
 ) -> object:
-    """Create the publisher half of a two-rank serving update group."""
+    """Create the rank-zero publisher member of one external serving group."""
 
     from torch.distributed.distributed_c10d import (
         Backend,
@@ -86,7 +87,7 @@ def _init_custom_process_group(
     endpoint = urllib.parse.urlparse(init_method)
     if endpoint.scheme != "tcp" or endpoint.hostname is None or endpoint.port is None:
         raise ValueError(f"weight update group requires a tcp init method: {init_method}")
-    rank, world_size = 0, 2
+    rank = 0
     # torchrun exports TORCHELASTIC_USE_AGENT_STORE=True.  The generic
     # rendezvous helper consequently assumes that an elastic agent already
     # owns every requested TCP endpoint, including our independent update
@@ -222,7 +223,7 @@ class ServingWeightPublisher:
     def __init__(
         self,
         *,
-        base_url: str,
+        base_urls: Sequence[str],
         master_address: str,
         base_port: int,
         backend: str,
@@ -231,7 +232,9 @@ class ServingWeightPublisher:
         device: torch.device,
         group_name: str,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_urls = tuple(url.rstrip("/") for url in base_urls)
+        if not self.base_urls or len(set(self.base_urls)) != len(self.base_urls):
+            raise ValueError("serving weight publisher requires distinct replica URLs")
         self.master_address = master_address
         self.base_port = int(base_port)
         self.backend = backend
@@ -242,11 +245,17 @@ class ServingWeightPublisher:
         self.groups: dict[str, object] = {}
         self.closure_specs: dict[str, dict[str, dict[str, object]]] | None = None
 
-    def status(self) -> Mapping[str, object]:
-        response = _request("GET", f"{self.base_url}/v1/rl/status")
-        if not isinstance(response, Mapping):
-            raise RuntimeError("SenseNova serving returned malformed RL status")
-        return response
+    @property
+    def replica_count(self) -> int:
+        return len(self.base_urls)
+
+    def statuses(self) -> tuple[Mapping[str, object], ...]:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.replica_count) as executor:
+            pending = [executor.submit(_request, "GET", f"{url}/v1/rl/status") for url in self.base_urls]
+            responses = tuple(future.result() for future in pending)
+        if any(not isinstance(response, Mapping) for response in responses):
+            raise RuntimeError("SenseNova serving returned malformed replica status")
+        return responses  # type: ignore[return-value]
 
     @property
     def initialized(self) -> bool:
@@ -264,18 +273,22 @@ class ServingWeightPublisher:
             "master_address": self.master_address,
             "master_port": self.base_port,
             "master_ports": ports,
-            "world_size": 4,
+            "world_size": 1 + 3 * self.replica_count,
+            "replica_count": self.replica_count,
             "group_name": self.group_name,
             "backend": self.backend,
             "warmup": True,
         }
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            pending = executor.submit(
-                _request,
-                "POST",
-                f"{self.base_url}/init_weights_update_group",
-                payload=payload,
-            )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.replica_count) as executor:
+            pending = [
+                executor.submit(
+                    _request,
+                    "POST",
+                    f"{url}/init_weights_update_group",
+                    payload={**payload, "replica_index": replica_index},
+                )
+                for replica_index, url in enumerate(self.base_urls)
+            ]
             for consumer, port in ports.items():
                 self.groups[consumer] = _init_custom_process_group(
                     backend=self.backend,
@@ -283,11 +296,17 @@ class ServingWeightPublisher:
                     group_name=f"{self.group_name}:{consumer}",
                     device=self.device,
                     warmup=True,
+                    world_size=1 + self.replica_count,
                 )
-            response = pending.result()
-        if not isinstance(response, Mapping):
-            raise RuntimeError("weight-group initialization returned malformed data")
-        self.closure_specs = self._parse_closures(response)
+            responses = tuple(future.result() for future in pending)
+        closures = []
+        for response in responses:
+            if not isinstance(response, Mapping):
+                raise RuntimeError("weight-group initialization returned malformed replica data")
+            closures.append(self._parse_closures(response))
+        if any(closure != closures[0] for closure in closures[1:]):
+            raise RuntimeError("serving replicas expose different parameter closures")
+        self.closure_specs = closures[0]
 
     @staticmethod
     def _parse_closures(
@@ -336,33 +355,83 @@ class ServingWeightPublisher:
         if not self.initialized:
             self._initialize()
         else:
-            _request("POST", f"{self.base_url}/pause_generation")
+            self.pause_all()
         if self.closure_specs is None:
             raise RuntimeError("serving closure is unavailable")
         return self.closure_specs
 
+    def pause_all(self) -> None:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.replica_count) as executor:
+            pending = [
+                executor.submit(_request, "POST", f"{url}/pause_generation")
+                for url in self.base_urls
+            ]
+            for future in pending:
+                future.result()
+
     def commit(
         self,
-        response: object,
+        responses: Sequence[object],
         *,
         entries: list[_Entry],
         policy_version: str,
     ) -> Mapping[str, object]:
         """Validate control-plane ACKs after GPU transfers finish."""
 
-        if not isinstance(response, Mapping):
-            raise RuntimeError("weight update returned malformed data")
-        if response.get("policy_version") != policy_version:
-            raise RuntimeError("serving committed a different policy version")
-        self._verify_receipts(response, entries)
-        status = self.status()
-        if (
-            status.get("active_policy_version") != policy_version
-            or status.get("pending_policy_version") is not None
-            or status.get("paused") is not False
-        ):
-            raise RuntimeError("serving did not expose the committed active policy")
-        return response
+        if len(responses) != self.replica_count:
+            raise RuntimeError("weight update returned the wrong replica count")
+        transferred = []
+        for replica_index, response in enumerate(responses):
+            if not isinstance(response, Mapping):
+                raise RuntimeError(f"weight update replica {replica_index} returned malformed data")
+            if response.get("policy_version") != policy_version:
+                raise RuntimeError(f"serving replica {replica_index} received a different policy version")
+            if response.get("committed") is not False:
+                raise RuntimeError(f"serving replica {replica_index} skipped the pending barrier")
+            self._verify_receipts(response, entries)
+            transferred.append(response)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.replica_count) as executor:
+                pending = [
+                    executor.submit(
+                        _request,
+                        "POST",
+                        f"{url}/commit_weights_update",
+                        payload={"policy_version": policy_version},
+                    )
+                    for url in self.base_urls
+                ]
+                committed = [future.result() for future in pending]
+            if any(
+                not isinstance(response, Mapping)
+                or response.get("policy_version") != policy_version
+                or response.get("committed") is not True
+                for response in committed
+            ):
+                raise RuntimeError("serving replica-set commit returned malformed data")
+            for replica_index, status in enumerate(self.statuses()):
+                if (
+                    status.get("active_policy_version") != policy_version
+                    or status.get("pending_policy_version") is not None
+                    or status.get("paused") is not False
+                ):
+                    raise RuntimeError(
+                        f"serving replica {replica_index} did not expose the committed policy"
+                    )
+        except BaseException:
+            # A control-plane failure after any replica committed must not let
+            # a mixed-version set serve. Re-pause every reachable replica; the
+            # next recovery publishes a fresh version to the complete set.
+            try:
+                self.pause_all()
+            except BaseException:
+                pass
+            raise
+        return {
+            "policy_version": policy_version,
+            "transfers": transferred,
+            "commits": committed,
+        }
 
     @staticmethod
     def _verify_receipts(response: Mapping[str, object], entries: list[_Entry]) -> None:
@@ -396,16 +465,20 @@ class ServingWeightPublisher:
         # finish before entering the publisher-side destroy deadlocks both
         # halves. Dispatch control-plane teardown first, destroy our members
         # while that request is live, then join the receipt.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            pending = executor.submit(
-                _request,
-                "POST",
-                f"{self.base_url}/destroy_weights_update_group",
-                payload={"group_name": self.group_name},
-            )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.replica_count) as executor:
+            pending = [
+                executor.submit(
+                    _request,
+                    "POST",
+                    f"{url}/destroy_weights_update_group",
+                    payload={"group_name": self.group_name},
+                )
+                for url in self.base_urls
+            ]
             for group in self.groups.values():
                 dist.destroy_process_group(group)
-            pending.result()
+            for future in pending:
+                future.result()
         self.groups.clear()
 
 
@@ -737,9 +810,11 @@ def publish_sharded_model_state(
         )
         buckets = _buckets(entries, bucket_bytes=bucket_bytes)
         training_groups = _training_transfer_groups(context)
-        worker_count = 4 if context.is_primary else 3
+        worker_count = (3 + publisher.replica_count) if context.is_primary and publisher is not None else 3
+        responses: list[object] = []
+        control_error: BaseException | None = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            pending = None
+            pending: list[concurrent.futures.Future[object]] = []
             if context.is_primary:
                 if publisher is None:
                     raise RuntimeError("rank zero has no serving weight publisher")
@@ -749,12 +824,15 @@ def publish_sharded_model_state(
                     group_name=publisher.group_name,
                     policy_version=policy_version,
                 )
-                pending = executor.submit(
-                    _request,
-                    "POST",
-                    f"{publisher.base_url}/update_weights_from_distributed",
-                    payload=payload,
-                )
+                pending = [
+                    executor.submit(
+                        _request,
+                        "POST",
+                        f"{url}/update_weights_from_distributed",
+                        payload=payload,
+                    )
+                    for url in publisher.base_urls
+                ]
             transfers = [
                 executor.submit(
                     _send_sharded_consumer,
@@ -771,25 +849,40 @@ def publish_sharded_model_state(
             ]
             for transfer in transfers:
                 transfer.result()
-            response = pending.result() if pending is not None else None
+            try:
+                responses = [future.result() for future in pending]
+            except BaseException as exc:
+                control_error = exc
+                if context.is_primary and publisher is not None:
+                    try:
+                        publisher.pause_all()
+                    except BaseException:
+                        pass
         envelope: list[object | None] = [None]
         if context.is_primary:
             assert publisher is not None
-            try:
-                envelope[0] = {
-                    "ok": True,
-                    "value": publisher.commit(
-                        response,
-                        entries=entries,
-                        policy_version=policy_version,
-                    ),
-                }
-            except BaseException as exc:  # noqa: BLE001
+            if control_error is not None:
                 envelope[0] = {
                     "ok": False,
-                    "type": type(exc).__name__,
-                    "error": str(exc),
+                    "type": type(control_error).__name__,
+                    "error": str(control_error),
                 }
+            else:
+                try:
+                    envelope[0] = {
+                        "ok": True,
+                        "value": publisher.commit(
+                            responses,
+                            entries=entries,
+                            policy_version=policy_version,
+                        ),
+                    }
+                except BaseException as exc:  # noqa: BLE001
+                    envelope[0] = {
+                        "ok": False,
+                        "type": type(exc).__name__,
+                        "error": str(exc),
+                    }
         dist.broadcast_object_list(envelope, src=0)
         result = envelope[0]
         if not isinstance(result, Mapping) or result.get("ok") is not True:

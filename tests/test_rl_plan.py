@@ -29,12 +29,20 @@ class RlPlanTest(unittest.TestCase):
                 reward_weights=(1.0,),
                 max_steps=2,
                 prompts_per_batch=2,
+                rollout_api_base_urls=(
+                    "http://127.0.0.1:8000",
+                    "http://127.0.0.1:8001",
+                ),
                 torchrun=TorchrunSpec(nproc_per_node=2),
             )
             payload = plan.to_dict()
             restored = RlPlan.from_dict(json.loads(json.dumps(payload)))
             self.assertEqual(restored.digest, plan.digest)
             self.assertEqual(restored.torchrun.world_size, 2)
+            self.assertEqual(len(restored.rollout_api_base_urls), 2)
+            self.assertEqual(restored.max_sequence_length, 12288)
+            self.assertEqual(restored.max_new_tokens, 6144)
+            self.assertEqual(restored.optimizer_cpu_offload_min_images, 6)
 
     def test_plan_rejects_partial_update_batches_and_rank_mismatch(self) -> None:
         common = dict(

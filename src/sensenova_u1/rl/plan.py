@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True)
 class TorchrunSpec:
-    nproc_per_node: int = 6
+    nproc_per_node: int = 8
     nnodes: int = 1
     node_rank: int = 0
     master_addr: str = "127.0.0.1"
@@ -50,7 +50,7 @@ class RlPlan:
     reward_context: Mapping[str, Any] = field(default_factory=dict)
     policy_init_kind: str = "sft_checkpoint"
     group_size: int = 8
-    prompts_per_batch: int = 6
+    prompts_per_batch: int = 8
     policy_updates_per_batch: int = 2
     text_learning_rate: float = 1e-6
     visual_learning_rate: float = 1e-6
@@ -58,14 +58,14 @@ class RlPlan:
     max_grad_norm: float = 1.0
     seed: int = 42
     save_every_steps: int = 10
-    rollout_api_base_url: str = "http://127.0.0.1:8000"
+    rollout_api_base_urls: tuple[str, ...] = ("http://127.0.0.1:8000",)
     rollout_policy_version: str = "startup"
     weight_update_master_address: str = "127.0.0.1"
     weight_update_base_port: int = 29680
     weight_update_backend: str = "nccl"
     weight_update_bucket_bytes: int = 256 * 1024 * 1024
-    max_sequence_length: int = 8192
-    max_new_tokens: int = 2048
+    max_sequence_length: int = 12288
+    max_new_tokens: int = 6144
     max_images: int = 7
     image_size: int = 512
     image_steps: int = 30
@@ -85,6 +85,7 @@ class RlPlan:
     dtype: str = "bfloat16"
     attention_backend: str = "flash"
     activation_checkpointing: bool = False
+    optimizer_cpu_offload_min_images: int = 6
     torchrun: TorchrunSpec = TorchrunSpec()
 
     def __post_init__(self) -> None:
@@ -146,6 +147,12 @@ class RlPlan:
             raise ValueError("max_images must be non-negative")
         if self.group_size < 2:
             raise ValueError("GDPO requires at least two rollouts per prompt group")
+        if (
+            not self.rollout_api_base_urls
+            or len(set(self.rollout_api_base_urls)) != len(self.rollout_api_base_urls)
+            or any(not isinstance(url, str) or not url.startswith(("http://", "https://")) for url in self.rollout_api_base_urls)
+        ):
+            raise ValueError("rollout_api_base_urls must contain distinct absolute HTTP(S) URLs")
         if self.prompts_per_batch < 2:
             raise ValueError("GDPO batch normalization requires multiple prompt groups")
         if self.prompts_per_batch != self.torchrun.world_size:
@@ -172,6 +179,15 @@ class RlPlan:
             raise ValueError("full-parameter Forge RL requires CUDA")
         if type(self.activation_checkpointing) is not bool:
             raise TypeError("activation_checkpointing must be a boolean")
+        if (
+            type(self.optimizer_cpu_offload_min_images) is not int
+            or not 1
+            <= self.optimizer_cpu_offload_min_images
+            <= max(1, self.max_images)
+        ):
+            raise ValueError(
+                "optimizer_cpu_offload_min_images must lie inside [1, max(1, max_images)]"
+            )
         if self.dtype != "bfloat16" or self.attention_backend not in {"flash", "sdpa"}:
             raise ValueError("unsupported dtype or attention backend")
         if self.weight_update_backend != "nccl":
@@ -206,6 +222,7 @@ class RlPlan:
             "reward_command",
             "reward_dimension_names",
             "reward_weights",
+            "rollout_api_base_urls",
         ):
             values[name] = tuple(values[name])
         values["torchrun"] = TorchrunSpec(**dict(values.get("torchrun") or {}))

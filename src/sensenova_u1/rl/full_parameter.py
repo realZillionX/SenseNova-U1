@@ -41,6 +41,83 @@ class DistributedContext:
         return self.rank == 0
 
 
+@dataclass(frozen=True)
+class _CpuOptimizerTensor:
+    local: Tensor
+    device_mesh: Any | None = None
+    placements: tuple[Any, ...] | None = None
+    global_shape: tuple[int, ...] | None = None
+    global_stride: tuple[int, ...] | None = None
+
+
+def offload_optimizer_state(optimizer: torch.optim.Optimizer) -> tuple[int, int]:
+    """Move only initialized Adam-style state tensors to rank-local CPU memory."""
+
+    from torch.distributed.tensor import DTensor
+
+    moved_bytes = 0
+    moved_tensors = 0
+    for state in optimizer.state.values():
+        for key, value in tuple(state.items()):
+            if isinstance(value, _CpuOptimizerTensor):
+                raise RuntimeError("optimizer state is already CPU-offloaded")
+            if isinstance(value, DTensor):
+                local = value.to_local().detach().cpu()
+                state[key] = _CpuOptimizerTensor(
+                    local=local,
+                    device_mesh=value.device_mesh,
+                    placements=tuple(value.placements),
+                    global_shape=tuple(value.shape),
+                    global_stride=tuple(value.stride()),
+                )
+            elif isinstance(value, Tensor) and value.device.type == "cuda":
+                local = value.detach().cpu()
+                state[key] = _CpuOptimizerTensor(local=local)
+            else:
+                continue
+            moved_bytes += local.numel() * local.element_size()
+            moved_tensors += 1
+    return moved_bytes, moved_tensors
+
+
+def restore_optimizer_state(
+    optimizer: torch.optim.Optimizer,
+    *,
+    device: torch.device,
+) -> tuple[int, int]:
+    """Restore a rank-local CPU optimizer snapshot to its original Tensor ABI."""
+
+    from torch.distributed.tensor import DTensor
+
+    moved_bytes = 0
+    moved_tensors = 0
+    for state in optimizer.state.values():
+        for key, value in tuple(state.items()):
+            if not isinstance(value, _CpuOptimizerTensor):
+                continue
+            local = value.local.to(device=device)
+            if value.device_mesh is None:
+                state[key] = local
+            else:
+                if (
+                    value.placements is None
+                    or value.global_shape is None
+                    or value.global_stride is None
+                ):
+                    raise RuntimeError("CPU-offloaded DTensor optimizer metadata is incomplete")
+                state[key] = DTensor.from_local(
+                    local,
+                    device_mesh=value.device_mesh,
+                    placements=value.placements,
+                    run_check=False,
+                    shape=value.global_shape,
+                    stride=value.global_stride,
+                )
+            moved_bytes += local.numel() * local.element_size()
+            moved_tensors += 1
+    return moved_bytes, moved_tensors
+
+
 def initialize_distributed() -> DistributedContext:
     """Initialize the one-rank-per-GPU NCCL process group used by FSDP."""
 
@@ -405,6 +482,8 @@ __all__ = [
     "initialize_distributed",
     "load_dcp",
     "local_parameter_view",
+    "offload_optimizer_state",
+    "restore_optimizer_state",
     "save_dcp",
     "shard_full_parameter_policy",
     "snapshot_reference_shards",

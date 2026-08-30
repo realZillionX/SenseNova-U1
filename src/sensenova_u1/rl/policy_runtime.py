@@ -16,11 +16,12 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 import torch
 from PIL import Image
 from torch import Tensor
+from torch.distributed.tensor import DTensor
 from torch.utils.checkpoint import checkpoint
 from transformers.cache_utils import Cache
 
@@ -86,6 +87,21 @@ class U15PolicyReplay:
 
 
 @dataclass(frozen=True)
+class U15PolicyReferenceReplay:
+    text_log_probs: tuple[Tensor, ...]
+    image_velocities: tuple[Tensor, ...]
+
+
+@dataclass(frozen=True)
+class U15TextReplaySpan:
+    trace: TextRolloutTrace
+    log_probs: Tensor
+    ref_log_probs: Tensor | None
+    numeric_max_error: float
+    is_last: bool
+
+
+@dataclass(frozen=True)
 class U15PolicyAnchor:
     """Replay-geometry old-policy anchor plus serving/local alignment evidence."""
 
@@ -123,7 +139,30 @@ class U15Policy(Protocol):
         include_image_policy: bool = True,
     ) -> U15PolicyReplay: ...
 
-    def replay_image_action_microbatches(
+    def reference_replay(
+        self,
+        *,
+        prompt: str,
+        prompt_images: tuple[str, ...],
+        modality: str,
+        system_message: str | None,
+        rollout: U15PolicyRollout,
+        include_text: bool,
+        include_images: bool,
+    ) -> U15PolicyReferenceReplay: ...
+
+    def iter_text_replay_spans(
+        self,
+        *,
+        prompt: str,
+        prompt_images: tuple[str, ...],
+        modality: str,
+        system_message: str | None,
+        rollout: U15PolicyRollout,
+        reference_log_probs: tuple[Tensor, ...],
+    ) -> Iterator[U15TextReplaySpan]: ...
+
+    def iter_image_action_microbatches(
         self,
         *,
         prompt: str,
@@ -133,7 +172,7 @@ class U15Policy(Protocol):
         rollout: U15PolicyRollout,
         microbatch_size: int,
         reference_velocities: tuple[Tensor, ...],
-    ) -> tuple[ImageSdeReplay, ...]: ...
+    ) -> Iterator[ImageSdeReplay]: ...
 
     def anchor_rollout(
         self,
@@ -731,7 +770,24 @@ class _PolicySession:
             flattened,
             grid_hw=grid,
         ).unsqueeze(0)
-        image_end = self.model.language_model.get_input_embeddings()(
+        # A streamed image-action backward reshares the persistent language
+        # root before the next generated image is appended. Directly invoking
+        # its embedding leaf in that state returns a DTensor, while the vision
+        # encoder output above is an ordinary replicated Tensor. Explicitly
+        # restore the root's execution representation before that leaf call;
+        # the following language-model forward keeps it gathered through the
+        # next backward boundary as usual.
+        embedding = self.model.language_model.get_input_embeddings()
+        if isinstance(embedding.weight, DTensor):
+            language_backbone = self.model.language_model.model
+            unshard = getattr(language_backbone, "unshard", None)
+            if not callable(unshard):
+                raise RuntimeError(
+                    "FSDP language root cannot be unsharded for image replay"
+                )
+            unshard(async_op=False)
+            embedding = self.model.language_model.get_input_embeddings()
+        image_end = embedding(
             torch.tensor([[self.runtime.img_end_id]], device=self.device)
         )
         inputs = torch.cat([embeddings, image_end], dim=1)
@@ -891,6 +947,10 @@ class _PolicySession:
             microbatch_size=self.runtime.plan.image_replay_microbatch_size,
         )
         if ref_velocities is not None:
+            ref_velocities = ref_velocities.to(
+                device=replay.velocities.device,
+                dtype=replay.velocities.dtype,
+            )
             if ref_velocities.shape != replay.velocities.shape:
                 raise RuntimeError("reference/current image velocity layouts disagree")
             replay = replace(
@@ -936,7 +996,10 @@ class _PolicySession:
             predict_velocity=predictor,
         )
         if ref_velocities is not None:
-            selected_reference = ref_velocities[action_start:action_stop]
+            selected_reference = ref_velocities[action_start:action_stop].to(
+                device=replay.velocities.device,
+                dtype=replay.velocities.dtype,
+            )
             if selected_reference.shape != replay.velocities.shape:
                 raise RuntimeError("reference/current image action-slice layouts disagree")
             replay = replace(
@@ -1278,7 +1341,96 @@ class U15PolicyRuntime:
             numeric_max_error=max(numeric_errors, default=0.0),
         )
 
-    def replay_image_action_microbatches(
+    def reference_replay(
+        self,
+        *,
+        prompt: str,
+        prompt_images: tuple[str, ...],
+        modality: str,
+        system_message: str | None = None,
+        rollout: U15PolicyRollout,
+        include_text: bool,
+        include_images: bool,
+    ) -> U15PolicyReferenceReplay:
+        """Compute only the frozen-reference branches consumed by the loss."""
+
+        if type(include_text) is not bool or type(include_images) is not bool:
+            raise TypeError("reference replay branch selectors must be booleans")
+        if not include_text and not include_images:
+            return U15PolicyReferenceReplay((), ())
+        text: list[Tensor] = []
+        images: list[Tensor] = []
+        with torch.no_grad(), self.reference_parameters():
+            session = _PolicySession(
+                self,
+                prompt=prompt,
+                prompt_images=prompt_images,
+                modality=modality,
+                system_message=system_message,
+            )
+            for event in rollout.events:
+                if isinstance(event, TextEvent):
+                    if include_text:
+                        text.append(session.replay_text(event))
+                    else:
+                        session.advance_replayed_text(event)
+                elif isinstance(event, ImageEvent):
+                    if include_images:
+                        images.append(session.replay_reference_image(event).cpu())
+                    else:
+                        session.advance_replayed_image(event)
+                else:  # pragma: no cover - frozen policy-event union is closed
+                    raise TypeError(f"unknown U1.5 policy event {type(event).__name__}")
+        return U15PolicyReferenceReplay(tuple(text), tuple(images))
+
+    def iter_text_replay_spans(
+        self,
+        *,
+        prompt: str,
+        prompt_images: tuple[str, ...],
+        modality: str,
+        system_message: str | None = None,
+        rollout: U15PolicyRollout,
+        reference_log_probs: tuple[Tensor, ...],
+    ) -> Iterator[U15TextReplaySpan]:
+        """Yield one exact text span so its loss can be backpropagated early."""
+
+        text_event_count = sum(isinstance(event, TextEvent) for event in rollout.events)
+        if not text_event_count:
+            raise ValueError("U1.5 rollout has no text policy trace")
+        if reference_log_probs and len(reference_log_probs) != text_event_count:
+            raise ValueError("reference/current U1.5 text event counts disagree")
+        session = _PolicySession(
+            self,
+            prompt=prompt,
+            prompt_images=prompt_images,
+            modality=modality,
+            system_message=system_message,
+        )
+        text_index = 0
+        for event in rollout.events:
+            if isinstance(event, TextEvent):
+                current = session.replay_text(event)
+                yield U15TextReplaySpan(
+                    trace=event.trace,
+                    log_probs=current,
+                    ref_log_probs=(
+                        reference_log_probs[text_index]
+                        if reference_log_probs
+                        else None
+                    ),
+                    numeric_max_error=session._last_replay_numeric_error,
+                    is_last=text_index + 1 == text_event_count,
+                )
+                text_index += 1
+            elif isinstance(event, ImageEvent):
+                session.advance_replayed_image(event)
+            else:  # pragma: no cover - frozen policy-event union is closed
+                raise TypeError(f"unknown U1.5 policy event {type(event).__name__}")
+        if text_index != text_event_count:
+            raise RuntimeError("U1.5 text replay stopped before the final event")
+
+    def iter_image_action_microbatches(
         self,
         *,
         prompt: str,
@@ -1288,14 +1440,15 @@ class U15PolicyRuntime:
         rollout: U15PolicyRollout,
         microbatch_size: int,
         reference_velocities: tuple[Tensor, ...],
-    ) -> tuple[ImageSdeReplay, ...]:
+    ) -> Iterator[ImageSdeReplay]:
         """Replay every image action against one exact interleaved prefix.
 
         Text spans and earlier generated images advance one shared
-        differentiable cache. Each SDE action slice still has bounded model
-        batch size. The runner performs one backward over all slices without
-        rebuilding or detaching the prefix; activations therefore remain live
-        until that combined backward completes.
+        differentiable cache. Yielding one SDE action slice at a time lets the
+        runner bound each backward to one image event while retaining the
+        shared prefix graph only until the final image. This is an exact
+        action-weighted trajectory objective, not truncated backpropagation or
+        sample clipping.
         """
 
         if type(microbatch_size) is not int or microbatch_size < 1:
@@ -1306,7 +1459,7 @@ class U15PolicyRuntime:
         if not image_events:
             if reference_velocities:
                 raise ValueError("reference image velocities exist without image events")
-            return ()
+            return
         if reference_velocities and len(reference_velocities) != len(image_events):
             raise ValueError("reference/current image event counts disagree")
 
@@ -1317,7 +1470,6 @@ class U15PolicyRuntime:
             modality=modality,
             system_message=system_message,
         )
-        result: list[ImageSdeReplay] = []
         image_index = 0
         last_image_event_index = image_events[-1][0]
         for event_index, event in enumerate(rollout.events[: last_image_event_index + 1]):
@@ -1330,13 +1482,11 @@ class U15PolicyRuntime:
                         action_start + microbatch_size,
                         event.trace.steps,
                     )
-                    result.append(
-                        session.replay_image_action_slice(
-                            event,
-                            action_start=action_start,
-                            action_stop=action_stop,
-                            ref_velocities=reference,
-                        )
+                    yield session.replay_image_action_slice(
+                        event,
+                        action_start=action_start,
+                        action_stop=action_stop,
+                        ref_velocities=reference,
                     )
                 image_index += 1
                 if event_index != last_image_event_index:
@@ -1345,7 +1495,6 @@ class U15PolicyRuntime:
                 raise TypeError(f"unknown U1.5 policy event {type(event).__name__}")
         if image_index != len(image_events):
             raise RuntimeError("image replay stopped before the final image event")
-        return tuple(result)
 
     def anchor_rollout(
         self,
