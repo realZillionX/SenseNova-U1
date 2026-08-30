@@ -74,6 +74,49 @@ def _slice_microbatch(value: Any, offset: int) -> Any:
     raise TypeError(f"unsupported packed microbatch value: {type(value)!r}")
 
 
+def _select_rank_batch(
+    batch: tuple[dict[str, Any], Any],
+    *,
+    rank: int,
+    world_size: int,
+    local_microbatches: int,
+) -> tuple[dict[str, Any], Any]:
+    data, labels = batch
+    total = world_size * local_microbatches
+    observed = len(labels["labels"]) if isinstance(labels, dict) else len(labels)
+    if observed != total:
+        raise ValueError(f"fixed SFT batch has {observed} microbatches, expected {total}")
+    start = rank * local_microbatches
+    stop = start + local_microbatches
+
+    def select(value: Any) -> Any:
+        if isinstance(value, Tensor):
+            return value[start:stop]
+        if isinstance(value, (list, tuple)):
+            return value[start:stop]
+        if isinstance(value, bool):
+            return value
+        raise TypeError(f"unsupported fixed SFT batch value: {type(value)!r}")
+
+    selected_data = {
+        name: select(value)
+        for name, value in data.items()
+        if name not in {"num_samples", "num_padding_tokens"}
+    }
+    selected_data["num_samples"] = 0
+    selected_data["num_padding_tokens"] = 0
+    if isinstance(labels, Tensor):
+        selected_labels: Any = labels[start:stop]
+    elif isinstance(labels, dict):
+        selected_labels = {
+            name: value[start:stop] if value.dim() else value
+            for name, value in labels.items()
+        }
+    else:
+        selected_labels = labels
+    return selected_data, selected_labels
+
+
 def _prepare_microbatch(batch: tuple[dict[str, Any], Any], offset: int) -> tuple[dict[str, Any], Any]:
     data, labels = batch
     micro_data = {name: _slice_microbatch(value, offset) for name, value in data.items()}
@@ -359,7 +402,34 @@ def main(args: Any) -> None:
     initial_moments = _parameter_moments(model)
     torch.cuda.reset_peak_memory_stats()
     records: list[dict[str, Any]] = []
-    iterator = iter(train_dl)
+    fixed_path = os.environ.get("SFT_ABLATION_BATCHES")
+    fixed_batches = None
+    fixed_identity = None
+    if fixed_path:
+        fixed_payload = torch.load(fixed_path, map_location="cpu", weights_only=False)
+        if fixed_payload.get("schema") != "sensenova_u15.sft_ablation_batches.v1":
+            raise ValueError("unsupported fixed SFT batch artifact")
+        if int(fixed_payload["sequence_length"]) != int(gpc.config.data.seq_len):
+            raise ValueError("fixed SFT batch sequence length differs from the live config")
+        if int(fixed_payload["microbatches_per_optimizer_step"]) != world_size * grad_accumulation:
+            raise ValueError("fixed SFT batch width differs from the optimizer batch")
+        fixed_batches = [
+            _select_rank_batch(
+                batch,
+                rank=rank,
+                world_size=world_size,
+                local_microbatches=grad_accumulation,
+            )
+            for batch in fixed_payload["batches"]
+        ]
+        fixed_identity = {
+            "path": str(Path(fixed_path).resolve()),
+            "ordered_microbatch_sha256": fixed_payload["ordered_microbatch_sha256"],
+        }
+        if len(fixed_batches) < total_steps:
+            raise ValueError("fixed SFT batch artifact does not cover all planned steps")
+        del fixed_payload
+    iterator = iter(train_dl) if fixed_batches is None else iter(fixed_batches)
     launch_time = time.strftime("%Y-%m-%d_%H-%M-%S")
     with initialize_llm_profile(profiling=bool(args.profiling), start_time=launch_time) as profiler:
         for step in range(total_steps):
@@ -389,6 +459,11 @@ def main(args: Any) -> None:
             grad_norm = None
             for micro_step in range(grad_accumulation):
                 is_last = micro_step + 1 == grad_accumulation
+                if fixed_batches is not None:
+                    global_position = step * world_size * grad_accumulation + rank * grad_accumulation + micro_step
+                    sample_seed = seed + global_position
+                    torch.manual_seed(sample_seed)
+                    torch.cuda.manual_seed_all(sample_seed)
                 model.set_requires_gradient_sync(is_last, recurse=True)
                 model.set_is_last_backward(is_last)
                 micro_data, micro_labels = _prepare_microbatch((data, labels), micro_step)
@@ -487,6 +562,7 @@ def main(args: Any) -> None:
             "initial_parameter_moments": initial_moments,
             "final_parameter_moments": final_moments,
             "checkpoint": checkpoint_result,
+            "fixed_batches": fixed_identity,
         }
         temporary = report_path.with_suffix(report_path.suffix + ".tmp")
         temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

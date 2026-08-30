@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from pathlib import Path
 
 import torch
 
@@ -18,6 +19,33 @@ from sensenovavl.utils.utils import init_pil
 # global llm logger
 logger = logging.getLogger(__file__)
 sensenovalm_accelerator = get_accelerator()
+
+
+class FixedBatchLoader:
+    """Delegate loader metadata while replaying sealed optimizer batches."""
+
+    def __init__(self, base_loader, path):
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        if payload.get("schema") != "sensenova_u15.sft_ablation_batches.v1":
+            raise ValueError("unsupported fixed SFT batch artifact")
+        if int(payload["sequence_length"]) != int(gpc.config.data.seq_len):
+            raise ValueError("fixed SFT batch sequence length differs from the live config")
+        if int(payload["microbatches_per_optimizer_step"]) != int(gpc.config.data.micro_num):
+            raise ValueError("fixed SFT batch width differs from grad_accm")
+        if Path(payload["data_meta"]).resolve() != Path(gpc.config.data.meta_path).resolve():
+            raise ValueError("fixed SFT batch data meta differs from the live config")
+        self.base_loader = base_loader
+        self.batches = payload["batches"]
+        self.ordered_microbatch_sha256 = payload["ordered_microbatch_sha256"]
+
+    def __iter__(self):
+        return iter(self.batches)
+
+    def __len__(self):
+        return len(self.batches)
+
+    def __getattr__(self, name):
+        return getattr(self.base_loader, name)
 
 
 def patch_inductor_triton_max_block():
@@ -51,6 +79,20 @@ def main(args):
 
     # initialize the train and validation data loader
     train_dl, dataset_types = build_train_loader_with_data_type()
+    fixed_batches = os.environ.get("SFT_ABLATION_BATCHES")
+    if fixed_batches:
+        train_dl = FixedBatchLoader(train_dl, fixed_batches)
+        if gpc.is_rank_for_log():
+            print(
+                "SFT_FIXED_BATCHES "
+                + str(
+                    {
+                        "path": str(Path(fixed_batches).resolve()),
+                        "ordered_microbatch_sha256": train_dl.ordered_microbatch_sha256,
+                    }
+                ),
+                flush=True,
+            )
     val_dls = None
 
     # get sensenovavl model

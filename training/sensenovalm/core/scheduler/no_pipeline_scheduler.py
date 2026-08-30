@@ -5,6 +5,7 @@
 
 # adopted from https://github.com/hpcaitech/ColossalAI/blob/main/colossalai/engine
 
+import os
 from typing import Any, Callable, Iterable, List, Optional
 
 import torch
@@ -283,6 +284,13 @@ class NonPipelineScheduler(BaseScheduler):
         self._grad_accum_offset = 0
 
         for _current_accum_step in range(self._grad_accum_size):
+            if os.environ.get("SFT_ABLATION_DETERMINISTIC_MICROBATCH", "false").lower() == "true":
+                base_seed = int(os.environ.get("SEED", "42"))
+                batch_index = int(getattr(gpc.config, "batch_count", 0))
+                global_position = batch_index * self._grad_accum_size + _current_accum_step
+                sample_seed = base_seed + global_position
+                torch.manual_seed(sample_seed)
+                torch.cuda.manual_seed_all(sample_seed)
             if engine.optimizer is not None:
                 if _current_accum_step == self._grad_accum_size - 1:
                     engine.optimizer.skip_grad_reduce = False
