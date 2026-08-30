@@ -71,7 +71,7 @@ git submodule update --init --recursive \
 ### 2. Full-parameter SFT
 
 SFT, RL, and serving share the repository-root Torch 2.8/CUDA 12.8 lock and
-the `sensenova-u15-forge:unified-v2` image. Production runs require H200.
+the `sensenova-u15-forge:unified-v3` image. Production runs require H200.
 
 ```bash
 uv sync --locked
@@ -98,7 +98,7 @@ following odd-index GPU and exposes consecutive HTTP ports:
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:unified-v2 .
+  -t sensenova-u15-forge:unified-v3 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 FORGE_REQUIRE_RDMA=true \

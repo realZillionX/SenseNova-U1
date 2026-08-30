@@ -71,7 +71,7 @@ bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:unified-v2 .
+  -t sensenova-u15-forge:unified-v3 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 CUDA_VISIBLE_DEVICES=0,1 \

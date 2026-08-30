@@ -1,4 +1,4 @@
-# Fully resolved Python layer for sensenova-u15-forge:unified-v2.
+# Fully resolved Python layer for sensenova-u15-forge:unified-v3.
 # Its immutable Torch/CUDA base provenance is recorded in runtime_contract.json.
 # Resolver: /opt/sensenova-forge-py312/bin/python -m pip 26.2.1
 # Platform: CPython 3.12, Linux x86_64, CUDA 12.8, CXX11 ABI enabled.

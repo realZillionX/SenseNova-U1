@@ -13,7 +13,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 
 ENV PATH=/opt/sensenova-forge-py312/bin:${PATH} \
     PYTHON_BIN=/opt/sensenova-forge-py312/bin/python \
-    FORGE_RUNTIME_IMAGE=sensenova-u15-forge:unified-v2 \
+    FORGE_RUNTIME_IMAGE=sensenova-u15-forge:unified-v3 \
     FORGE_ROOT=/workspace/sensenova-forge \
     FORGE_COMMIT=${FORGE_COMMIT} \
     FORGE_LIGHTLLM_COMMIT=${LIGHTLLM_COMMIT} \
