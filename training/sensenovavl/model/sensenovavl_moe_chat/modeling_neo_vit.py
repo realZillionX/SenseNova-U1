@@ -645,7 +645,10 @@ class NEOVisionModel(PreTrainedModel):
         super().__init__(config)
         self.config = config
         self.tp_mode = gpc.config.parallel.tensor.mode
-        self.tp_size = gpc.get_world_size(ParallelMode.TENSOR)
+        # ``PreTrainedModel.tp_size`` became a read-only property in
+        # Transformers 4.57.  Keep the InternEvo topology value independent
+        # from that upstream runtime attribute.
+        self.parallel_tensor_size = gpc.get_world_size(ParallelMode.TENSOR)
         self.embeddings = InternVisionEmbeddings(config)
         self.encoder = InternVisionEncoder(config)
         self.enable_vit_sp = gpc.config.parallel.tensor.enable_vit
@@ -684,10 +687,10 @@ class NEOVisionModel(PreTrainedModel):
             cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
 
         seq_len = hidden_states.shape[-2]
-        if self.tp_mode == "isp" and self.enable_vit_sp and self.tp_size > 1:
-            div_seq = seq_len // self.tp_size
-            mod_seq = seq_len % self.tp_size
-            sequence_split_size = get_split_size(self.tp_size, div_seq, mod_seq)
+        if self.tp_mode == "isp" and self.enable_vit_sp and self.parallel_tensor_size > 1:
+            div_seq = seq_len // self.parallel_tensor_size
+            mod_seq = seq_len % self.parallel_tensor_size
+            sequence_split_size = get_split_size(self.parallel_tensor_size, div_seq, mod_seq)
             hidden_states = split_forward_gather_backward(
                 hidden_states, ParallelMode.TENSOR, dim=1, div=div_seq, mod=mod_seq, split_size=sequence_split_size
             )
