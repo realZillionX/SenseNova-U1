@@ -1,11 +1,14 @@
 # Copyright (c) SenseNovaLM contributors. Licensed under Apache-2.0.
 # Main training entry point for SenseNova-U1.5.
+import hashlib
+import json
 import logging
 import os
 import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 
 from sensenovalm.accelerator import get_accelerator
 from sensenovalm.core.context import global_context as gpc
@@ -25,6 +28,22 @@ class FixedBatchLoader:
     """Delegate loader metadata while replaying sealed optimizer batches."""
 
     def __init__(self, base_loader, path):
+        fixed_path = Path(path).resolve()
+        sidecar = fixed_path.with_suffix(fixed_path.suffix + ".json")
+        if not sidecar.is_file():
+            raise ValueError("fixed SFT batch artifact has no identity sidecar")
+        identity = json.loads(sidecar.read_text(encoding="utf-8"))
+        observed = None
+        if dist.get_rank() == 0:
+            digest = hashlib.sha256()
+            with fixed_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                    digest.update(chunk)
+            observed = digest.hexdigest()
+        values = [observed]
+        dist.broadcast_object_list(values, src=0)
+        if values[0] != identity.get("sha256"):
+            raise ValueError("fixed SFT batch artifact differs from its sealed identity")
         payload = torch.load(path, map_location="cpu", weights_only=False)
         if payload.get("schema") != "sensenova_u15.sft_ablation_batches.v1":
             raise ValueError("unsupported fixed SFT batch artifact")

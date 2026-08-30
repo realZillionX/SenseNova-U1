@@ -143,6 +143,11 @@ MODEL_PARALLEL_SIZE=$((wp_size * tp_size * pp_size))
 }
 
 # ============================ Launch ============================ #
+PROFILE_ARGS=()
+if [[ ${SFT_BENCHMARK_PROFILE:-false} == true ]]; then
+    PROFILE_ARGS+=(--profiling)
+fi
+
 torchrun \
     --nproc_per_node=${NPROC_PER_NODE} \
     --nnodes=${NNODES} \
@@ -153,4 +158,5 @@ torchrun \
         --config "${CONFIG_NAME}" \
         --launcher torch \
         --seed "${SEED}" \
-        --backend nccl
+        --backend nccl \
+        "${PROFILE_ARGS[@]}"

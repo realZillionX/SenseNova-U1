@@ -10,11 +10,13 @@ data implementation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
 import shutil
 import statistics
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -343,6 +345,14 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+def _forge_revision() -> str:
+    root = Path(__file__).resolve().parent.parent
+    return subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+
 def main(args: Any) -> None:
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -406,6 +416,21 @@ def main(args: Any) -> None:
     fixed_batches = None
     fixed_identity = None
     if fixed_path:
+        fixed_sidecar = Path(fixed_path).with_suffix(Path(fixed_path).suffix + ".json")
+        identity_payload = None
+        if fixed_sidecar.is_file():
+            identity_payload = json.loads(fixed_sidecar.read_text(encoding="utf-8"))
+            observed_digest = None
+            if rank == 0:
+                digest = hashlib.sha256()
+                with Path(fixed_path).open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                        digest.update(chunk)
+                observed_digest = digest.hexdigest()
+            values = [observed_digest]
+            dist.broadcast_object_list(values, src=0)
+            if values[0] != identity_payload.get("sha256"):
+                raise ValueError("fixed SFT batch artifact differs from its sealed identity")
         fixed_payload = torch.load(fixed_path, map_location="cpu", weights_only=False)
         if fixed_payload.get("schema") != "sensenova_u15.sft_ablation_batches.v1":
             raise ValueError("unsupported fixed SFT batch artifact")
@@ -426,6 +451,15 @@ def main(args: Any) -> None:
             "path": str(Path(fixed_path).resolve()),
             "ordered_microbatch_sha256": fixed_payload["ordered_microbatch_sha256"],
         }
+        if identity_payload is not None:
+            if identity_payload.get("path") != str(Path(fixed_path).resolve()):
+                raise ValueError("fixed SFT batch sidecar points to a different artifact")
+            fixed_identity.update(
+                {
+                    "bytes": int(identity_payload["bytes"]),
+                    "sha256": str(identity_payload["sha256"]),
+                }
+            )
         if len(fixed_batches) < total_steps:
             raise ValueError("fixed SFT batch artifact does not cover all planned steps")
         del fixed_payload
@@ -456,6 +490,8 @@ def main(args: Any) -> None:
 
             optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
+            main_loss_value = 0.0
+            auxiliary_loss_value = 0.0
             grad_norm = None
             for micro_step in range(grad_accumulation):
                 is_last = micro_step + 1 == grad_accumulation
@@ -476,9 +512,15 @@ def main(args: Any) -> None:
                     loss_weight=loss_weight,
                     loss_reduction_all_gather=loss_reduction_all_gather,
                 )
-                total = (loss + _numeric_extra_losses(tuple(_extra))) / grad_accumulation
+                auxiliary = _numeric_extra_losses(tuple(_extra))
+                total = (loss + auxiliary) / grad_accumulation
                 total.backward()
                 loss_value += float(total.detach().float().item())
+                main_loss_value += float((loss / grad_accumulation).detach().float().item())
+                if isinstance(auxiliary, Tensor):
+                    auxiliary_loss_value += float((auxiliary / grad_accumulation).detach().float().item())
+                else:
+                    auxiliary_loss_value += float(auxiliary) / grad_accumulation
             grad_norm = _clip_global_grad_norm(parameters, float(gpc.config.hybrid_zero_optimizer.clip_grad_norm))
             optimizer.step()
             if ema is not None:
@@ -493,6 +535,8 @@ def main(args: Any) -> None:
                 "step": step + 1,
                 "seconds": seconds,
                 "loss": loss_value,
+                "main_loss": main_loss_value,
+                "auxiliary_loss": auxiliary_loss_value,
                 "grad_norm": float(grad_norm.detach().float().item()),
                 "physical_tokens": _distributed_sum(physical_tokens_local),
                 "supervised_tokens": _distributed_sum(supervised_tokens_local),
@@ -540,6 +584,7 @@ def main(args: Any) -> None:
             "python": os.sys.version,
             "torch": torch.__version__,
             "cuda": torch.version.cuda,
+            "forge_revision": _forge_revision(),
             "world_size": world_size,
             "seed": seed,
             "job_name": gpc.config.JOB_NAME,
