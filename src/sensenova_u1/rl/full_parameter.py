@@ -242,24 +242,24 @@ def local_parameter_view(parameter: Tensor) -> Tensor:
 
 
 def reshard_full_parameter_policy(model: nn.Module) -> None:
-    """Return every FSDP2 execution root to its local-shard representation.
+    """Return the persistent language root to its local-shard representation.
 
-    Roots configured with ``reshard_after_forward=False`` intentionally keep
-    gathered parameters live across a forward/backward boundary.  Reference
-    swapping, however, owns BF16 *local-shard* snapshots, so copying before
-    explicitly resharding would compare a full gathered tensor with one local
-    shard.  Work bottom-up to release nested gathered views before their
-    parents and make the operation idempotent for roots that are already
-    sharded.
+    ``language_model.model`` is the sole root configured with
+    ``reshard_after_forward=False``. It intentionally keeps gathered
+    parameters live across the current-policy forward/backward boundary.
+    Reference swapping, however, owns BF16 *local-shard* snapshots, so copying
+    before explicitly resharding would compare a full gathered tensor with one
+    local shard. Other nested roots already auto-reshard and must not be
+    disturbed outside their own hook lifecycle.
     """
 
     from torch.distributed.fsdp import FSDPModule
 
-    modules = tuple(module for module in model.modules() if isinstance(module, FSDPModule))
-    if not modules:
-        raise ValueError("SenseNova full-parameter policy exposes no FSDP2 execution roots")
-    for module in reversed(modules):
-        module.reshard()
+    language_model = getattr(model, "language_model", None)
+    language_backbone = getattr(language_model, "model", None)
+    if not isinstance(language_backbone, FSDPModule):
+        raise ValueError("SenseNova full-parameter policy has no FSDP2 language backbone")
+    language_backbone.reshard()
 
 
 def snapshot_reference_shards(model: nn.Module) -> dict[str, Tensor]:
