@@ -105,8 +105,8 @@ def _select_rank_batch(
         for name, value in data.items()
         if name not in {"num_samples", "num_padding_tokens"}
     }
-    selected_data["num_samples"] = 0
-    selected_data["num_padding_tokens"] = 0
+    selected_data["num_samples"] = int(data.get("num_samples", 0)) if rank == 0 else 0
+    selected_data["num_padding_tokens"] = int(data.get("num_padding_tokens", 0)) if rank == 0 else 0
     if isinstance(labels, Tensor):
         selected_labels: Any = labels[start:stop]
     elif isinstance(labels, dict):
@@ -485,7 +485,7 @@ def main(args: Any) -> None:
             supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) else 0
             samples_local = int(data.pop("num_samples", 0))
             data.pop("num_padding_tokens", None)
-            if not samples_local:
+            if not samples_local and fixed_batches is None:
                 samples_local = sum(len(item) - 1 for item in data["cu_seqlens"])
 
             optimizer.zero_grad(set_to_none=True)
@@ -530,6 +530,16 @@ def main(args: Any) -> None:
                         ema[name].lerp_(current, 1.0 - ema_decay)
             torch.cuda.synchronize()
             seconds = _distributed_max(time.perf_counter() - step_start)
+            loss_metrics = torch.tensor(
+                [loss_value, main_loss_value, auxiliary_loss_value],
+                device=torch.cuda.current_device(),
+                dtype=torch.float64,
+            )
+            dist.all_reduce(loss_metrics, op=dist.ReduceOp.SUM)
+            loss_metrics.div_(world_size)
+            loss_value, main_loss_value, auxiliary_loss_value = (
+                float(value) for value in loss_metrics.tolist()
+            )
             profiler.step()
             record = {
                 "step": step + 1,
