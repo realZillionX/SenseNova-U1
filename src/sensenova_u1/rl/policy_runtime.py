@@ -994,13 +994,19 @@ class U15PolicyRuntime:
         current forward can run.
         """
 
-        named = dict(self.model.named_parameters())
-        if set(named) != set(self.reference_parameter_shards):
+        parameter_names = set(dict(self.model.named_parameters()))
+        if parameter_names != set(self.reference_parameter_shards):
             raise RuntimeError("U1.5 full reference parameter closure changed")
         # ``language_model.model`` deliberately keeps parameters gathered
         # after forward.  Reference snapshots are local shards, so establish
         # the sharded representation before both the swap and the restore.
         reshard_full_parameter_policy(self.model)
+        # FSDP2 re-registers sharded parameters when it releases a gathered
+        # view. Never retain pre-reshard Parameter objects: their local storage
+        # is no longer a valid shard after this lifecycle transition.
+        named = dict(self.model.named_parameters())
+        if set(named) != parameter_names:
+            raise RuntimeError("U1.5 full reference parameter closure changed while resharding")
         live = {name: local_parameter_view(parameter).detach().clone() for name, parameter in named.items()}
         try:
             with torch.no_grad():
@@ -1011,6 +1017,9 @@ class U15PolicyRuntime:
         finally:
             with torch.no_grad():
                 reshard_full_parameter_policy(self.model)
+                named = dict(self.model.named_parameters())
+                if set(named) != parameter_names:
+                    raise RuntimeError("U1.5 full reference parameter closure changed while restoring")
                 for name, parameter in named.items():
                     local_parameter_view(parameter).copy_(live[name])
 

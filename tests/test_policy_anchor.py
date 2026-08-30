@@ -20,11 +20,13 @@ from sensenova_u1.rl.types import CandidateResponse, TextSegment
 class PolicyAnchorTest(unittest.TestCase):
     def test_reference_swap_reshards_gathered_parameters_before_copy_and_restore(self) -> None:
         runtime = object.__new__(U15PolicyRuntime)
-        parameter = object()
+        gathered_parameter = object()
+        sharded_parameter = object()
+        current_parameter = {"value": gathered_parameter}
 
         class FakeModel:
             def named_parameters(self):
-                return (("weight", parameter),)
+                return (("weight", current_parameter["value"]),)
 
         runtime.model = FakeModel()
         runtime.reference_parameter_shards = {"weight": torch.tensor([9.0, 8.0])}
@@ -35,9 +37,10 @@ class PolicyAnchorTest(unittest.TestCase):
         def fake_reshard(_model):
             state["sharded"] = True
             state["reshards"] += 1
+            current_parameter["value"] = sharded_parameter
 
-        def fake_local_view(_parameter):
-            return local_shard if state["sharded"] else gathered
+        def fake_local_view(parameter):
+            return local_shard if parameter is sharded_parameter else gathered
 
         with (
             patch.object(policy_runtime_module, "reshard_full_parameter_policy", fake_reshard),
@@ -48,6 +51,7 @@ class PolicyAnchorTest(unittest.TestCase):
                 # Simulate a reference forward through a root configured with
                 # reshard_after_forward=False.
                 state["sharded"] = False
+                current_parameter["value"] = gathered_parameter
 
         self.assertEqual(state["reshards"], 2)
         torch.testing.assert_close(local_shard, torch.tensor([1.0, 2.0]))
