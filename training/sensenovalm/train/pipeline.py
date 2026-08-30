@@ -6,6 +6,7 @@
 import copy
 import functools
 import math
+import os
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Union
 
@@ -688,8 +689,9 @@ def initialize_llm_profile(profiling: bool = False, start_time: str = None):
 
     if profiling and gpc.get_local_rank(ParallelMode.DATA) == 0 and gpc.get_local_rank(ParallelMode.TENSOR) == 0:
         schedule_config = {"wait": 1, "warmup": 1, "active": 1, "repeat": 1, "skip_first": 3}
+        trace_root = os.environ.get("SFT_BENCHMARK_TRACE_ROOT", "RUN")
         trace_path = (
-            f"RUN/{gpc.config.JOB_NAME}/{start_time}/traces/rank{gpc.get_global_rank()}_"
+            f"{trace_root}/{gpc.config.JOB_NAME}/{start_time}/traces/rank{gpc.get_global_rank()}_"
             f"dp{gpc.get_local_rank(ParallelMode.DATA)}_"
             f"wp{gpc.get_local_rank(ParallelMode.WEIGHT)}_"
             f"tp{gpc.get_local_rank(ParallelMode.TENSOR)}"
