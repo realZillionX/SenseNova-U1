@@ -41,6 +41,9 @@ zero1_size = int(os.environ['zero1_size'])
 wp_size = int(os.environ['wp_size'])
 tp_size = int(os.environ['tp_size'])
 pp_size = int(os.environ['pp_size'])
+tensor_parallel_mode = os.environ.get("tensor_parallel_mode", "isp")
+if tensor_parallel_mode not in {"mtp", "msp", "fsp", "isp"}:
+    raise ValueError("tensor_parallel_mode must be one of mtp/msp/fsp/isp")
 
 
 # -----------------------------------------------------------------------------
@@ -523,7 +526,7 @@ loss = dict(
 # expert / expert_weight / expert_zero1: same options for MoE experts.
 parallel = dict(
     zero1=dict(size=zero1_size, fsdp=False),
-    tensor=dict(size=tp_size, mode="isp"),
+    tensor=dict(size=tp_size, mode=tensor_parallel_mode),
     pipeline=dict(size=pp_size, interleaved_overlap=True),
     weight=dict(size=wp_size, overlap=True, memory_pool=False),
     expert=dict(size=1),

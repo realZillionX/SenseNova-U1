@@ -28,7 +28,7 @@ from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.utils import packed_data_normalizer
 from sensenovalm.initialize import initialize_distributed_env
 from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
-from sensenovalm.train.pipeline import initialize_llm_profile
+from sensenovalm.train.pipeline import initialize_llm_profile, initialize_parallel_communicator
 from sensenovalm.utils.common import move_to_device, parse_args
 from sensenovavl.data import build_train_loader_with_data_type
 from sensenovavl.train.pipeline import get_model
@@ -307,6 +307,12 @@ def main(args: Any) -> None:
     _seed_everything(seed)
     train_dl, _dataset_types = build_train_loader_with_data_type()
     model = get_model(gpc.config.model, gpc.config.data).to(torch.cuda.current_device())
+    # The shared InternEvo model constructs parallel-aware linear modules even
+    # when their process group has size one. Register the resulting no-op MTP
+    # communicators before FSDP2 takes ownership of parameter sharding.
+    if gpc.config.parallel.tensor.mode != "mtp" or int(gpc.config.parallel.tensor.size) != 1:
+        raise ValueError("FSDP2 SFT requires tensor_parallel_mode=mtp and tp_size=1")
+    initialize_parallel_communicator(model)
     model, wrapped_modules = _shard_model(model)
     model.train()
 

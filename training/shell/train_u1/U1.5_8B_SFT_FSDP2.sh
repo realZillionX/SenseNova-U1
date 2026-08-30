@@ -25,6 +25,7 @@ export zero1_size=1
 export wp_size=1
 export tp_size=1
 export pp_size=1
+export tensor_parallel_mode=mtp
 export grad_accm=${grad_accm:-1}
 
 export SEED=${SEED:-42}
