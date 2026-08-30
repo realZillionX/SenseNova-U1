@@ -21,10 +21,13 @@ class SftContractTest(unittest.TestCase):
         self.assertIn("JOB_NAME=${JOB_NAME:?", launcher)
         self.assertIn('RUN_ROOT=${RUN_ROOT:-"RUN"}', launcher)
         self.assertIn("model.safetensors.index.json", launcher)
-        self.assertIn("WORLD_SIZE % MODEL_PARALLEL_SIZE", launcher)
+        self.assertIn("train_sensenovau1_fsdp2.py", launcher)
+        self.assertIn("FSDP2_PREFETCH_DEPTH", launcher)
+        self.assertIn("SFT_CHECKPOINT_ROOT", launcher)
+        self.assertIn("SFT_HF_OUTPUT", launcher)
         config = (ROOT / "training/configs/sensenovavl_qwen3_gen/sensenovau1_5_8b_mot_sft.py").read_text()
-        self.assertIn('f"/dev/shm/sensenovalm_tmp_ckpt/{JOB_NAME}"', config)
-        self.assertIn('Path(os.environ.get("RUN_ROOT", "RUN"))', config)
+        self.assertIn("enable_save_ckpt=False", config)
+        self.assertIn('tensor_parallel_mode = "mtp"', config)
         self.assertNotIn("enabel_und_loss", config)
 
     def test_only_u15_public_presets_remain(self) -> None:
@@ -33,16 +36,18 @@ class SftContractTest(unittest.TestCase):
         self.assertEqual(configs, ["sensenovau1_5_8b_mot_sft.py"])
         self.assertEqual(launchers, ["U1.5_8B_SFT.sh"])
 
-    def test_fsdp2_comparator_keeps_the_internevo_objective(self) -> None:
-        launcher = (ROOT / "training/shell/ablation/U1.5_8B_SFT_FSDP2.sh").read_text()
+    def test_fsdp2_is_the_only_sft_trainer(self) -> None:
+        launcher = (ROOT / "training/shell/train_u1/U1.5_8B_SFT.sh").read_text()
         runner = (ROOT / "training/train_sensenovau1_fsdp2.py").read_text()
         self.assertIn("tensor_parallel_mode=mtp", launcher)
         self.assertIn("SFT_PER_RANK_LOSS_REDUCTION", launcher)
-        self.assertIn("SFT_MATERIALIZE_ONLY", launcher)
-        self.assertIn("SFT_ABLATION_BATCHES", runner)
-        self.assertIn("ordered_microbatch_sha256", runner)
         self.assertIn("FSDP2_PREFETCH_DEPTH", runner)
         self.assertIn("reduce_dtype=torch.bfloat16", runner)
+        self.assertIn("torch.distributed.checkpoint", runner)
+        self.assertIn("supports only NVIDIA H200", runner)
+        self.assertFalse((ROOT / "training/train_sensenovau1.py").exists())
+        self.assertFalse(tuple((ROOT / "training/shell/ablation").glob("*.sh")))
+        self.assertFalse((ROOT / "training/pyproject.toml").exists())
 
 
 if __name__ == "__main__":

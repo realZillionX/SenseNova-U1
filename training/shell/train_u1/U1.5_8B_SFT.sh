@@ -1,5 +1,5 @@
 #!/bin/bash
-# Full-parameter SFT launcher for SenseNova-U1.5-8B-MoT.
+# Full-parameter PyTorch 2.8 FSDP2 SFT launcher for SenseNova-U1.5-8B-MoT.
 #
 # Single-node (8 GPUs):
 #   bash shell/train_u1/U1.5_8B_SFT.sh
@@ -23,19 +23,21 @@ export CONFIG_NAME="configs/sensenovavl_qwen3_gen/sensenovau1_5_8b_mot_sft.py"
 export MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:?set MODEL_NAME_OR_PATH to a complete U1.5 HF checkpoint}
 export VOCAB_FILE=${VOCAB_FILE:?set VOCAB_FILE to the matching tokenizer directory}
 export TOKENIZER_PATH=${TOKENIZER_PATH:?set TOKENIZER_PATH to the matching tokenizer directory}
-export mm_data_path=${mm_data_path:?set mm_data_path to the InternEvo data meta JSON}
-export load_optimizer=${load_optimizer:-"model"}
-
-# resume (uncomment to enable)
-# export load_optimizer="all"
-# export auto_resume=true
-# export resume_ds=true
+export mm_data_path=${mm_data_path:?set mm_data_path to the U1.5 data meta JSON}
 
 # ============================ Parallelism ============================ #
-export zero1_size=${zero1_size:--1}
-export wp_size=${wp_size:-8}
-export tp_size=${tp_size:-1}
-export pp_size=${pp_size:-1}
+# FSDP2 owns the complete sharding topology. The legacy parallel fields stay
+# fixed at one because model construction still consumes this shared config.
+export zero1_size=1
+export wp_size=1
+export tp_size=1
+export pp_size=1
+export tensor_parallel_mode=mtp
+export grad_accm=${grad_accm:-1}
+export FSDP2_RESHARD_AFTER_FORWARD=${FSDP2_RESHARD_AFTER_FORWARD:-true}
+export FSDP2_PREFETCH_DEPTH=${FSDP2_PREFETCH_DEPTH:-2}
+export FSDP2_FUSED_ADAMW=${FSDP2_FUSED_ADAMW:-true}
+export SFT_PER_RANK_LOSS_REDUCTION=${SFT_PER_RANK_LOSS_REDUCTION:-true}
 
 # ============================ Optimization ============================ #
 export SEED=${SEED:-42}
@@ -44,16 +46,15 @@ export lr_scheduler_type=${lr_scheduler_type:-"constant"}
 export min_lr_ratio=${min_lr_ratio:-0.5}
 export mlp_lr_scale=${mlp_lr_scale:-1.0}
 export weight_decay=${weight_decay:-0}
-export grad_accm=${grad_accm:-1}
 export total_steps=${total_steps:-200000}
 export init_steps=${init_steps:-2000}
 export metric_interval_steps=${metric_interval_steps:-10}
-# H100 80 GB keeps enough headroom at 0.75 for the mixed 8192-token profile;
-# lower fractions remain workload-specific and should be selected by profiling.
+# The production H200 profile keeps this conservative recomputation level so
+# native-resolution outliers retain ample headroom.
 export activation_checkpoint_fraction=${activation_checkpoint_fraction:-0.75}
-export enable_save_ckpt=${enable_save_ckpt:-true}
 export checkpoint_every=${checkpoint_every:-100}
-export checkpoint_snapshot_every=${checkpoint_snapshot_every:-1000}
+export SFT_CHECKPOINT_ROOT=${SFT_CHECKPOINT_ROOT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/checkpoints"}
+export SFT_HF_OUTPUT=${SFT_HF_OUTPUT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/hf"}
 
 # ============================ Data / sequence ============================ #
 export num_imgs=${num_imgs:-144}
@@ -120,11 +121,10 @@ export enable_und_loss='true'
 # ============================ Job / logging ============================ #
 export JOB_NAME=${JOB_NAME:?set JOB_NAME to a unique arm/run namespace}
 export RUN_ROOT=${RUN_ROOT:-"RUN"}
-export checkpoint_tmp_folder=${checkpoint_tmp_folder:-"/dev/shm/sensenovalm_tmp_ckpt/${JOB_NAME}"}
 # export WANDB_API_KEY="<YOUR_WANDB_API_KEY>"
 # export WANDB_PROJECT="neo_unify"
 
-export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$(pwd)"
+export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$(pwd):$(pwd)/../src"
 
 # ============================ Fail-fast contract ============================ #
 [[ -d "$MODEL_NAME_OR_PATH" ]] || { echo "MODEL_NAME_OR_PATH is not a directory: $MODEL_NAME_OR_PATH" >&2; exit 2; }
@@ -136,11 +136,7 @@ export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$(pwd)"
 [[ -f "$CONFIG_NAME" ]] || { echo "training config is missing: $CONFIG_NAME" >&2; exit 2; }
 
 WORLD_SIZE=$((NPROC_PER_NODE * NNODES))
-MODEL_PARALLEL_SIZE=$((wp_size * tp_size * pp_size))
-(( WORLD_SIZE % MODEL_PARALLEL_SIZE == 0 )) || {
-    echo "world size $WORLD_SIZE is not divisible by wp*tp*pp=$MODEL_PARALLEL_SIZE" >&2
-    exit 2
-}
+(( WORLD_SIZE >= 2 )) || { echo "FSDP2 requires at least two H200 GPUs" >&2; exit 2; }
 
 # ============================ Launch ============================ #
 PROFILE_ARGS=()
@@ -154,7 +150,7 @@ torchrun \
     --node_rank=${NODE_RANK} \
     --master_addr=${MASTER_ADDR} \
     --master_port=${MASTER_PORT} \
-    train_sensenovau1.py \
+    train_sensenovau1_fsdp2.py \
         --config "${CONFIG_NAME}" \
         --launcher torch \
         --seed "${SEED}" \

@@ -646,7 +646,7 @@ class NEOVisionModel(PreTrainedModel):
         self.config = config
         self.tp_mode = gpc.config.parallel.tensor.mode
         # ``PreTrainedModel.tp_size`` became a read-only property in
-        # Transformers 4.57.  Keep the InternEvo topology value independent
+        # Transformers 4.57. Keep the training topology value independent
         # from that upstream runtime attribute.
         self.parallel_tensor_size = gpc.get_world_size(ParallelMode.TENSOR)
         self.embeddings = InternVisionEmbeddings(config)

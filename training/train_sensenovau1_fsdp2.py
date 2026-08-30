@@ -1,16 +1,13 @@
 #!/usr/bin/env python
-"""Optimized Torch 2.8 FSDP2 SFT runner for controlled trainer ablations.
+"""Production Torch 2.8 FSDP2 SFT runner for SenseNova-U1.5-8B-MoT.
 
-This entry reuses the exact InternEvo U1.5 model, native-resolution packed
-loader, forward, losses, and checkpoint source weights.  Only the trainer and
-parallel execution strategy change.  It intentionally lives beside the
-InternEvo entry so performance comparisons cannot drift to a second model or
-data implementation.
+The model, native-resolution packed loader, forward, and losses remain the
+checkpoint-specific U1.5 implementations. FSDP2 is the sole trainer and owns
+full-parameter sharding, optimizer state, EMA, checkpointing, and publication.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import random
@@ -28,9 +25,9 @@ from torch import Tensor, nn
 
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.utils import packed_data_normalizer
-from sensenovalm.initialize import initialize_distributed_env
+from sensenovalm.initialize.launch import initialize_distributed_env
 from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
-from sensenovalm.train.pipeline import initialize_llm_profile, initialize_parallel_communicator
+from sensenovalm.train.fsdp import initialize_unit_mtp_communicators, training_profile
 from sensenovalm.utils.common import move_to_device, parse_args
 from sensenovavl.data import build_train_loader_with_data_type
 from sensenovavl.train.pipeline import get_model
@@ -57,6 +54,15 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     if value < minimum:
         raise ValueError(f"{name} must be >= {minimum}, got {value}")
     return value
+
+
+def _require_h200() -> str:
+    if not torch.cuda.is_available():
+        raise RuntimeError("SenseNova training requires NVIDIA H200 GPUs")
+    name = torch.cuda.get_device_name(torch.cuda.current_device())
+    if "H200" not in name.upper():
+        raise RuntimeError(f"SenseNova training supports only NVIDIA H200, found {name!r}")
+    return name
 
 
 def _reshard_after_forward() -> bool | int:
@@ -89,49 +95,6 @@ def _slice_microbatch(value: Any, offset: int) -> Any:
     if isinstance(value, bool):
         return value
     raise TypeError(f"unsupported packed microbatch value: {type(value)!r}")
-
-
-def _select_rank_batch(
-    batch: tuple[dict[str, Any], Any],
-    *,
-    rank: int,
-    world_size: int,
-    local_microbatches: int,
-) -> tuple[dict[str, Any], Any]:
-    data, labels = batch
-    total = world_size * local_microbatches
-    observed = len(labels["labels"]) if isinstance(labels, dict) else len(labels)
-    if observed != total:
-        raise ValueError(f"fixed SFT batch has {observed} microbatches, expected {total}")
-    start = rank * local_microbatches
-    stop = start + local_microbatches
-
-    def select(value: Any) -> Any:
-        if isinstance(value, Tensor):
-            return value[start:stop]
-        if isinstance(value, (list, tuple)):
-            return value[start:stop]
-        if isinstance(value, bool):
-            return value
-        raise TypeError(f"unsupported fixed SFT batch value: {type(value)!r}")
-
-    selected_data = {
-        name: select(value)
-        for name, value in data.items()
-        if name not in {"num_samples", "num_padding_tokens"}
-    }
-    selected_data["num_samples"] = int(data.get("num_samples", 0)) if rank == 0 else 0
-    selected_data["num_padding_tokens"] = int(data.get("num_padding_tokens", 0)) if rank == 0 else 0
-    if isinstance(labels, Tensor):
-        selected_labels: Any = labels[start:stop]
-    elif isinstance(labels, dict):
-        selected_labels = {
-            name: value[start:stop] if value.dim() else value
-            for name, value in labels.items()
-        }
-    else:
-        selected_labels = labels
-    return selected_data, selected_labels
 
 
 def _prepare_microbatch(batch: tuple[dict[str, Any], Any], offset: int) -> tuple[dict[str, Any], Any]:
@@ -342,6 +305,205 @@ def _checkpoint_roundtrip(
     return save_seconds, load_seconds, int(size_tensor.item())
 
 
+def _dcp_state(model: nn.Module, optimizer: torch.optim.Optimizer) -> dict[str, Any]:
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_model_state_dict,
+        get_optimizer_state_dict,
+    )
+
+    options = StateDictOptions(full_state_dict=False, cpu_offload=False)
+    return {
+        "model": get_model_state_dict(model, options=options),
+        "optimizer": get_optimizer_state_dict(model, optimizer, options=options),
+    }
+
+
+def _rng_payload() -> dict[str, Any]:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state(),
+    }
+
+
+def _restore_rng(payload: dict[str, Any]) -> None:
+    random.setstate(payload["python"])
+    np.random.set_state(payload["numpy"])
+    torch.set_rng_state(payload["torch_cpu"])
+    torch.cuda.set_rng_state(payload["torch_cuda"])
+
+
+def _save_training_checkpoint(
+    *,
+    root: Path,
+    step: int,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    ema: dict[str, Tensor] | None,
+) -> Path:
+    import torch.distributed.checkpoint as dcp
+
+    rank = dist.get_rank()
+    target = root / f"step-{step:08d}"
+    staging = root / f".step-{step:08d}.staging"
+    if rank == 0:
+        root.mkdir(parents=True, exist_ok=True)
+        if target.exists() or staging.exists():
+            raise FileExistsError(f"refusing to overwrite SFT checkpoint step {step}")
+        staging.mkdir()
+    dist.barrier()
+    dcp.save(_dcp_state(model, optimizer), checkpoint_id=staging / "dcp")
+    torch.save(_rng_payload(), staging / f"rank-{rank:05d}-rng.pt")
+    if ema is not None:
+        torch.save(ema, staging / f"rank-{rank:05d}-ema.pt")
+    dist.barrier()
+    if rank == 0:
+        metadata = {
+            "schema": "sensenova.u15.forge.sft.checkpoint.v1",
+            "trainer": "torch_fsdp2",
+            "step": step,
+            "world_size": dist.get_world_size(),
+            "ema": ema is not None,
+        }
+        (staging / "checkpoint.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.rename(staging, target)
+    dist.barrier()
+    return target
+
+
+def _load_training_checkpoint(
+    *,
+    checkpoint: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    ema: dict[str, Tensor] | None,
+) -> tuple[int, dict[str, Any]]:
+    import torch.distributed.checkpoint as dcp
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        set_model_state_dict,
+        set_optimizer_state_dict,
+    )
+
+    metadata = json.loads((checkpoint / "checkpoint.json").read_text(encoding="utf-8"))
+    if metadata.get("schema") != "sensenova.u15.forge.sft.checkpoint.v1":
+        raise ValueError("unsupported SFT checkpoint schema")
+    if metadata.get("trainer") != "torch_fsdp2" or int(metadata.get("world_size", 0)) != dist.get_world_size():
+        raise ValueError("SFT checkpoint topology differs from the current FSDP2 run")
+    if bool(metadata.get("ema")) != (ema is not None):
+        raise ValueError("SFT checkpoint EMA contract differs from the current run")
+    state = _dcp_state(model, optimizer)
+    dcp.load(state, checkpoint_id=checkpoint / "dcp")
+    options = StateDictOptions(full_state_dict=False, cpu_offload=False, strict=True)
+    set_model_state_dict(model, state["model"], options=options)
+    set_optimizer_state_dict(
+        model,
+        optimizer,
+        optim_state_dict=state["optimizer"],
+        options=options,
+    )
+    rank = dist.get_rank()
+    if ema is not None:
+        loaded_ema = torch.load(
+            checkpoint / f"rank-{rank:05d}-ema.pt",
+            map_location=torch.device("cuda", torch.cuda.current_device()),
+            weights_only=False,
+        )
+        if set(loaded_ema) != set(ema):
+            raise ValueError("SFT checkpoint EMA parameter closure differs from the model")
+        for name, value in loaded_ema.items():
+            ema[name].copy_(value)
+    rng = torch.load(
+        checkpoint / f"rank-{rank:05d}-rng.pt", map_location="cpu", weights_only=False
+    )
+    return int(metadata["step"]), rng
+
+
+def _prune_empty_hf_shards(target: Path) -> None:
+    from safetensors import safe_open
+
+    index_path = target / "model.safetensors.index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise RuntimeError("published HF checkpoint has no weight map")
+    referenced = {str(value) for value in weight_map.values()}
+    for shard in sorted(target.glob("*.safetensors")):
+        if shard.name in referenced:
+            continue
+        with safe_open(shard, framework="pt", device="cpu") as handle:
+            if list(handle.keys()):
+                raise RuntimeError(f"unreferenced HF shard is not empty: {shard}")
+        shard.unlink()
+
+
+def _publish_hf_checkpoint(model: nn.Module, *, target: Path, base_model: Path) -> None:
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+
+    marker = target.with_name(f"{target.name}.handoff.json")
+    staging = target.with_name(f".{target.name}.staging")
+    source = target.with_name(f".{target.name}.publish-source")
+    error = None
+    if dist.get_rank() == 0:
+        occupied = [path for path in (target, marker, staging, source) if path.exists() or path.is_symlink()]
+        if occupied:
+            error = f"refusing to reuse SFT publication paths: {occupied}"
+    errors = [error]
+    dist.broadcast_object_list(errors, src=0)
+    if errors[0] is not None:
+        raise FileExistsError(str(errors[0]))
+    options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+    state = get_model_state_dict(model, options=options)
+    dist.barrier()
+    if dist.get_rank() == 0:
+        source.mkdir(parents=True)
+        try:
+            torch.save(state, source / "model_wp0_pp0.pt")
+            torch.save(dict(gpc.config.model), source / "model_config.pt")
+            from tools.publish_hf import convert
+
+            convert(
+                src=str(source),
+                tgt=str(staging),
+                typ="neo++_mot",
+                extras_from=str(base_model),
+            )
+            _prune_empty_hf_shards(staging)
+            os.rename(staging, target)
+            marker.write_text(
+                json.dumps({"status": "ok", "target": str(target)}, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except BaseException as exc:
+            marker.write_text(
+                json.dumps({"status": "failed", "detail": repr(exc)}, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            raise
+        finally:
+            shutil.rmtree(source, ignore_errors=True)
+            if staging.exists():
+                shutil.rmtree(staging)
+    else:
+        deadline = time.monotonic() + 21_600
+        while True:
+            try:
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                if payload.get("status") != "ok":
+                    raise RuntimeError(f"rank-zero HF publication failed: {payload}")
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for HF publication marker: {marker}")
+            time.sleep(10)
+
+
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, float]:
     seconds = [float(record["seconds"]) for record in records]
     physical_tokens = sum(int(record["physical_tokens"]) for record in records)
@@ -371,16 +533,15 @@ def _forge_revision() -> str:
 def main(args: Any) -> None:
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+    gpu_name = _require_h200()
     seed = int(args.seed)
     _seed_everything(seed)
     train_dl, _dataset_types = build_train_loader_with_data_type()
     model = get_model(gpc.config.model, gpc.config.data).to(torch.cuda.current_device())
-    # The shared InternEvo model constructs parallel-aware linear modules even
-    # when their process group has size one. Register the resulting no-op MTP
-    # communicators before FSDP2 takes ownership of parameter sharding.
-    if gpc.config.parallel.tensor.mode != "mtp" or int(gpc.config.parallel.tensor.size) != 1:
-        raise ValueError("FSDP2 SFT requires tensor_parallel_mode=mtp and tp_size=1")
-    initialize_parallel_communicator(model)
+    # The checkpoint-specific model constructs parallel-aware linear modules
+    # even when their process group has size one. Register the resulting no-op
+    # MTP communicators before FSDP2 takes ownership of parameter sharding.
+    initialize_unit_mtp_communicators(model)
     model, wrapped_modules = _shard_model(model)
     model.train()
 
@@ -406,19 +567,21 @@ def main(args: Any) -> None:
             for name, parameter in model.named_parameters()
         }
 
-    warmup_steps = _env_int("SFT_BENCHMARK_WARMUP_STEPS", 3)
-    measured_steps = _env_int("SFT_BENCHMARK_MEASURED_STEPS", 10, minimum=1)
-    total_steps = warmup_steps + measured_steps
-    if int(gpc.config.data.total_steps) != total_steps:
-        raise ValueError(
-            "total_steps must equal SFT_BENCHMARK_WARMUP_STEPS + "
-            "SFT_BENCHMARK_MEASURED_STEPS"
-        )
+    total_steps = int(gpc.config.data.total_steps)
+    benchmark_report = os.environ.get("SFT_BENCHMARK_REPORT")
+    warmup_steps = _env_int("SFT_BENCHMARK_WARMUP_STEPS", 0 if benchmark_report is None else 3)
+    measured_steps = _env_int(
+        "SFT_BENCHMARK_MEASURED_STEPS",
+        total_steps - warmup_steps,
+        minimum=1,
+    )
+    if benchmark_report is not None and total_steps != warmup_steps + measured_steps:
+        raise ValueError("benchmark total_steps must equal warmup plus measured steps")
     grad_accumulation = int(gpc.config.data.micro_num)
     if grad_accumulation < 1:
         raise ValueError("FSDP2 SFT gradient accumulation must be positive")
-    report_path = Path(os.environ["SFT_BENCHMARK_REPORT"]).resolve()
-    if rank == 0:
+    report_path = Path(benchmark_report).resolve() if benchmark_report else None
+    if rank == 0 and report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         if report_path.exists():
             raise FileExistsError(f"refusing to overwrite benchmark report: {report_path}")
@@ -427,61 +590,36 @@ def main(args: Any) -> None:
     initial_moments = _parameter_moments(model)
     torch.cuda.reset_peak_memory_stats()
     records: list[dict[str, Any]] = []
-    fixed_path = os.environ.get("SFT_ABLATION_BATCHES")
-    fixed_batches = None
-    fixed_identity = None
-    if fixed_path:
-        fixed_sidecar = Path(fixed_path).with_suffix(Path(fixed_path).suffix + ".json")
-        identity_payload = None
-        if fixed_sidecar.is_file():
-            identity_payload = json.loads(fixed_sidecar.read_text(encoding="utf-8"))
-            observed_digest = None
-            if rank == 0:
-                digest = hashlib.sha256()
-                with Path(fixed_path).open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-                        digest.update(chunk)
-                observed_digest = digest.hexdigest()
-            values = [observed_digest]
-            dist.broadcast_object_list(values, src=0)
-            if values[0] != identity_payload.get("sha256"):
-                raise ValueError("fixed SFT batch artifact differs from its sealed identity")
-        fixed_payload = torch.load(fixed_path, map_location="cpu", weights_only=False)
-        if fixed_payload.get("schema") != "sensenova_u15.sft_ablation_batches.v1":
-            raise ValueError("unsupported fixed SFT batch artifact")
-        if int(fixed_payload["sequence_length"]) != int(gpc.config.data.seq_len):
-            raise ValueError("fixed SFT batch sequence length differs from the live config")
-        if int(fixed_payload["microbatches_per_optimizer_step"]) != world_size * grad_accumulation:
-            raise ValueError("fixed SFT batch width differs from the optimizer batch")
-        fixed_batches = [
-            _select_rank_batch(
-                batch,
-                rank=rank,
-                world_size=world_size,
-                local_microbatches=grad_accumulation,
-            )
-            for batch in fixed_payload["batches"]
-        ]
-        fixed_identity = {
-            "path": str(Path(fixed_path).resolve()),
-            "ordered_microbatch_sha256": fixed_payload["ordered_microbatch_sha256"],
-        }
-        if identity_payload is not None:
-            if identity_payload.get("path") != str(Path(fixed_path).resolve()):
-                raise ValueError("fixed SFT batch sidecar points to a different artifact")
-            fixed_identity.update(
-                {
-                    "bytes": int(identity_payload["bytes"]),
-                    "sha256": str(identity_payload["sha256"]),
-                }
-            )
-        if len(fixed_batches) < total_steps:
-            raise ValueError("fixed SFT batch artifact does not cover all planned steps")
-        del fixed_payload
-    iterator = iter(train_dl) if fixed_batches is None else iter(fixed_batches)
+    checkpoint_root = Path(
+        os.environ.get(
+            "SFT_CHECKPOINT_ROOT",
+            str(Path(os.environ.get("RUN_ROOT", "RUN")) / gpc.config.JOB_NAME / "checkpoints"),
+        )
+    ).expanduser().resolve()
+    resume_raw = os.environ.get("SFT_RESUME_CHECKPOINT")
+    start_step = 0
+    resume_rng = None
+    if resume_raw:
+        start_step, resume_rng = _load_training_checkpoint(
+            checkpoint=Path(resume_raw).expanduser().resolve(),
+            model=model,
+            optimizer=optimizer,
+            ema=ema,
+        )
+        if not 0 <= start_step < total_steps:
+            raise ValueError("SFT resume step is outside the current plan")
+    iterator = iter(train_dl)
+    for _ in range(start_step):
+        try:
+            next(iterator)
+        except StopIteration:
+            iterator = iter(train_dl)
+            next(iterator)
+    if resume_rng is not None:
+        _restore_rng(resume_rng)
     launch_time = time.strftime("%Y-%m-%d_%H-%M-%S")
-    with initialize_llm_profile(profiling=bool(args.profiling), start_time=launch_time) as profiler:
-        for step in range(total_steps):
+    with training_profile(bool(args.profiling), start_time=launch_time) as profiler:
+        for step in range(start_step, total_steps):
             torch.cuda.synchronize()
             step_start = time.perf_counter()
             try:
@@ -495,12 +633,12 @@ def main(args: Any) -> None:
             data.pop("worker_state_dict_list", None)
             data.pop("worker_state_custom_infos_list", None)
             if data.pop("is_empty_data_list", False):
-                raise RuntimeError("benchmark input exhausted and produced an empty packed row")
+                raise RuntimeError("SFT input exhausted and produced an empty packed row")
             physical_tokens_local = int(data["input_ids"].numel())
             supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) else 0
             samples_local = int(data.pop("num_samples", 0))
             data.pop("num_padding_tokens", None)
-            if not samples_local and fixed_batches is None:
+            if not samples_local:
                 samples_local = sum(len(item) - 1 for item in data["cu_seqlens"])
 
             optimizer.zero_grad(set_to_none=True)
@@ -510,11 +648,10 @@ def main(args: Any) -> None:
             grad_norm = None
             for micro_step in range(grad_accumulation):
                 is_last = micro_step + 1 == grad_accumulation
-                if fixed_batches is not None:
-                    global_position = step * world_size * grad_accumulation + rank * grad_accumulation + micro_step
-                    sample_seed = seed + global_position
-                    torch.manual_seed(sample_seed)
-                    torch.cuda.manual_seed_all(sample_seed)
+                global_position = step * world_size * grad_accumulation + rank * grad_accumulation + micro_step
+                sample_seed = seed + global_position
+                torch.manual_seed(sample_seed)
+                torch.cuda.manual_seed_all(sample_seed)
                 model.set_requires_gradient_sync(is_last, recurse=True)
                 model.set_is_last_backward(is_last)
                 micro_data, micro_labels = _prepare_microbatch((data, labels), micro_step)
@@ -522,12 +659,10 @@ def main(args: Any) -> None:
                 loss_weight = micro_data.pop("loss_weight", None)
                 loss_reduction_all_gather = micro_data.pop("loss_reduction_all_gather", False)
                 if _env_bool("SFT_PER_RANK_LOSS_REDUCTION", True):
-                    # InternEvo runs one packed row at a time on a single data
-                    # replica and averages those row losses over grad_accm.
-                    # FSDP2 maps the same ordered rows to data ranks, so each
-                    # rank must keep its own denominator before FSDP averages
-                    # gradients. A DATA-group denominator would silently
-                    # change the objective to a global token-weighted mean.
+                    # Each data rank owns one packed row, so it must keep its
+                    # own denominator before FSDP averages gradients. A global
+                    # denominator would change the objective to a token-weighted
+                    # mean and let variable packing alter sample weights.
                     loss_reduction_all_gather = False
                 loss = criterion(
                     output,
@@ -575,7 +710,7 @@ def main(args: Any) -> None:
                 "supervised_tokens": _distributed_sum(supervised_tokens_local),
                 "samples": _distributed_sum(samples_local),
             }
-            if step >= warmup_steps:
+            if report_path is not None and step >= warmup_steps:
                 records.append(record)
             if rank == 0:
                 print(
@@ -590,12 +725,23 @@ def main(args: Any) -> None:
                     ),
                     flush=True,
                 )
+            completed_step = step + 1
+            checkpoint_every = _env_int("checkpoint_every", 100, minimum=1)
+            if completed_step % checkpoint_every == 0 or completed_step == total_steps:
+                _save_training_checkpoint(
+                    root=checkpoint_root,
+                    step=completed_step,
+                    model=model,
+                    optimizer=optimizer,
+                    ema=ema,
+                )
 
     peak_memory = _distributed_max(float(torch.cuda.max_memory_allocated()))
     final_moments = _parameter_moments(model)
     checkpoint_result = None
     if _env_bool("SFT_BENCHMARK_CHECKPOINT", False):
-        checkpoint = report_path.parent / "fsdp2-checkpoint.tmp"
+        benchmark_parent = report_path.parent if report_path is not None else checkpoint_root
+        checkpoint = benchmark_parent / "fsdp2-checkpoint.tmp"
         if rank == 0 and checkpoint.exists():
             raise FileExistsError(f"refusing to overwrite benchmark checkpoint: {checkpoint}")
         save_seconds, load_seconds, checkpoint_bytes = _checkpoint_roundtrip(
@@ -610,13 +756,22 @@ def main(args: Any) -> None:
             "bytes": checkpoint_bytes,
         }
 
-    if rank == 0:
+    hf_output = os.environ.get("SFT_HF_OUTPUT")
+    if hf_output:
+        _publish_hf_checkpoint(
+            model,
+            target=Path(hf_output).expanduser().resolve(),
+            base_model=Path(gpc.config.model.model_name_or_path).expanduser().resolve(),
+        )
+
+    if rank == 0 and report_path is not None:
         report = {
-            "schema": "sensenova_u15.sft_trainer_ablation.v1",
+            "schema": "sensenova.u15.forge.sft.run_report.v1",
             "trainer": "torch_fsdp2",
             "python": os.sys.version,
             "torch": torch.__version__,
             "cuda": torch.version.cuda,
+            "gpu": gpu_name,
             "forge_revision": _forge_revision(),
             "world_size": world_size,
             "seed": seed,
@@ -640,13 +795,15 @@ def main(args: Any) -> None:
             "initial_parameter_moments": initial_moments,
             "final_parameter_moments": final_moments,
             "checkpoint": checkpoint_result,
-            "fixed_batches": fixed_identity,
         }
         temporary = report_path.with_suffix(report_path.suffix + ".tmp")
         temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, report_path)
         print(json.dumps({"component": "sensenova_u15.sft_fsdp2", "event": "complete", **report["aggregate"]}, sort_keys=True), flush=True)
     dist.barrier()
+    if rank == 0 and hf_output:
+        output = Path(hf_output).expanduser().resolve()
+        output.with_name(f"{output.name}.handoff.json").unlink()
 
 
 if __name__ == "__main__":

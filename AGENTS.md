@@ -3,7 +3,8 @@
 This repository is an independent, checkpoint-specific framework for
 SenseNova-U1.5-8B-MoT.
 
-- `training/` owns full-parameter InternEvo SFT and InternalEvo→HF conversion.
+- `training/` owns H200-only full-parameter FSDP2 SFT, DCP resume state, and
+  atomic Hugging Face safetensors publication.
 - `src/sensenova_u1/rl/` owns full-parameter FSDP2 GDPO/UniGDPO, replay,
   checkpointing, and online policy publication.
 - `serving/third_party/{LightLLM,LightX2V}` plus `scripts/rl_engine/` own all
@@ -14,6 +15,8 @@ SenseNova-U1.5-8B-MoT.
   evaluator copies, or task-specific reward code.
 - Preserve exact model, package, image, LightLLM, and LightX2V identities in
   every SFT, RL, and serving run.
+- SFT, RL, and serving share the repository-root Torch 2.8/CUDA 12.8 runtime;
+  do not introduce a second training environment or non-H200 execution path.
 - Delete generated media, smoke outputs, temporary traces, and superseded
   infrastructure after their evidence or reusable rule has been retained.
 - Durable documentation describes current behavior and open TODOs only; it

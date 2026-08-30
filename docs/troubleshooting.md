@@ -1,15 +1,16 @@
 # Troubleshooting
 
-- **SFT imports a different Transformers API:** run from `training/.venv`; do
-  not reuse the RL environment.
-- **FlashAttention undefined symbol:** rebuild it inside the exact Torch/CUDA
-  environment instead of copying a wheel from another runtime.
-- **Serving preflight fails FA3-Neo:** stock FA3 is not compatible with the
-  scoped `image_token_end` ABI; rebuild the checked-in runtime.
-- **RL request returns HTTP 409:** the requested policy version is stale. Read
-  `/v1/rl/status` and publish the intended FSDP policy before new rollouts.
-- **Serving remains paused:** at least one language/vision/X2V consumer rejected
-  a weight update. Inspect the three receipts; never force resume a half-updated
-  policy.
-- **SFT checkpoint will not load in RL:** convert to a complete HF safetensors
-  directory and verify every shard named by the index exists.
+- **A production entry rejects the GPU:** SFT, RL, and serving intentionally
+  support only NVIDIA H200; request the H200 training group rather than adding
+  a lower-memory fallback.
+- **FlashAttention undefined symbol:** rebuild it inside the exact Torch
+  2.8/CUDA 12.8 runtime.
+- **Serving preflight fails FA3-Neo:** stock FA3 does not expose the scoped
+  `image_token_end` ABI; rebuild the checked-in runtime.
+- **RL request returns HTTP 409:** read `/v1/rl/status` and publish the intended
+  policy before requesting new rollouts.
+- **Serving remains paused:** inspect the language/vision/X2V receipts; never
+  force-resume a half-updated policy.
+- **SFT output is rejected by RL:** verify that every shard named by
+  `model.safetensors.index.json` exists and that no partial staging directory
+  was supplied.

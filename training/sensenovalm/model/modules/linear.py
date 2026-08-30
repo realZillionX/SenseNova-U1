@@ -146,10 +146,7 @@ class SPFusedDenseFunc(torch.autograd.Function):
                 and gpc.config.parallel["pipeline"].get("zero_bubble", False)
                 and not gpc.is_first_rank(ParallelMode.PIPELINE)
             ):
-                from sensenovalm.core.scheduler.pipeline_scheduler import WeightGradStore
-
-                WeightGradStore.put(weight, bias, x, grad_output, ctx.needs_input_grad[2], linear_bias_wgrad_op)
-                grad_weight, grad_bias = None, None
+                raise RuntimeError("pipeline zero-bubble execution is not part of the FSDP2 runtime")
             else:
                 grad_weight, grad_bias = linear_bias_wgrad_op(x, grad_output, ctx.needs_input_grad[2])
 
@@ -255,12 +252,7 @@ class WPFusedDenseFunc(torch.autograd.Function):
             assert ctx.compute_weight_gradient
             x = x.reshape(batch_dim, x.shape[-1])
             if is_using_ZB:
-                from sensenovalm.core.scheduler.pipeline_scheduler import WeightGradStore
-
-                WeightGradStore.put(
-                    weight, bias, x, grad_output, ctx.needs_input_grad[2], linear_bias_wgrad_op, communicator.grad_hook
-                )
-                grad_weight, grad_bias = None, None
+                raise RuntimeError("pipeline zero-bubble execution is not part of the FSDP2 runtime")
             else:
                 grad_weight, grad_bias = linear_bias_wgrad_op(
                     x,

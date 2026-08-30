@@ -18,11 +18,6 @@ class BaseModel(nn.Module, metaclass=ABCMeta):
         raise NotImplementedError
 
     @staticmethod
-    @abstractmethod
-    def convert_internevo2hf_weights(src: str, tgt: str) -> None:
-        raise NotImplementedError
-
-    @staticmethod
     def load_sharded_states(src):
         states = merge_pp_src_states(load_src_states(src))
         num_shards = len(states)

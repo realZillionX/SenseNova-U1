@@ -461,7 +461,7 @@ class SenseNovaVLChatMoTModel(PreTrainedModel):
         self.ps_version = config.ps_version
         self.tp_mode = gpc.config.parallel.tensor.mode
         # Transformers 4.57 exposes ``PreTrainedModel.tp_size`` as a read-only
-        # property.  Keep InternEvo's tensor-parallel topology under a
+        # property. Keep the training model's tensor-parallel topology under a
         # framework-owned name so this model works in both the SFT 4.43 stack
         # and the Torch 2.8 serving stack.
         self.parallel_tensor_size = gpc.get_world_size(ParallelMode.TENSOR)

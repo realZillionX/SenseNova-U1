@@ -55,7 +55,7 @@ def main() -> None:
         description="High-performance SFT, RL and serving for SenseNova-U1.5-8B-MoT.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
-    sft = subcommands.add_parser("sft", help="Launch the InternEvo full-parameter SFT preset.")
+    sft = subcommands.add_parser("sft", help="Launch the FSDP2 full-parameter SFT preset.")
     sft.add_argument("extra", nargs=argparse.REMAINDER)
     serve = subcommands.add_parser("serve", help="Launch LightLLM + LightX2V serving.")
     serve.add_argument("extra", nargs=argparse.REMAINDER)

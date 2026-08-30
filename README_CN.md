@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT"><img src="https://img.shields.io/badge/🤗%20模型-SenseNova--U1.5--8B--MoT-yellow" alt="模型"></a>
-  <img src="https://img.shields.io/badge/SFT-InternEvo-6f42c1" alt="InternEvo SFT">
+  <img src="https://img.shields.io/badge/SFT-FSDP2-6f42c1" alt="FSDP2 SFT">
   <img src="https://img.shields.io/badge/RL-GDPO%20%7C%20UniGDPO-2459B8" alt="GDPO 与 UniGDPO">
   <img src="https://img.shields.io/badge/推理-LightLLM%20%2B%20LightX2V-0b8f6a" alt="LightLLM 与 LightX2V">
   <img src="https://img.shields.io/badge/许可证-Apache--2.0-blue" alt="Apache-2.0">
@@ -17,9 +17,9 @@
 </p>
 
 Forge 是一个只面向 **SenseNova-U1.5-8B-MoT** 的高性能全参数 SFT、可验证
-强化学习与生产推理框架。SFT 保留成熟的 InternEvo 路径，GDPO/UniGDPO 使用
-PyTorch 2.8 FSDP2，文本与图像轨迹统一通过钉死版本的 LightLLM + LightX2V
-服务生成。
+强化学习与生产推理框架。SFT 与 GDPO/UniGDPO 都使用 PyTorch 2.8 FSDP2，
+文本与图像轨迹统一通过钉死版本的 LightLLM + LightX2V 服务生成；全栈只在
+同一套 H200 环境运行。
 
 ## 核心能力
 
@@ -27,14 +27,14 @@ PyTorch 2.8 FSDP2，文本与图像轨迹统一通过钉死版本的 LightLLM + 
 | --- | --- | --- |
 | U1.5 全参数训练 | GDPO 与 UniGDPO | 文本 continuous batching |
 | 原生分辨率 packing | 文本 token / 图像 SDE 双分支 PPO | T2T、T2I、IT2I、图文交错 |
-| ISP + 权重并行 + ZeRO-1 | old/current/reference policy | Hybrid SDE–ODE trace |
-| EMA、checkpoint、精确续训 | block-level FSDP2 + DCP | 原子在线 NCCL 权重更新 |
-| InternalEvo→HF 交接 | 下游 reward-provider 协议 | policy-version barrier |
+| block-level FSDP2 | old/current/reference policy | Hybrid SDE–ODE trace |
+| EMA + DCP 完整状态 | block-level FSDP2 + DCP | 原子在线 NCCL 权重更新 |
+| 原子发布 HF safetensors | 下游 reward-provider 协议 | policy-version barrier |
 
 ## 架构
 
 ```text
-监督轨迹 → InternEvo 全参 SFT → HF safetensors → FSDP2 GDPO/UniGDPO
+监督轨迹 → FSDP2 全参 SFT → DCP + HF safetensors → FSDP2 GDPO/UniGDPO
                                               ↕ rollout / trace / 权重
                                   LightLLM + LightX2V 两卡服务
                                               ↕ reward request
@@ -55,10 +55,7 @@ git submodule update --init --recursive \
 ### 全参数 SFT
 
 ```bash
-uv --directory training sync --locked
-uv --directory training sync --locked --extra flash-build
-uv --directory training sync --locked --extra flash-build --extra flash \
-  --no-build-isolation-package flash-attn
+uv sync --locked
 
 MODEL_NAME_OR_PATH=/models/SenseNova-U1.5-8B-MoT \
 VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
@@ -74,7 +71,7 @@ bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:rl-serving-v1 .
+  -t sensenova-u15-forge:unified-v2 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 CUDA_VISIBLE_DEVICES=0,1 \
@@ -95,11 +92,9 @@ trajectory advantage，同时保留独立 ratio clip、text KL、velocity-MSE �
 
 | Profile | Python | Torch/CUDA | Transformers | Attention |
 | --- | --- | --- | --- | --- |
-| SFT | 3.10–3.12 | 2.5.1 / 12.4 | 4.43.x | FlashAttention 2 backward |
-| RL + serving | 3.12 | 2.8.0 / 12.8 | 4.57.1 | FA2 backward + FA3-Neo forward |
+| SFT + RL + serving | 3.12 | 2.8.0 / 12.8 | 4.57.1 | FA2 backward + FA3-Neo forward |
 
-两边只通过稳定 checkpoint 与服务协议交接；InternalEvo optimizer state 不进入
-FSDP2 runtime。
+运行环境与所有训练入口都会拒绝非 H200 硬件。
 
 ## 图像示例
 

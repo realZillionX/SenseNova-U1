@@ -3,7 +3,6 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORTS = {
-    "initialize_trainer": (".initialize.initialize_trainer", "initialize_trainer"),
     "get_default_parser": (".initialize.launch", "get_default_parser"),
     "launch_from_slurm": (".initialize.launch", "launch_from_slurm"),
     "launch_from_torch": (".initialize.launch", "launch_from_torch"),

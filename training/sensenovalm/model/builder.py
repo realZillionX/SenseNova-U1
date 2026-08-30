@@ -17,7 +17,7 @@ logger = get_logger(__file__)
 
 def create_model(model_type, model_conf) -> Union[nn.Module, List[nn.Module]]:
 
-    # for InternEvo
+    # Checkpoint-specific training model registry.
     # kwargs = dict(gpc.config.model)
 
     kwargs = model_conf

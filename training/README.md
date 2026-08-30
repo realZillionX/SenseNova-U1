@@ -1,9 +1,9 @@
 # SenseNova-U1.5-8B-MoT full-parameter SFT
 
-This independent Torch 2.5.1/CUDA 12.4 project owns InternEvo training,
-native-resolution packing, ISP/weight parallel/ZeRO-1, EMA, checkpoint/resume,
-and InternalEvo→HF conversion. The only public preset is
-`shell/train_u1/U1.5_8B_SFT.sh`; it trains the complete language, vision,
-generation, and pixel-head parameter closure.
+This directory contains the checkpoint-specific U1.5 model, native-resolution
+packer, loss, and the sole production trainer:
+`train_sensenovau1_fsdp2.py`. SFT runs in the repository-root Torch 2.8/CUDA
+12.8 environment on H200, saves FSDP2 Distributed Checkpoint state, and
+atomically publishes a complete Hugging Face safetensors checkpoint.
 
 See [the SFT guide](../docs/sft.md).

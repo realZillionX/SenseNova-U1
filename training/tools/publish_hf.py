@@ -1,8 +1,8 @@
 # Copyright (c) SenseNovaLM contributors. Licensed under Apache-2.0.
-"""Convert internevo checkpoints to HuggingFace safetensors format.
+"""Publish the U1.5 training state as Hugging Face safetensors.
 
-Handles both dense and MoE (incl. MoT U/G dual-branch) models. Reads internevo
-shards, merges along the weight-parallel dimension, splits MoE experts where
+Handles both dense and MoE (incl. MoT U/G dual-branch) models. Reads internal
+training shards, merges the shard dimension, splits MoE experts where
 present, renames keys via ``key_mappings.json``, and writes a sharded
 HuggingFace directory:
 
@@ -19,7 +19,7 @@ Supported layouts (same scope as the training stack writes):
 
 * Tensor parallel (TP):       1 only
 * Pipeline parallel (PP):     1 only
-* Weight  parallel (WP):      any N
+* Legacy weight shards (WP):  any N
 * Expert  parallel (EP):      any N         (MoE only)
 * MoT U/G expert files:       'interleaved' (file_L = 2*L / 2*L+1)
                               or 'offset'   (file_L = L / L+num_layers)
@@ -32,7 +32,7 @@ installs benign stubs so unpickling can proceed.
 Usage::
 
     # Dense or MoE — same command; layout is auto-detected.
-    python tools/revert2hf.py \\
+    python tools/publish_hf.py \\
         --src /path/to/RUN/<job>/<step> \\
         --tgt /path/to/output/hf_dir \\
         --extras-from /path/to/source-hf-model    # optional: copy tokenizer + config.json

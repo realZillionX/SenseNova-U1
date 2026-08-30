@@ -32,7 +32,7 @@ from .dataset_interleaved_iterable import (
     concat_pad_data_collator,
     InterleavedDataset,
     ImageTextPairDataset,
-    internevo_collate_fn,
+    u15_packed_collate_fn,
 )
 import mmap
 from io import TextIOWrapper

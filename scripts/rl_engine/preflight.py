@@ -26,7 +26,10 @@ EXPECTED_DISTRIBUTIONS = {
     "huggingface-hub": "0.36.2",
     "numpy": "2.5.2",
     "dill": "0.4.1",
+    "einops": "0.8.1",
     "imageio": "2.37.4",
+    "opencv-python": "5.0.0.93",
+    "tensorboard": "2.20.0",
     "timm": "1.0.28",
     "httpx": "0.28.1",
     "protobuf": "7.35.1",
@@ -299,6 +302,10 @@ def main() -> None:
         errors.append(f"expected CUDA 12.8 Torch build, found {torch.version.cuda}")
     if not args.allow_no_gpu and torch.cuda.device_count() < args.expected_gpus:
         errors.append(f"expected at least {args.expected_gpus} GPUs, found {torch.cuda.device_count()}")
+    if not args.allow_no_gpu:
+        unsupported = [name for name in payload["gpu_names"] if "H200" not in name.upper()]
+        if unsupported:
+            errors.append(f"SenseNova runtime supports only NVIDIA H200, found {unsupported}")
     if args.model_path and not payload["model_exists"]:
         errors.append(f"model path does not exist: {args.model_path}")
     if args.model_path and (

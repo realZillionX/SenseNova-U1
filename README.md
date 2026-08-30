@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT"><img src="https://img.shields.io/badge/🤗%20Model-SenseNova--U1.5--8B--MoT-yellow" alt="Model"></a>
-  <img src="https://img.shields.io/badge/SFT-InternEvo-6f42c1" alt="InternEvo SFT">
+  <img src="https://img.shields.io/badge/SFT-FSDP2-6f42c1" alt="FSDP2 SFT">
   <img src="https://img.shields.io/badge/RL-GDPO%20%7C%20UniGDPO-2459B8" alt="GDPO and UniGDPO">
   <img src="https://img.shields.io/badge/Serving-LightLLM%20%2B%20LightX2V-0b8f6a" alt="LightLLM and LightX2V">
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue" alt="Apache-2.0">
@@ -18,9 +18,9 @@
 
 Forge is a checkpoint-specific, high-performance stack for full-parameter
 supervised fine-tuning, verifiable reinforcement learning, and production
-inference of **SenseNova-U1.5-8B-MoT**. It keeps the mature InternEvo training
-path for SFT, uses PyTorch 2.8 FSDP2 for GDPO/UniGDPO, and serves text/image
-trajectories through pinned LightLLM + LightX2V engines.
+inference of **SenseNova-U1.5-8B-MoT**. SFT and GDPO/UniGDPO use PyTorch 2.8
+FSDP2, while text/image trajectories are served through pinned LightLLM +
+LightX2V engines. The complete stack runs in one H200-only runtime.
 
 ## Highlights
 
@@ -28,17 +28,17 @@ trajectories through pinned LightLLM + LightX2V engines.
 | --- | --- | --- |
 | Full-parameter U1.5 training | GDPO and UniGDPO | Continuous-batch text decode |
 | Native-resolution packing | Text-token and image-SDE PPO objectives | T2T, T2I, IT2I and interleaved generation |
-| ISP + weight parallel + ZeRO-1 | Frozen old policy and SFT reference | Hybrid SDE–ODE rollout traces |
-| EMA, checkpoint and exact resume | Block-level FSDP2 + DCP checkpoint | Atomic online NCCL weight updates |
-| InternalEvo → HF safetensors handoff | Downstream reward-provider protocol | Policy-version admission barrier |
+| Block-level FSDP2 | Frozen old policy and SFT reference | Hybrid SDE–ODE rollout traces |
+| EMA + DCP exact state | Block-level FSDP2 + DCP checkpoint | Atomic online NCCL weight updates |
+| Atomic HF safetensors publication | Downstream reward-provider protocol | Policy-version admission barrier |
 
 ## Architecture
 
 ```text
                          ┌──────────────────────────────┐
- authored trajectories ─►  InternEvo full-parameter SFT│
+ authored trajectories ─►  FSDP2 full-parameter SFT    │
                          └──────────────┬───────────────┘
-                                        │ HF safetensors
+                                        │ DCP + HF safetensors
                                         ▼
  ┌───────────────────────┐   rollout  ┌───────────────────────┐
  │ LightLLM + LightX2V   │◄───────────►│ PyTorch 2.8 FSDP2 RL │
@@ -70,13 +70,11 @@ git submodule update --init --recursive \
 
 ### 2. Full-parameter SFT
 
-SFT is an independent locked environment based on Torch 2.5.1/CUDA 12.4.
+SFT, RL, and serving share the repository-root Torch 2.8/CUDA 12.8 lock and
+the `sensenova-u15-forge:unified-v2` image. Production runs require H200.
 
 ```bash
-uv --directory training sync --locked
-uv --directory training sync --locked --extra flash-build
-uv --directory training sync --locked --extra flash-build --extra flash \
-  --no-build-isolation-package flash-attn
+uv sync --locked
 
 MODEL_NAME_OR_PATH=/models/SenseNova-U1.5-8B-MoT \
 VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
@@ -87,16 +85,9 @@ RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```
 
-Convert an InternalEvo checkpoint for FSDP2 RL or serving:
-
-```bash
-training/.venv/bin/python training/tools/revert2hf.py \
-  --src /runs/u15-sft/checkpoint \
-  --tgt /runs/u15-sft/hf \
-  --extras-from /models/SenseNova-U1.5-8B-MoT
-```
-
-See [SFT](docs/sft.md) and [checkpoint handoff](docs/checkpoints.md).
+The launcher saves sharded DCP model/optimizer/EMA/RNG state and atomically
+publishes the ordinary policy weights as a complete HF directory. See
+[SFT](docs/sft.md) and [checkpoint handoff](docs/checkpoints.md).
 
 ### 3. Production serving
 
@@ -106,7 +97,7 @@ service:
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:rl-serving-v1 .
+  -t sensenova-u15-forge:unified-v2 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 CUDA_VISIBLE_DEVICES=0,1 \
@@ -138,11 +129,9 @@ ratio clipping, text KL, velocity-MSE, and explicit branch weights. See
 
 | Profile | Python | Torch/CUDA | Transformers | Attention |
 | --- | --- | --- | --- | --- |
-| SFT | 3.10–3.12 | 2.5.1 / 12.4 | 4.43.x | FlashAttention 2 backward |
-| RL + serving | 3.12 | 2.8.0 / 12.8 | 4.57.1 | FA2 backward + FA3-Neo forward |
+| SFT + RL + serving | 3.12 | 2.8.0 / 12.8 | 4.57.1 | FA2 backward + FA3-Neo forward |
 
-These environments exchange only stable checkpoint and service protocols; an
-InternalEvo optimizer checkpoint never crosses into the FSDP2 runtime.
+The runtime and every training entry fail closed on non-H200 hardware.
 
 ## U1.5 gallery
 

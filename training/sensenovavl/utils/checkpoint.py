@@ -324,7 +324,7 @@ def _load_hf_checkpoint(folder):
     return state_dict
 
 
-def _load_pretrained_internevo_llm(model, model_args, state_dict, has_moe=False):
+def _load_pretrained_sharded_llm(model, model_args, state_dict, has_moe=False):
     language_model_state_dict = model.state_dict()
 
     for i in range(0, gpc.config.model.num_layers_for_pp):
@@ -1521,7 +1521,7 @@ def load_pretrained_llm(model, model_args, model_path):
 
     if not is_hf_ckpt:
         state_dict = _load_model_checkpoint(model_path)
-        message = _load_pretrained_internevo_llm(
+        message = _load_pretrained_sharded_llm(
             model=model, model_args=model_args, state_dict=state_dict, has_moe=has_llm_moe
         )
     else:

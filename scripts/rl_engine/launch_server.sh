@@ -19,7 +19,7 @@ PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
 export PYTHONPATH="$LIGHTLLM_ROOT:$LIGHTX2V_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE:-sensenova-u15-forge:rl-serving-v1}
+export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE:-sensenova-u15-forge:unified-v2}
 export FORGE_ROOT="$SOURCE_ROOT"
 export FORGE_COMMIT=${FORGE_COMMIT:-$(git -C "$SOURCE_ROOT" rev-parse HEAD)}
 export FORGE_LIGHTLLM_COMMIT=${FORGE_LIGHTLLM_COMMIT:-$(git -C "$LIGHTLLM_SOURCE_ROOT" rev-parse HEAD)}
@@ -40,13 +40,11 @@ export INPUT_PENALTY=${INPUT_PENALTY:-true}
 # The official VQA/interleave profile permits 8192 generated tokens, so the
 # server must also leave room for its prompt.
 MAX_REQ_TOTAL_LEN=${MAX_REQ_TOTAL_LEN:-16384}
-# Online publication receives one bounded full-parameter bucket in addition to
-# the live model/KV/CUDA-graph footprint. 0.75 exhausted an 80 GiB H100 before
-# the first 192 MiB bucket; 0.70 preserves high KV capacity with update headroom.
-LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.70}
-# The pinned H100 runtime has no cached silu-and-mul config for U1.5's 12288
-# intermediate width. Adaptive level 1 tunes only missing kernels during the
-# existing warmup and reuses the selected config for steady-state serving.
+# The H200-only runtime reserves twenty percent of HBM for online publication,
+# CUDA graphs, and transient kernels while keeping a large KV cache.
+LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.80}
+# Adaptive level 1 tunes only missing kernels during the existing warmup and
+# reuses the selected config for steady-state serving.
 export LIGHTLLM_TRITON_AUTOTUNE_LEVEL=${LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1}
 
 "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \

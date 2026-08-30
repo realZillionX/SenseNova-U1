@@ -17,7 +17,6 @@ import torch
 import torchvision.transforms as T
 import torch.nn.functional as F
 import transformers
-from decord import VideoReader
 from PIL import Image
 from torch.utils.data import ConcatDataset, WeightedRandomSampler
 from torchvision.transforms.functional import InterpolationMode
@@ -165,10 +164,16 @@ def read_frames_gif(video_path, num_frames, sample="rand", fix_start=None, min_n
     return frames
 
 
-def read_frames_decord(video_path, num_frames, sample="rand", fix_start=None, clip=None, min_num_frames=4):
-    video_reader = VideoReader(video_path, num_threads=1)
-    vlen = len(video_reader)
-    fps = video_reader.get_avg_fps()
+def read_frames_video(video_path, num_frames, sample="rand", fix_start=None, clip=None, min_num_frames=4):
+    del sample, fix_start
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        raise ValueError(f"cannot open video: {video_path}")
+    vlen = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = float(capture.get(cv2.CAP_PROP_FPS))
+    if vlen < 1 or not math.isfinite(fps) or fps <= 0:
+        capture.release()
+        raise ValueError(f"invalid video metadata: frames={vlen}, fps={fps}")
     duration = vlen / float(fps)
     if clip:
         start, end = clip
@@ -193,8 +198,16 @@ def read_frames_decord(video_path, num_frames, sample="rand", fix_start=None, cl
 
     timestamps = [round(frame_idx/fps,1) for frame_idx in frame_indices]
 
-    frames = video_reader.get_batch(frame_indices).asnumpy()  # (T, H, W, C), np.uint8
-    frames = [Image.fromarray(frames[i]) for i in range(frames.shape[0])]
+    frames = []
+    try:
+        for frame_index in frame_indices:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = capture.read()
+            if not ok:
+                raise ValueError(f"cannot decode video frame {frame_index}: {video_path}")
+            frames.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+    finally:
+        capture.release()
     ## get the real fps
     real_fps = fps
     sample_fps = len(frames)/duration
@@ -293,7 +306,7 @@ class TCSLoader(object):
                 frames = read_frames_gif(fn, num_frames=max_num_frames, min_num_frames=min_num_frames,
                                          sample=sample)
             else:
-                frames, duration, fps, t_fps, timestamps = read_frames_decord(fn, num_frames=max_num_frames, min_num_frames=min_num_frames,
+                frames, duration, fps, t_fps, timestamps = read_frames_video(fn, num_frames=max_num_frames, min_num_frames=min_num_frames,
                                             sample=sample, clip=clip)
             return frames, duration, fps, t_fps, timestamps
 

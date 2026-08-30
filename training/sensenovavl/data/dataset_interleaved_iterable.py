@@ -1772,7 +1772,7 @@ WARNING_CNT = defaultdict(int)
 
 
 # NOTE:
-def internevo_collate_fn(
+def u15_packed_collate_fn(
     features,
     max_item_length: int,
     img_start_token_id: int,

@@ -7,20 +7,15 @@ git submodule update --init --recursive \
   serving/third_party/LightLLM serving/third_party/LightX2V
 ```
 
-SFT 使用独立的 Torch 2.5.1/CUDA 12.4 环境：
+SFT、RL 与 serving 共用仓库根目录的 Python 3.12、Torch 2.8/CUDA 12.8
+依赖锁：
 
 ```bash
-uv --directory training sync --locked
-uv --directory training sync --locked --extra flash-build
-uv --directory training sync --locked --extra flash-build --extra flash \
-  --no-build-isolation-package flash-attn
-```
-
-RL 与 serving 使用自包含的 Torch 2.8/CUDA 12.8 镜像：
-
-```bash
+uv sync --locked
 docker build -f docker/rl-engine/Dockerfile \
-  -t sensenova-u15-forge:rl-serving-v1 .
+  --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
+  -t sensenova-u15-forge:unified-v2 .
 ```
 
-两个 pyproject 不应装进同一个 venv；它们通过 HF safetensors 交接。
+镜像同时包含 SFT/RL backward 使用的 FlashAttention 2 和 serving 使用的
+FA3-Neo。生产入口会拒绝任何非 NVIDIA H200 的训练或 serving GPU。

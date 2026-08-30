@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Core dependencies are pinned to the RL + serving runtime identity.
+# One pinned runtime serves SFT, RL, and production inference.
 dependencies = [
     "torch==2.8.0",
     "torchvision==0.23.0",
@@ -37,7 +37,14 @@ dependencies = [
     "pillow==12.0.0",
     "tqdm==4.67.1",
     "packaging==25.0",
+    "protobuf==7.35.1",
     "websockets==15.0.1",
+    "dill==0.4.1",
+    "einops==0.8.1",
+    "imageio==2.37.4",
+    "opencv-python==5.0.0.93",
+    "tensorboard==2.20.0",
+    "timm==1.0.28",
 ]
 
 [project.optional-dependencies]
@@ -96,9 +103,8 @@ extend-exclude = [
     # Third-party submodules — keep diff-clean from upstream.
     "serving/third_party/LightLLM",
     "serving/third_party/LightX2V",
-    # Training code is derived from InternEvo and was originally formatted with
-    # black/flake8/isort; keep diff-clean from those upstreams rather than churn
-    # the whole subtree through ruff-format.
+    # Checkpoint-specific training/model code follows its original formatter;
+    # keep the subtree diff-clean rather than churning it through ruff-format.
     "training",
 ]
 

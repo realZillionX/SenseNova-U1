@@ -35,7 +35,7 @@ from sensenovavl.data.dataset_interleaved_iterable import (
     ImageTextPairDataset,
     InterleavedDataset,
     PackedDataset,
-    internevo_collate_fn,
+    u15_packed_collate_fn,
 )
 from sensenovavl.data.distributed_sampler import DistributedSampler
 
@@ -199,7 +199,7 @@ def get_multimodal_streaming_train_loader_items(data_cfg):   # NOTE:
         )
         train_sampler = None
         train_collate_fn = partial(
-            internevo_collate_fn,
+            u15_packed_collate_fn,
             max_item_length=data_cfg.max_packed_tokens,
             img_start_token_id=img_start_token_id,
             img_token_id=img_context_token_id,
@@ -335,7 +335,7 @@ def get_multimodal_packed_streaming_train_loader_items(data_cfg):
 
     train_sampler = None
     train_collate_fn = partial(
-        internevo_collate_fn,
+        u15_packed_collate_fn,
         max_item_length=data_cfg.max_packed_tokens,
         img_start_token_id=train_ds.datasets[0].img_start_token_id,
         img_token_id=train_ds.datasets[0].img_token_id,

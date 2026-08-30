@@ -36,6 +36,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn('"presence_penalty": 0.0', patch)
         self.assertIn('"frequency_penalty": 0.0', patch)
         contract = json.loads((ROOT / "docker/rl-engine/runtime_contract.json").read_text())
+        self.assertEqual(contract["platform"]["gpu"], "NVIDIA H200")
         expected_sha = contract["overlays"]["lightllm_sensenova_policy"]["sha256"]
         self.assertEqual(hashlib.sha256(overlay.read_bytes()).hexdigest(), expected_sha)
         smoke = (ROOT / "examples" / "serving" / "rl_smoke.py").read_text()
@@ -54,9 +55,11 @@ class ServingContractTest(unittest.TestCase):
         launcher = (ROOT / "scripts/rl_engine/launch_server.sh").read_text()
         self.assertIn("INPUT_PENALTY", launcher)
         self.assertIn("MAX_REQ_TOTAL_LEN:-16384", launcher)
-        self.assertIn("LIGHTLLM_MEM_FRACTION:-0.70", launcher)
+        self.assertIn("LIGHTLLM_MEM_FRACTION:-0.80", launcher)
         self.assertIn('--mem_fraction "$LIGHTLLM_MEM_FRACTION"', launcher)
         self.assertIn("LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1", launcher)
+        preflight = (ROOT / "scripts" / "rl_engine" / "preflight.py").read_text()
+        self.assertIn("supports only NVIDIA H200", preflight)
 
 
 if __name__ == "__main__":

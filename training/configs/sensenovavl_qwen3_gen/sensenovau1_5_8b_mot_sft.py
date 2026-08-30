@@ -1,9 +1,8 @@
 # SenseNova-U1.5-8B-MoT full-parameter SFT config.
 #
-# Consumed by `train_sensenovau1.py --config`. Runtime-tuned knobs come from
+# Consumed by `train_sensenovau1_fsdp2.py --config`. Runtime-tuned knobs come from
 # environment variables (set by `shell/train_u1/U1.5_8B_SFT.sh`); the rest are constants.
 import os
-from pathlib import Path
 
 from sensenovalm.utils.config_helpers import env_bool
 
@@ -25,7 +24,6 @@ MODEL_NAME_OR_PATH = os.environ.get('MODEL_NAME_OR_PATH', None)
 LLM_PATH = os.environ.get('LLM_PATH', None)
 VIT_PATH = os.environ.get('VIT_PATH', None)
 MLP_PATH = os.environ.get('MLP_PATH', None)
-MODEL_ONLY_FOLDER = os.environ.get('MODEL_ONLY_FOLDER', None)
 mm_data_path = os.environ.get('mm_data_path', None)
 print(f'will use vlm model {MODEL_NAME_OR_PATH}')
 print(f'will use llm model {LLM_PATH}')
@@ -37,13 +35,13 @@ print(f'will use data config {mm_data_path}')
 # -----------------------------------------------------------------------------
 # Parallelism
 # -----------------------------------------------------------------------------
-zero1_size = int(os.environ['zero1_size'])
-wp_size = int(os.environ['wp_size'])
-tp_size = int(os.environ['tp_size'])
-pp_size = int(os.environ['pp_size'])
-tensor_parallel_mode = os.environ.get("tensor_parallel_mode", "isp")
-if tensor_parallel_mode not in {"mtp", "msp", "fsp", "isp"}:
-    raise ValueError("tensor_parallel_mode must be one of mtp/msp/fsp/isp")
+# Model construction still consumes this shared schema. FSDP2 owns the real
+# sharding topology, so all legacy parallel dimensions are fixed at one.
+zero1_size = 1
+wp_size = 1
+tp_size = 1
+pp_size = 1
+tensor_parallel_mode = "mtp"
 
 
 # -----------------------------------------------------------------------------
@@ -60,22 +58,13 @@ fm_modules_lr_scale = float(os.environ.get('fm_modules_lr_scale', 1.0))
 mot_gen_lr_scale = float(os.environ.get('mot_gen_lr_scale', 1.0))
 lr_scheduler_type = os.environ.get('lr_scheduler_type', 'cosine')
 lr_scheduler_offset = int(os.environ.get('lr_scheduler_offset', 0))
-load_optimizer = os.environ.get('load_optimizer', None)
 ce_loss_weight = float(os.environ.get('ce_loss_weight', 1.0))
 metric_interval_steps = int(os.environ.get('metric_interval_steps', '10'))
 activation_checkpoint_fraction = float(os.environ.get('activation_checkpoint_fraction', '1'))
-mlp_layer_fusion = env_bool('mlp_layer_fusion', False)
-overlap_sync_grad = env_bool('overlap_sync_grad', True)
-overlap_sync_param = env_bool('overlap_sync_param', False)
-reduce_bucket_size_mb = int(os.environ.get('reduce_bucket_size_mb', '256'))
-weight_overlap = env_bool('weight_overlap', True)
-weight_memory_pool = env_bool('weight_memory_pool', False)
 if metric_interval_steps < 1:
     raise ValueError('metric_interval_steps must be a positive integer')
 if not 0 <= activation_checkpoint_fraction <= 1:
     raise ValueError('activation_checkpoint_fraction must be in [0, 1]')
-if reduce_bucket_size_mb < 1:
-    raise ValueError('reduce_bucket_size_mb must be positive')
 
 
 # -----------------------------------------------------------------------------
@@ -182,13 +171,6 @@ if not freeze_backbone or not freeze_llm:
 
 
 # -----------------------------------------------------------------------------
-# Resume
-# -----------------------------------------------------------------------------
-auto_resume = env_bool('auto_resume', False)
-resume_ds = env_bool('resume_ds', False)
-
-
-# -----------------------------------------------------------------------------
 # Model size (LLM backbone)
 # -----------------------------------------------------------------------------
 VOCAB_SIZE = 151936
@@ -212,45 +194,15 @@ if llm_data_config is not None:
 # -----------------------------------------------------------------------------
 # Checkpoint
 # -----------------------------------------------------------------------------
-RUN_ROOT = Path(os.environ.get("RUN_ROOT", "RUN")).expanduser()
-SAVE_CKPT_FOLDER = f"local:{RUN_ROOT / JOB_NAME}"
-enable_save_ckpt = env_bool("enable_save_ckpt", True)
 CHECKPOINT_EVERY = int(os.environ.get("checkpoint_every", "100"))
-CHECKPOINT_SNAPSHOT_EVERY = int(
-    os.environ.get("checkpoint_snapshot_every", "1000")
-)
-if CHECKPOINT_EVERY < 1 or CHECKPOINT_SNAPSHOT_EVERY < 1:
-    raise ValueError("checkpoint intervals must be positive integers")
+if CHECKPOINT_EVERY < 1:
+    raise ValueError("checkpoint_every must be positive")
 
 ckpt = dict(
-    enable_save_ckpt=enable_save_ckpt,
-    save_ckpt_folder=SAVE_CKPT_FOLDER,
-    load_ckpt_folder=MODEL_ONLY_FOLDER,
-    # load_ckpt_info: path = ckpt dir; content = restored states
-    # ("model" / "sampler" / "optimizer" / "scheduler" / "all");
-    # ckpt_type = format ("internevo" / "llama" / "hf_llama").
-    load_ckpt_info=dict(
-        path=MODEL_ONLY_FOLDER,
-        content=(load_optimizer,),
-        ckpt_type="internevo",
-    ),
-    # When auto_resume=True the trainer reloads the latest snapshot from
-    # save_ckpt_folder on restart (so the run survives hardware blips); set
-    # resume_ds=True to also restore the data sampler.
-    auto_resume=auto_resume,
-    resume_ds=resume_ds,
+    # The shared config validator expects this object, while the FSDP2 runner
+    # owns DCP model/optimizer/EMA/RNG checkpoints directly.
+    enable_save_ckpt=False,
     checkpoint_every=CHECKPOINT_EVERY,
-    oss_snapshot_freq=CHECKPOINT_SNAPSHOT_EVERY,
-    # Legacy torch serialization avoids the zip container's local-filesystem
-    # overhead while remaining directly readable by torch.load.
-    local_legacy_serialization=env_bool("local_legacy_serialization", True),
-    # mmap is available only for zip checkpoints and is intended for runs
-    # that prioritize restart latency over checkpoint write latency.
-    local_mmap_load=env_bool("local_mmap_load", False),
-    async_upload=True,
-    async_upload_tmp_folder=os.environ.get(
-        "checkpoint_tmp_folder", f"/dev/shm/sensenovalm_tmp_ckpt/{JOB_NAME}"
-    ),
 )
 
 
@@ -355,7 +307,7 @@ model = dict(
     embed_grad_scale=1,
     embed_split_hidden=True,
     parallel_output=True,
-    mlp_layer_fusion=mlp_layer_fusion,
+    mlp_layer_fusion=False,
     attention_selective_checkpoint=False,
     num_chunks=1,
     # activation checkpointing fraction: True/False/[0-1]
@@ -510,9 +462,9 @@ grad_scaler = dict(
 )
 
 hybrid_zero_optimizer = dict(
-    overlap_sync_grad=overlap_sync_grad,
-    overlap_sync_param=overlap_sync_param,
-    reduce_bucket_size=reduce_bucket_size_mb * 1024 * 1024,
+    overlap_sync_grad=False,
+    overlap_sync_param=False,
+    reduce_bucket_size=256 * 1024 * 1024,
     clip_grad_norm=1.0,
 )
 
@@ -526,17 +478,13 @@ loss = dict(
 # -----------------------------------------------------------------------------
 # Parallelism
 # -----------------------------------------------------------------------------
-# zero1   : ZeRO-1 sharding. size<=0 → match DP size; size==1 → disable.
-# tensor  : TP mode in {"mtp","msp","fsp","isp"}. We use ISP (intern sequence
-#           parallel, decouples TP from SP, composes with weight parallel).
-# pipeline: ``interleaved_overlap`` overlaps comm with interleaved PP scheduler.
-# weight  : weight parallel; ``overlap=True`` hides allgather/reduce-scatter.
-# expert / expert_weight / expert_zero1: same options for MoE experts.
+# Compatibility-only shape for model initialization. FSDP2 is the sole
+# optimizer and parallel execution strategy.
 parallel = dict(
     zero1=dict(size=zero1_size, fsdp=False),
     tensor=dict(size=tp_size, mode=tensor_parallel_mode),
     pipeline=dict(size=pp_size, interleaved_overlap=True),
-    weight=dict(size=wp_size, overlap=weight_overlap, memory_pool=weight_memory_pool),
+    weight=dict(size=wp_size, overlap=False, memory_pool=False),
     expert=dict(size=1),
     expert_zero1=dict(size=1),
     expert_weight=dict(size=1, overlap=True, launch_allgather_before="wo", forward_overlap_per="layer"),

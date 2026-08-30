@@ -1,7 +1,5 @@
-#!/usr/bin/env python
-# -*- encoding: utf-8 -*-
+"""Shared activation-checkpoint primitive used by the FSDP2 model."""
 
-from .optimizer import HybridZeroOptimizer
-from .schedulers import Beta2Scheduler, FineTuneCosineAnnealingWarmupLR
+from .activation_checkpoint import activation_checkpoint
 
-__all__ = ["Beta2Scheduler", "FineTuneCosineAnnealingWarmupLR", "HybridZeroOptimizer"]
+__all__ = ["activation_checkpoint"]

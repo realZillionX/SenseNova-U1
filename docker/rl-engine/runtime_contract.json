@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
   "base_image": "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04",
-  "saved_image": "sensenova-u15-forge:rl-serving-v1",
+  "saved_image": "sensenova-u15-forge:unified-v2",
   "python": "/opt/sensenova-forge-py312/bin/python",
   "platform": {
     "python_version": "3.12",
     "cuda": "12.8",
     "cxx11_abi": true,
+    "gpu": "NVIDIA H200",
     "serving_gpu_count": 2
   },
   "sources": {
