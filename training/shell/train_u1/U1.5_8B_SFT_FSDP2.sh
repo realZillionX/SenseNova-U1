@@ -16,7 +16,7 @@ export VOCAB_FILE=${VOCAB_FILE:?set VOCAB_FILE}
 export TOKENIZER_PATH=${TOKENIZER_PATH:?set TOKENIZER_PATH}
 export mm_data_path=${mm_data_path:?set mm_data_path}
 export JOB_NAME=${JOB_NAME:?set JOB_NAME}
-export SFT_BENCHMARK_REPORT=${SFT_BENCHMARK_REPORT:?set SFT_BENCHMARK_REPORT}
+export SFT_BENCHMARK_REPORT=${SFT_BENCHMARK_REPORT:-}
 
 # FSDP2 is the only model-parallel dimension in this contrast. InternEvo uses
 # wp=8 and accumulates eight samples; FSDP2 uses pure DP and consumes one
@@ -95,9 +95,29 @@ export RUN_ROOT=${RUN_ROOT:-RUN}
 
 [[ -d "$MODEL_NAME_OR_PATH" ]] || { echo "MODEL_NAME_OR_PATH is not a directory" >&2; exit 2; }
 [[ -f "$mm_data_path" ]] || { echo "mm_data_path is not a file" >&2; exit 2; }
-[[ $((NPROC_PER_NODE * NNODES)) -ge 2 ]] || { echo "FSDP2 requires at least two ranks" >&2; exit 2; }
-
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}$(pwd)"
+if [[ ${SFT_MATERIALIZE_ONLY:-false} == true ]]; then
+  [[ $((NPROC_PER_NODE * NNODES)) -eq 1 ]] || {
+    echo "fixed SFT batches must be materialized with one rank" >&2
+    exit 2
+  }
+  : "${SFT_ABLATION_BATCH_OUTPUT:?set SFT_ABLATION_BATCH_OUTPUT}"
+  exec torchrun \
+    --nproc_per_node="$NPROC_PER_NODE" \
+    --nnodes="$NNODES" \
+    --node_rank="$NODE_RANK" \
+    --master_addr="$MASTER_ADDR" \
+    --master_port="$MASTER_PORT" \
+    materialize_sft_ablation_batches.py \
+      --config "$CONFIG_NAME" \
+      --launcher torch \
+      --seed "$SEED" \
+      --backend nccl
+fi
+
+[[ $((NPROC_PER_NODE * NNODES)) -ge 2 ]] || { echo "FSDP2 requires at least two ranks" >&2; exit 2; }
+: "${SFT_BENCHMARK_REPORT:?set SFT_BENCHMARK_REPORT}"
+
 PROFILE_ARGS=()
 if [[ ${SFT_BENCHMARK_PROFILE:-false} == true ]]; then
   PROFILE_ARGS+=(--profiling)
