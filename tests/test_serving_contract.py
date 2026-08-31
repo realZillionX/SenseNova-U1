@@ -103,6 +103,21 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("generation_params.update_hw(", manager)
         self.assertIn("multimodal_params.images[0].image_w", manager)
         self.assertIn("async def commit_weights_update", manager)
+        embed_cache = (
+            ROOT
+            / "serving/third_party/LightLLM/lightllm/server/embed_cache/manager.py"
+        ).read_text()
+        self.assertIn("def _serve_after_listening(", embed_cache)
+        self.assertLess(
+            embed_cache.index("server._listen()"),
+            embed_cache.index('pipe_writer.send("init ok")'),
+        )
+        visual_manager = (
+            ROOT
+            / "serving/third_party/LightLLM/lightllm/server/visualserver/manager.py"
+        ).read_text()
+        self.assertIn("visualserver = None", visual_manager)
+        self.assertIn("if visualserver is not None:", visual_manager)
         api_http = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
         ).read_text()

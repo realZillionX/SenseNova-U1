@@ -2,7 +2,7 @@ ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
 ARG FORGE_COMMIT=uncommitted
-ARG LIGHTLLM_COMMIT=2dadb269ffad0574ccb12d3fef16f25b1ed50d32
+ARG LIGHTLLM_COMMIT=a5e8f6013ec8109d4769eb97e8e078e10422444c
 ARG LIGHTX2V_COMMIT=a46d6c4d0dc00659c597078f86fb34c1d5b0f481
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -13,7 +13,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 
 ENV PATH=/opt/sensenova-forge-py312/bin:${PATH} \
     PYTHON_BIN=/opt/sensenova-forge-py312/bin/python \
-    FORGE_RUNTIME_IMAGE=sensenova-u15-forge:unified-v6 \
+    FORGE_RUNTIME_IMAGE=sensenova-u15-forge:unified-v7 \
     FORGE_ROOT=/workspace/sensenova-forge \
     FORGE_COMMIT=${FORGE_COMMIT} \
     FORGE_LIGHTLLM_COMMIT=${LIGHTLLM_COMMIT} \
