@@ -47,3 +47,10 @@ Periodic DCP state is resumable, but the current atomic HF publication happens
 at the planned final step. Killing a large-ceiling job is therefore not a
 formal early stop unless a later launcher closes publication and receipt
 creation.
+
+Short system and hyperparameter probes may set `SFT_BENCHMARK_REPORT`,
+`SFT_BENCHMARK_WARMUP_STEPS`, and `SFT_BENCHMARK_MEASURED_STEPS` to collect
+the real optimizer-step timings, losses, gradient norms, and peak HBM.
+`SFT_BENCHMARK_ONLY=true` additionally suppresses periodic/final DCP and HF
+publication; it requires a report path, forbids resume and HF output, and is
+never a formal or resumable training run.

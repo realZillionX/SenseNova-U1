@@ -45,6 +45,8 @@ class SftContractTest(unittest.TestCase):
         self.assertIn("reduce_dtype=torch.bfloat16", runner)
         self.assertIn("torch.distributed.checkpoint", runner)
         self.assertIn("supports only NVIDIA H200", runner)
+        self.assertIn("SFT_BENCHMARK_ONLY", runner)
+        self.assertIn("benchmark-only SFT cannot publish an HF checkpoint", runner)
         self.assertFalse((ROOT / "training/train_sensenovau1.py").exists())
         self.assertFalse(tuple((ROOT / "training/shell/ablation").glob("*.sh")))
         self.assertFalse((ROOT / "training/pyproject.toml").exists())

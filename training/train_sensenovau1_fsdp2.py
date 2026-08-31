@@ -566,6 +566,13 @@ def main(args: Any) -> None:
 
     total_steps = int(gpc.config.data.total_steps)
     benchmark_report = os.environ.get("SFT_BENCHMARK_REPORT")
+    benchmark_only = _env_bool("SFT_BENCHMARK_ONLY", False)
+    if benchmark_only and benchmark_report is None:
+        raise ValueError("SFT_BENCHMARK_ONLY requires SFT_BENCHMARK_REPORT")
+    if benchmark_only and os.environ.get("SFT_RESUME_CHECKPOINT"):
+        raise ValueError("benchmark-only SFT cannot resume a production checkpoint")
+    if benchmark_only and os.environ.get("SFT_HF_OUTPUT"):
+        raise ValueError("benchmark-only SFT cannot publish an HF checkpoint")
     warmup_steps = _env_int("SFT_BENCHMARK_WARMUP_STEPS", 0 if benchmark_report is None else 3)
     measured_steps = _env_int(
         "SFT_BENCHMARK_MEASURED_STEPS",
@@ -724,7 +731,10 @@ def main(args: Any) -> None:
                 )
             completed_step = step + 1
             checkpoint_every = _env_int("checkpoint_every", 100, minimum=1)
-            if completed_step % checkpoint_every == 0 or completed_step == total_steps:
+            if not benchmark_only and (
+                completed_step % checkpoint_every == 0
+                or completed_step == total_steps
+            ):
                 _save_training_checkpoint(
                     root=checkpoint_root,
                     step=completed_step,
@@ -792,6 +802,7 @@ def main(args: Any) -> None:
             "initial_parameter_moments": initial_moments,
             "final_parameter_moments": final_moments,
             "checkpoint": checkpoint_result,
+            "benchmark_only": benchmark_only,
         }
         temporary = report_path.with_suffix(report_path.suffix + ".tmp")
         temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

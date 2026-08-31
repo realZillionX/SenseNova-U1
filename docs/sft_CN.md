@@ -27,3 +27,9 @@ checkpoint 间隔、reshard、prefetch、图像限制与有序数据身份。
 checkpoint 供跑分与过拟合分析，只能在下游消费者审计后清理。周期 DCP 可恢复，但
 当前原子 HF publication 只在计划终点发生；直接停止大上限 Job 不是正式 early stop，
 除非后续 launcher 补齐 publication 与 receipt。
+
+短程系统与超参数探针可设置 `SFT_BENCHMARK_REPORT`、
+`SFT_BENCHMARK_WARMUP_STEPS` 和 `SFT_BENCHMARK_MEASURED_STEPS`，记录真实
+optimizer step 的时间、loss、gradient norm 与峰值显存。额外设置
+`SFT_BENCHMARK_ONLY=true` 会关闭周期/终点 DCP 和 HF 发布；该模式必须提供报告
+路径、禁止 resume 与 HF 输出，不能作为正式或可恢复训练。
