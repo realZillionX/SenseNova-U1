@@ -92,8 +92,9 @@ publishes the ordinary policy weights as a complete HF directory. See
 ### 3. Production serving
 
 Build the self-contained Torch 2.8/CUDA 12.8 runtime and start one or more
-two-GPU serving replicas. The launcher pairs each even-index GPU with the
-following odd-index GPU and exposes consecutive HTTP ports:
+two-GPU serving replicas. The launcher uses every visible GPU by default,
+pairs each even local index with the following odd index, and exposes
+consecutive HTTP ports:
 
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
@@ -105,6 +106,10 @@ FORGE_REQUIRE_RDMA=true \
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash scripts/rl_engine/launch_server.sh
 ```
+
+Run the same launcher on any number of serving nodes. Give each node the next
+global `FORGE_SERVING_REPLICA_ID_OFFSET`; private LightLLM ports use only the
+node-local pair index, so global replica ids do not impose a cluster-size cap.
 
 The service exposes `/v1/chat/completions`, `/v1/rl/rollouts`, trace streaming,
 status, and online weight-control endpoints. Ordinary inference follows the

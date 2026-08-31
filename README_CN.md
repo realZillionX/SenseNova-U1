@@ -74,9 +74,14 @@ docker build -f docker/rl-engine/Dockerfile \
   -t sensenova-u15-forge:unified-v4 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
-CUDA_VISIBLE_DEVICES=0,1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash scripts/rl_engine/launch_server.sh
 ```
+
+launcher 默认使用全部可见 GPU，并按本地 `0/1、2/3、…` 组成
+LightLLM/LightX2V 副本。任意数量 Serving 节点可各自运行同一 launcher；每个节点
+只需用 `FORGE_SERVING_REPLICA_ID_OFFSET` 接续全局副本编号，节点内私有端口只依赖
+本地 pair index，不会让全局副本数受单节点端口区间限制。
 
 ### GDPO / UniGDPO
 

@@ -166,9 +166,25 @@ def _rdma_status() -> dict[str, object]:
     }
 
 
+def _rl_x2v_config(path: str | None) -> dict[str, object]:
+    result: dict[str, object] = {"path": path, "config": None, "error": None}
+    if not path:
+        result["error"] = "RL LightX2V config path is missing"
+        return result
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("config must be a JSON object")
+        result["config"] = payload
+    except (OSError, TypeError, json.JSONDecodeError) as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path")
+    parser.add_argument("--x2v-config")
     parser.add_argument("--expected-gpus", type=int, default=2)
     parser.add_argument("--allow-no-gpu", action="store_true")
     parser.add_argument("--require-rdma", action="store_true")
@@ -276,6 +292,7 @@ def main() -> None:
     checkpoint_manifest = _checkpoint_manifest(args.model_path)
     lightllm_policy_overlay = _lightllm_policy_overlay()
     rdma = _rdma_status()
+    rl_x2v_config = _rl_x2v_config(args.x2v_config)
     payload = {
         "python": sys.version,
         "python_executable": sys.executable,
@@ -312,6 +329,7 @@ def main() -> None:
         "model_exists": bool(args.model_path and Path(args.model_path).is_dir()),
         "model_checkpoint": checkpoint_manifest,
         "lightllm_policy_overlay": lightllm_policy_overlay,
+        "rl_x2v_config": rl_x2v_config,
         "rdma": rdma,
     }
 
@@ -350,6 +368,15 @@ def main() -> None:
         errors.append(f"LightLLM HTTP server import closure failed: {http_server['error']}")
     if not lightllm_policy_overlay["available"]:
         errors.append(f"SenseNova LightLLM policy overlay is incomplete: {lightllm_policy_overlay['missing']}")
+    x2v_payload = rl_x2v_config["config"]
+    if rl_x2v_config["error"] or not isinstance(x2v_payload, dict):
+        errors.append(f"RL LightX2V config is unavailable: {rl_x2v_config['error']}")
+    elif (
+        x2v_payload.get("enable_cfg") is not False
+        or x2v_payload.get("cfg_scale") != 1.0
+        or x2v_payload.get("cfg_norm") != "none"
+    ):
+        errors.append("RL LightX2V config must hard-disable classifier-free guidance")
     if args.require_rdma and not rdma["available"]:
         errors.append(
             "multi-node RL serving requires libibverbs.so.1 and a visible InfiniBand/RoCE device: "

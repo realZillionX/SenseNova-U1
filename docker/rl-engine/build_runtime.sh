@@ -170,7 +170,9 @@ Path("/opt/sensenova-forge/manifests/rl-serving/source-commits.json").write_text
 PY
 "$PYTHON_BIN" -m pip freeze >"$MANIFEST_DIR/pip-freeze.txt"
 sha256sum "$RUNTIME_LOCK" "$RUNTIME_CONTRACT" >"$MANIFEST_DIR/input-sha256.txt"
-"$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" --allow-no-gpu
+"$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
+  --allow-no-gpu \
+  --x2v-config "$SOURCE_ROOT/serving/configs/neopp_u15_forge_rl.json"
 "$PYTHON_BIN" -m pip cache purge || true
 
 echo "SenseNova-U1.5 Forge RL + serving runtime completed"

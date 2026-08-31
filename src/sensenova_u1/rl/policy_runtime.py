@@ -71,6 +71,7 @@ class U15PolicyRollout:
     text_tokens: int
     generated_images: int
     seconds: float
+    finish_reason: str = "stop"
 
 
 @dataclass(frozen=True)
@@ -386,6 +387,14 @@ class _PolicySession:
             )
             pixel_values.append(pixels.to(self.device, dtype=self.dtype))
             grid_hw.append(grid.to(self.device))
+        if modality == "ti2ti" and not grid_hw:
+            raise ValueError("TI2TI first-input resolution requires a prompt image")
+        if grid_hw:
+            first_grid = grid_hw[0][0]
+            self.image_height = int(first_grid[0].item()) * int(self.model.patch_size)
+            self.image_width = int(first_grid[1].item()) * int(self.model.patch_size)
+        else:
+            self.image_height = self.image_width = 0
 
         get_template = getattr(self.model_module, "get_conv_template", None)
         if not callable(get_template):
@@ -478,9 +487,9 @@ class _PolicySession:
             raise ValueError(f"U1.5 prompt needs {prompt_tokens} cache tokens, RL limit is {plan_limit}")
 
     def generated_image_context_tokens(self) -> int:
-        size = int(self.runtime.plan.image_size)
         merge_size = int(1 / float(self.model.downsample_ratio))
-        image_tokens = (size // (int(self.model.patch_size) * merge_size)) ** 2
+        stride = int(self.model.patch_size) * merge_size
+        image_tokens = (self.image_height // stride) * (self.image_width // stride)
         return image_tokens + 1
 
     def constrained_logits(self, *, allow_image: bool = True) -> Tensor:
@@ -615,8 +624,8 @@ class _PolicySession:
         image_height: int | None = None,
         image_width: int | None = None,
     ) -> tuple[int, int, int, int, Tensor, float, Tensor]:
-        height = int(image_height or self.runtime.plan.image_size)
-        width = int(image_width or self.runtime.plan.image_size)
+        height = int(image_height or self.image_height)
+        width = int(image_width or self.image_width)
         merge_size = int(1 / float(self.model.downsample_ratio))
         token_h = height // (int(self.model.patch_size) * merge_size)
         token_w = width // (int(self.model.patch_size) * merge_size)
@@ -662,8 +671,8 @@ class _PolicySession:
     ):
         merge_size = int(1 / float(self.model.downsample_ratio))
         patch_size = int(self.model.patch_size)
-        height = int(image_height or self.runtime.plan.image_size)
-        width = int(image_width or self.runtime.plan.image_size)
+        height = int(image_height or self.image_height)
+        width = int(image_width or self.image_width)
         sequence_length = (height // (patch_size * merge_size)) * (width // (patch_size * merge_size))
 
         def run_velocity(sample_model: Tensor, timestep_values: Tensor) -> Tensor:
@@ -748,8 +757,8 @@ class _PolicySession:
         image_height: int | None = None,
         image_width: int | None = None,
     ) -> Tensor:
-        height = int(image_height or self.runtime.plan.image_size)
-        width = int(image_width or self.runtime.plan.image_size)
+        height = int(image_height or self.image_height)
+        width = int(image_width or self.image_width)
         patch_size = int(self.model.patch_size)
         merge_size = int(1 / float(self.model.downsample_ratio))
         pixels = self.model.unpatchify(
@@ -842,9 +851,8 @@ class _PolicySession:
     def sample_image(self, *, generator: torch.Generator) -> tuple[Tensor, ImageSdeTrace]:
         token_h, token_w, grid_h, grid_w, indexes, noise_scale, schedule = self._image_geometry()
         sequence_length = token_h * token_w
-        size = self.runtime.plan.image_size
         noise = noise_scale * torch.randn(
-            (1, 3, size, size),
+            (1, 3, self.image_height, self.image_width),
             device=self.device,
             dtype=self.dtype,
             generator=generator,
@@ -880,8 +888,8 @@ class _PolicySession:
         return pixels, trace
 
     def _validated_image_replay_geometry(self, event: ImageEvent) -> tuple[int, int, Tensor, float, int, int]:
-        height = int(event.trace.image_height or self.runtime.plan.image_size)
-        width = int(event.trace.image_width or self.runtime.plan.image_size)
+        height = int(event.trace.image_height or self.image_height)
+        width = int(event.trace.image_width or self.image_width)
         _token_h, _token_w, grid_h, grid_w, indexes, noise_scale, schedule = self._image_geometry(
             image_height=height, image_width=width
         )
@@ -1168,6 +1176,7 @@ class U15PolicyRuntime:
         text_tokens = 0
         image_count = 0
         remaining = self.plan.max_new_tokens
+        finish_reason = "length"
         text_only_tail = modality == "ti2t" or self.plan.max_images == 0
         with torch.no_grad():
             session = _PolicySession(
@@ -1222,6 +1231,8 @@ class U15PolicyRuntime:
                     if stop is None and image_reserve and remaining > 0:
                         text_only_tail = True
                         continue
+                    if stop is not None:
+                        finish_reason = "stop"
                     break
                 if not can_generate_image:
                     raise RuntimeError("U1.5 sampled a masked image action")
@@ -1249,6 +1260,7 @@ class U15PolicyRuntime:
             text_tokens=text_tokens,
             generated_images=image_count,
             seconds=time.perf_counter() - started,
+            finish_reason=finish_reason,
         )
 
     @staticmethod

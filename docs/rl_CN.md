@@ -33,3 +33,14 @@ sensenova-forge rl-run /runs/u15-rl/plan.json
 
 checkpoint 使用 DCP 保存 FSDP2 model、AdamW、逐 rank RNG、预算与 active
 serving policy version。
+
+`torchrun.nnodes` 支持任意正节点数，每张 H200 一个进程；rollout URL 列表可独立
+包含任意正数个 Serving 副本。每个 rank 拥有一个 prompt group，因此
+`prompts_per_batch` 等于 FSDP world size。checkpoint 间隔与最新 checkpoint 保留数
+分别封存，默认只保留两个已提交恢复点。
+
+达到 `max_images` 不会丢弃轨迹：后续文本 tail 会屏蔽 image-action token，让模型
+仍可闭合 `</think>` 并输出 `Answer:`。达到 `max_new_tokens` 或联合序列上限时返回
+`length` 轨迹，仍照常交给 verifier 并参与优化；缺少 typed final 就得到正常的
+parse/semantic 失败，而不是被静默过滤或重采样。预算账本另记长度截断数与图像上限
+触发数。

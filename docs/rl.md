@@ -83,3 +83,16 @@ sensenova-forge rl-run /runs/u15-rl/plan.json
 
 The runner saves FSDP2 model and AdamW state through Distributed Checkpoint,
 per-rank RNG, budget counters, and the active serving policy version.
+`torchrun.nnodes` may be any positive node count with one H200 process per GPU;
+the rollout URL list may independently contain any positive number of serving
+replicas. Each rank owns one prompt group, so `prompts_per_batch` equals the
+FSDP world size. Checkpoint interval and newest-checkpoint retention are sealed
+separately; the default keeps two committed recovery points.
+
+Reaching `max_images` does not discard a trajectory: the image-action token is
+masked for the remaining text tail so the policy can still close `</think>` and
+emit `Answer:`. Reaching `max_new_tokens` or the joint sequence limit returns a
+`length` trajectory. It is still verified and optimized; a missing typed final
+therefore receives the ordinary parse/semantic failure rather than being
+silently filtered or resampled. Budget state separately records length
+truncations and image-limit hits.

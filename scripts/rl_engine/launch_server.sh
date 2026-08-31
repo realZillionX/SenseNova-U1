@@ -7,7 +7,7 @@ MODEL_ROOT=${MODEL_ROOT:?set MODEL_ROOT to the SenseNova-U1.5-8B-MoT HF checkpoi
 LIGHTLLM_SOURCE_ROOT="$SOURCE_ROOT/serving/third_party/LightLLM"
 LIGHTLLM_ROOT=${FORGE_LIGHTLLM_ROOT:-/opt/sensenova-forge/sources/LightLLM}
 LIGHTX2V_ROOT="$SOURCE_ROOT/serving/third_party/LightX2V"
-X2V_CONFIG=${X2V_CONFIG:-$SOURCE_ROOT/serving/configs/neopp_u15_forge_512.json}
+X2V_CONFIG=${X2V_CONFIG:-$SOURCE_ROOT/serving/configs/neopp_u15_forge_rl.json}
 PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
 
 [[ -f "$X2V_CONFIG" ]] || { echo "Forge LightX2V config is missing: $X2V_CONFIG" >&2; exit 2; }
@@ -16,7 +16,20 @@ PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
   exit 2
 }
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+if [[ -z ${CUDA_VISIBLE_DEVICES:-} ]]; then
+  GPU_COUNT=$(
+    "$PYTHON_BIN" -c 'import torch; print(torch.cuda.device_count())'
+  )
+  [[ "$GPU_COUNT" =~ ^[0-9]+$ ]] || {
+    echo "could not discover the visible CUDA device count" >&2
+    exit 2
+  }
+  CUDA_VISIBLE_DEVICES=""
+  for ((device = 0; device < GPU_COUNT; device++)); do
+    CUDA_VISIBLE_DEVICES+="${CUDA_VISIBLE_DEVICES:+,}$device"
+  done
+fi
+export CUDA_VISIBLE_DEVICES
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
 export PYTHONPATH="$LIGHTLLM_ROOT:$LIGHTX2V_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE_OVERRIDE:-sensenova-u15-forge:unified-v4}
@@ -78,11 +91,6 @@ REPLICA_ID_OFFSET=${FORGE_SERVING_REPLICA_ID_OFFSET:-0}
   echo "Forge serving replica HTTP ports fall outside [1, 65535]" >&2
   exit 2
 }
-(( REPLICA_ID_OFFSET + REPLICA_COUNT - 1 <= 26 )) || {
-  echo "Forge serving replica ids must fit the isolated internal port ranges [0, 26]" >&2
-  exit 2
-}
-
 launch_replica() {
   local local_index=$1
   local replica_id=$((REPLICA_ID_OFFSET + local_index))
@@ -96,6 +104,7 @@ launch_replica() {
   fi
   export CUDA_VISIBLE_DEVICES=$device_pair
   export MOVA_RL_REPLICA_ID=$replica_id
+  export MOVA_RL_LOCAL_REPLICA_ID=$local_index
   export MOVA_RL_TRACE_DIR="$TRACE_ROOT/replica-$replica_id"
   local rdma_args=()
   if [[ ${FORGE_REQUIRE_RDMA:-false} == true ]]; then
@@ -103,6 +112,7 @@ launch_replica() {
   fi
   "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
     --model-path "$MODEL_ROOT" \
+    --x2v-config "$X2V_CONFIG" \
     --expected-gpus 2 \
     "${rdma_args[@]}" \
     --output "$preflight_output"

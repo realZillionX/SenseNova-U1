@@ -23,3 +23,6 @@ bash training/shell/train_u1/U1.5_8B_SFT.sh
 optimizer batch。最终普通 policy 权重原子发布为完整 HF safetensors，供 RL 与
 serving 使用。正式 plan 必须封存 global batch、activation checkpoint 比例、
 checkpoint 间隔、reshard、prefetch、图像限制与有序数据身份。
+生产默认每 1000 个 optimizer step 保存一次，并只保留最新两个已提交恢复点；两项
+仍属于显式 run 输入。周期 DCP 可恢复，但当前原子 HF publication 只在计划终点发生；
+直接停止大上限 Job 不是正式 early stop，除非后续 launcher 补齐 publication 与 receipt。

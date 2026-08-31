@@ -42,6 +42,8 @@ class BudgetLedger:
     rollouts: int = 0
     generated_text_tokens: int = 0
     generated_images: int = 0
+    length_truncated_rollouts: int = 0
+    image_limit_hits: int = 0
     rollout_seconds: float = 0.0
     verifier_seconds: float = 0.0
     verifier_invocations: int = 0
@@ -58,12 +60,16 @@ class BudgetLedger:
         text_tokens: int = 0,
         images: int = 0,
         seconds: float = 0.0,
+        truncated: bool = False,
+        image_limit_hit: bool = False,
     ) -> None:
         """Count generated rollouts and everything their generation produced."""
 
         self.rollouts += int(count)
         self.generated_text_tokens += int(text_tokens)
         self.generated_images += int(images)
+        self.length_truncated_rollouts += int(truncated)
+        self.image_limit_hits += int(image_limit_hit)
         self.rollout_seconds += float(seconds)
 
     def record_verification(self, invocations: int = 1, *, seconds: float = 0.0) -> None:
@@ -103,6 +109,8 @@ class BudgetLedger:
         self.rollouts += other.rollouts
         self.generated_text_tokens += other.generated_text_tokens
         self.generated_images += other.generated_images
+        self.length_truncated_rollouts += other.length_truncated_rollouts
+        self.image_limit_hits += other.image_limit_hits
         self.rollout_seconds += other.rollout_seconds
         self.verifier_seconds += other.verifier_seconds
         self.verifier_invocations += other.verifier_invocations

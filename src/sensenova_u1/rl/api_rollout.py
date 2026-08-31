@@ -28,6 +28,7 @@ from urllib.request import Request, urlopen
 
 import torch
 import torch.distributed as dist
+from PIL import Image
 from safetensors.torch import load as load_safetensors
 
 from .policy_runtime import (
@@ -68,6 +69,22 @@ _IMAGE_SUFFIX = {
     "png": ".png",
     "webp": ".webp",
 }
+
+
+def _first_input_geometry(prompt_images: Sequence[str]) -> tuple[int, int]:
+    """Return ``(height, width)`` from the first immutable prompt image."""
+
+    if not prompt_images:
+        raise ValueError("TI2TI first-input resolution requires a prompt image")
+    path = Path(prompt_images[0]).expanduser().resolve()
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read first prompt image geometry: {path}") from exc
+    if width < 1 or height < 1:
+        raise ValueError(f"first prompt image has invalid geometry: {path}")
+    return int(height), int(width)
 
 
 class RlApiTransport(Protocol):
@@ -321,7 +338,7 @@ class SenseNovaRlApiClient:
         max_sequence_length: int,
         max_new_tokens: int,
         max_images: int,
-        image_size: int,
+        image_resolution_mode: str,
         image_steps: int,
         image_noise_level: float,
         timestep_shift: float,
@@ -347,9 +364,12 @@ class SenseNovaRlApiClient:
             "top_p": 1.0,
         }
         if modality == "ti2ti":
+            if image_resolution_mode != "first_input":
+                raise ValueError("RL image resolution must follow the first prompt image")
+            image_height, image_width = _first_input_geometry(prompt_images)
             request["image_policy"] = {
-                "height": int(image_size),
-                "width": int(image_size),
+                "height": image_height,
+                "width": image_width,
                 "image_steps": int(image_steps),
                 "timestep_shift": float(timestep_shift),
                 "t_eps": float(t_eps),
@@ -583,12 +603,15 @@ class SenseNovaRlApiClient:
             raise RuntimeError("SenseNova RL rollout usage disagrees with its event trace")
         if not wire_events or not any(event["type"] == "text" for event in wire_events):
             raise RuntimeError("SenseNova RL rollout emitted no text policy action")
+        finish_reason = raw.get("finish_reason")
+        if finish_reason not in {"stop", "length"}:
+            raise RuntimeError(f"SenseNova RL rollout has invalid finish_reason {finish_reason!r}")
         return {
             "events": wire_events,
             "text_tokens": text_tokens,
             "generated_images": image_count,
             "seconds": float(seconds),
-            "finish_reason": raw.get("finish_reason"),
+            "finish_reason": finish_reason,
         }
 
     def materialize_group(
@@ -709,6 +732,7 @@ class SenseNovaRlApiClient:
                     text_tokens=int(raw["text_tokens"]),
                     generated_images=int(raw["generated_images"]),
                     seconds=float(raw["seconds"]),
+                    finish_reason=str(raw.get("finish_reason") or "stop"),
                 )
             )
         return tuple(rollouts)
@@ -796,6 +820,7 @@ class SenseNovaRlApiClient:
             text_tokens=int(raw["text_tokens"]),
             generated_images=int(raw["generated_images"]),
             seconds=float(raw["seconds"]),
+            finish_reason=str(raw.get("finish_reason") or "stop"),
         )
 
     def _distribute_trace(

@@ -52,7 +52,8 @@ export metric_interval_steps=${metric_interval_steps:-10}
 # The production H200 profile keeps this conservative recomputation level so
 # native-resolution outliers retain ample headroom.
 export activation_checkpoint_fraction=${activation_checkpoint_fraction:-0.75}
-export checkpoint_every=${checkpoint_every:-100}
+export checkpoint_every=${checkpoint_every:-1000}
+export checkpoint_keep_last=${checkpoint_keep_last:-2}
 export SFT_CHECKPOINT_ROOT=${SFT_CHECKPOINT_ROOT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/checkpoints"}
 export SFT_HF_OUTPUT=${SFT_HF_OUTPUT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/hf"}
 

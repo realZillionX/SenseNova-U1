@@ -21,8 +21,6 @@ from typing import Any
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch import Tensor, nn
-
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.utils import packed_data_normalizer
 from sensenovalm.initialize.launch import initialize_distributed_env
@@ -32,7 +30,7 @@ from sensenovalm.utils.common import move_to_device, parse_args
 from sensenovavl.data import build_train_loader_with_data_type
 from sensenovavl.train.pipeline import get_model
 from sensenovavl.utils.utils import check_image_fn, init_pil
-
+from torch import Tensor, nn
 
 _BLOCK_CLASS_NAMES = frozenset({"Qwen3MoeMoTDecoder", "InternVisionEncoderLayer"})
 
@@ -114,8 +112,7 @@ def _prepare_microbatch(batch: tuple[dict[str, Any], Any], offset: int) -> tuple
 
 
 def _shard_model(model: nn.Module) -> tuple[nn.Module, tuple[str, ...]]:
-    from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
-    from torch.distributed.fsdp import FSDPModule
+    from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
     from torch.distributed.tensor import DTensor
 
     if not dist.is_initialized() or dist.get_world_size() < 2:
@@ -373,6 +370,25 @@ def _save_training_checkpoint(
         os.rename(staging, target)
     dist.barrier()
     return target
+
+
+def _prune_training_checkpoints(root: Path, *, keep_last: int) -> tuple[Path, ...]:
+    """Remove superseded committed checkpoints after a successful save."""
+
+    if keep_last < 1:
+        raise ValueError("checkpoint_keep_last must be positive")
+    removed: list[Path] = []
+    if dist.get_rank() == 0:
+        checkpoints = sorted(
+            path
+            for path in root.glob("step-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]")
+            if path.is_dir() and (path / "checkpoint.json").is_file()
+        )
+        for checkpoint in checkpoints[:-keep_last]:
+            shutil.rmtree(checkpoint)
+            removed.append(checkpoint)
+    dist.barrier()
+    return tuple(removed)
 
 
 def _load_training_checkpoint(
@@ -726,7 +742,7 @@ def main(args: Any) -> None:
                     flush=True,
                 )
             completed_step = step + 1
-            checkpoint_every = _env_int("checkpoint_every", 100, minimum=1)
+            checkpoint_every = _env_int("checkpoint_every", 1000, minimum=1)
             if completed_step % checkpoint_every == 0 or completed_step == total_steps:
                 _save_training_checkpoint(
                     root=checkpoint_root,
@@ -734,6 +750,10 @@ def main(args: Any) -> None:
                     model=model,
                     optimizer=optimizer,
                     ema=ema,
+                )
+                _prune_training_checkpoints(
+                    checkpoint_root,
+                    keep_last=_env_int("checkpoint_keep_last", 2, minimum=1),
                 )
 
     peak_memory = _distributed_max(float(torch.cuda.max_memory_allocated()))
