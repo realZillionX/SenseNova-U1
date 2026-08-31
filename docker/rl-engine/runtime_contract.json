@@ -13,7 +13,7 @@
   },
   "sources": {
     "forge": "build-arg:FORGE_COMMIT",
-    "lightllm": "9cee6c9e78fd5e1f9a4e9ddd5586505d5a3228e1",
+    "lightllm": "c0db977844d329cd30e41aa67781ceaf6d82eaeb",
     "lightx2v": "a46d6c4d0dc00659c597078f86fb34c1d5b0f481"
   },
   "overlays": {
