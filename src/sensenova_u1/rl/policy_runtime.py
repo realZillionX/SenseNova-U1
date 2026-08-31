@@ -476,10 +476,6 @@ class _PolicySession:
             raise ValueError(f"RL max_sequence_length={plan_limit} exceeds model context {limit}")
         if prompt_tokens >= plan_limit:
             raise ValueError(f"U1.5 prompt needs {prompt_tokens} cache tokens, RL limit is {plan_limit}")
-        image_tokens = self.generated_image_context_tokens()
-        required = prompt_tokens + text_tokens + images * image_tokens
-        if required > limit:
-            raise ValueError(f"U1.5 rollout needs {required} cache tokens, context is {limit}")
 
     def generated_image_context_tokens(self) -> int:
         size = int(self.runtime.plan.image_size)
