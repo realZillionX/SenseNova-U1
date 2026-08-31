@@ -16,7 +16,7 @@ SFT, RL, and serving share the repository-root Python 3.12, Torch 2.8/CUDA
 uv sync --locked
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:unified-v5 .
+  -t sensenova-u15-forge:unified-v6 .
 ```
 
 The image includes FlashAttention 2 for SFT/RL backward and FA3-Neo for

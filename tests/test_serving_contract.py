@@ -112,6 +112,16 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("max_req_total_len=span_sequence_limit", api_rl)
         self.assertIn('"sequence_tokens": sequence_tokens', api_rl)
         self.assertIn('"guidance_scale": 1.0', api_rl)
+        api_openai = (
+            ROOT
+            / "serving/third_party/LightLLM/lightllm/server/api_openai.py"
+        ).read_text()
+        self.assertIn("def _set_interleaved_completion_budget(", api_openai)
+        self.assertEqual(
+            api_openai.count("total_completion_tokens=total_completion_tokens"),
+            2,
+        )
+        self.assertEqual(api_openai.count('finish_reason = "length"'), 2)
         rl_models = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py"
         ).read_text()
