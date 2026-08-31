@@ -83,8 +83,13 @@ REPLICA_COUNT=${FORGE_SERVING_REPLICAS:-$AVAILABLE_REPLICAS}
 }
 PORT_BASE=${FORGE_SERVING_PORT_BASE:-8000}
 REPLICA_ID_OFFSET=${FORGE_SERVING_REPLICA_ID_OFFSET:-0}
+REPLICA_STAGGER_SECONDS=${FORGE_SERVING_STAGGER_SECONDS:-0}
 [[ "$PORT_BASE" =~ ^[0-9]+$ && "$REPLICA_ID_OFFSET" =~ ^[0-9]+$ ]] || {
   echo "FORGE_SERVING_PORT_BASE and FORGE_SERVING_REPLICA_ID_OFFSET must be non-negative integers" >&2
+  exit 2
+}
+[[ "$REPLICA_STAGGER_SECONDS" =~ ^[0-9]+$ ]] || {
+  echo "FORGE_SERVING_STAGGER_SECONDS must be a non-negative integer" >&2
   exit 2
 }
 (( PORT_BASE >= 1 && PORT_BASE + REPLICA_COUNT - 1 <= 65535 )) || {
@@ -134,6 +139,9 @@ PIDS=()
 for ((replica = 0; replica < REPLICA_COUNT; replica++)); do
   launch_replica "$replica" &
   PIDS+=("$!")
+  if (( replica + 1 < REPLICA_COUNT && REPLICA_STAGGER_SECONDS > 0 )); then
+    sleep "$REPLICA_STAGGER_SECONDS"
+  fi
 done
 terminate_replicas() {
   for pid in "${PIDS[@]}"; do

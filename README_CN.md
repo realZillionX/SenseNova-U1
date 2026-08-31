@@ -82,6 +82,8 @@ launcher 默认使用全部可见 GPU，并按本地 `0/1、2/3、…` 组成
 LightLLM/LightX2V 副本。任意数量 Serving 节点可各自运行同一 launcher；每个节点
 只需用 `FORGE_SERVING_REPLICA_ID_OFFSET` 接续全局副本编号，节点内私有端口只依赖
 本地 pair index，不会让全局副本数受单节点端口区间限制。
+冷启动受存储吞吐限制时，可将 `FORGE_SERVING_STAGGER_SECONDS` 设为非零整数，使
+本地副本错峰启动；最终 GPU 拓扑与 endpoint 不变。
 
 ### GDPO / UniGDPO
 

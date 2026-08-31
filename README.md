@@ -110,6 +110,9 @@ bash scripts/rl_engine/launch_server.sh
 Run the same launcher on any number of serving nodes. Give each node the next
 global `FORGE_SERVING_REPLICA_ID_OFFSET`; private LightLLM ports use only the
 node-local pair index, so global replica ids do not impose a cluster-size cap.
+On storage-constrained cold starts, set `FORGE_SERVING_STAGGER_SECONDS` to a
+nonzero integer to delay each local replica after the previous launch while
+preserving the same final GPU topology and endpoints.
 
 The service exposes `/v1/chat/completions`, `/v1/rl/rollouts`, trace streaming,
 status, and online weight-control endpoints. Ordinary inference follows the

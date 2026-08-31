@@ -82,6 +82,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("FORGE_SERVING_REPLICAS", launcher)
         self.assertIn("FORGE_SERVING_PORT_BASE", launcher)
         self.assertIn("FORGE_SERVING_REPLICA_ID_OFFSET", launcher)
+        self.assertIn("FORGE_SERVING_STAGGER_SECONDS", launcher)
         self.assertIn("torch.cuda.device_count()", launcher)
         self.assertIn('device_pair="${VISIBLE_GPUS[$((2 * local_index))]},${VISIBLE_GPUS[$((2 * local_index + 1))]}"', launcher)
         self.assertIn('MOVA_RL_TRACE_DIR="$TRACE_ROOT/replica-$replica_id"', launcher)
