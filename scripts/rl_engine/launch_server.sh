@@ -7,7 +7,7 @@ MODEL_ROOT=${MODEL_ROOT:?set MODEL_ROOT to the SenseNova-U1.5-8B-MoT HF checkpoi
 LIGHTLLM_SOURCE_ROOT="$SOURCE_ROOT/serving/third_party/LightLLM"
 LIGHTLLM_ROOT=${FORGE_LIGHTLLM_ROOT:-/opt/sensenova-forge/sources/LightLLM}
 LIGHTX2V_ROOT="$SOURCE_ROOT/serving/third_party/LightX2V"
-X2V_CONFIG=${X2V_CONFIG:-$SOURCE_ROOT/serving/configs/neopp_u15_forge_rl.json}
+X2V_CONFIG=${X2V_CONFIG:-$SOURCE_ROOT/serving/configs/neopp_u15_forge_512.json}
 PYTHON_BIN=${PYTHON_BIN:-/opt/sensenova-forge-py312/bin/python}
 
 [[ -f "$X2V_CONFIG" ]] || { echo "Forge LightX2V config is missing: $X2V_CONFIG" >&2; exit 2; }

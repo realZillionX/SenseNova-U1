@@ -34,25 +34,24 @@ Ordinary inference and RL use different, explicit profiles:
 - VQA follows the published sampled text recipe: temperature 0.6, top-p 0.95,
   top-k 20 and repetition penalty 1.05, including prompt tokens.
 - T2I, editing and interleave use greedy text decode. Image generation uses 50
-  flow steps, CFG 4, image CFG 1, `cfg_norm=none` and timestep shift 3; T2I and
-  editing use the 2K buckets while interleave defaults to the published 1.5K
-  buckets.
+  flow steps, CFG 4, image CFG 1, `cfg_norm=none` and timestep shift 3. Pure
+  T2I may select a logical bucket; input-conditioned editing/interleaved
+  evaluation uses dynamic resolution and follows the first prompt image.
 - RL text uses the unmodified full-softmax categorical policy. RL image rollout
-  hard-disables CFG, copies the first prompt image's width and height (with only
-  the model's factor-of-32 normalization), and takes step count, timestep shift,
-  t-epsilon, noise level and SDE window from the immutable plan.
+  hard-disables CFG, fixes image actions at 512x512, and takes step count,
+  timestep shift, t-epsilon, noise level and SDE window from the immutable plan.
 
-`serving/configs/neopp_u15_forge_rl.json` is the CFG-free, 30-step, shift-1 RL
-startup profile. Every request updates the live scheduler step count and
-first-input geometry; the RL response reports the actual trace geometry, and
+`serving/configs/neopp_u15_forge_512.json` is the 512x512, CFG-4, 30-step,
+shift-1 startup profile used by ordinary serving. The RL route overrides CFG
+and geometry explicitly; its response reports the actual trace geometry, and
 replay refuses a schedule mismatch.
 
 Trace TTL is a garbage-collection guard, not a guessed performance constant.
-The default remains one hour until a full `max_images=10` H200 rollout measures
+The current fallback remains one hour until a full `max_images=10` H200 rollout measures
 the oldest bundle age and shared-memory peak. A trace is consumed immediately
 after its rollout group returns, then deleted; disconnect cleanup is also
 eager. Formal serving seals the measured TTL with margin rather than silently
-inheriting the default.
+inheriting the fallback.
 
 LightLLM reserves 70% of its post-weight memory for KV cache by default. The
 remaining headroom is part of the online-publication contract: a paused server

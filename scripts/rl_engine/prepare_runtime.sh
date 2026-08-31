@@ -29,4 +29,4 @@ bash "$SOURCE_ROOT/docker/rl-engine/build_runtime.sh" "$SOURCE_ROOT"
 export PYTHONPATH="$LIGHTLLM_ROOT:$LIGHTX2V_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
   --allow-no-gpu \
-  --x2v-config "$SOURCE_ROOT/serving/configs/neopp_u15_forge_rl.json"
+  --x2v-config "$SOURCE_ROOT/serving/configs/neopp_u15_forge_512.json"

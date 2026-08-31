@@ -39,9 +39,11 @@ replays the sealed number of optimizer batches before restoring sampled-model
 RNG. The final ordinary policy weights are published as a complete HF
 safetensors directory for RL and serving. Formal runs must seal the global
 batch, activation checkpoint fraction, checkpoint interval, reshard setting,
-prefetch depth, image limits, and ordered dataset identity. The production
-default checkpoints every 1000 optimizer steps and retains only the newest two
-committed recovery points; both values remain explicit run inputs. Periodic
-DCP state is resumable, but the current atomic HF publication happens at the
-planned final step. Killing a large-ceiling job is therefore not a formal early
-stop unless a later launcher closes publication and receipt creation.
+prefetch depth, image limits, and ordered dataset identity. The formal
+checkpoint interval remains a run input pending hardware measurement. The
+runner retains every committed intermediate checkpoint for evaluation and
+overfitting analysis; cleanup happens only after downstream-consumer audit.
+Periodic DCP state is resumable, but the current atomic HF publication happens
+at the planned final step. Killing a large-ceiling job is therefore not a
+formal early stop unless a later launcher closes publication and receipt
+creation.

@@ -57,8 +57,7 @@ class RlPlan:
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
     seed: int = 42
-    save_every_steps: int = 100
-    checkpoint_keep_last: int = 2
+    save_every_steps: int = 10
     rollout_api_base_urls: tuple[str, ...] = ("http://127.0.0.1:8000",)
     rollout_policy_version: str = "startup"
     weight_update_master_address: str = "127.0.0.1"
@@ -68,7 +67,7 @@ class RlPlan:
     max_sequence_length: int = 8192
     max_new_tokens: int = 6144
     max_images: int = 10
-    image_resolution_mode: str = "first_input"
+    image_size: int = 512
     image_steps: int = 30
     image_replay_microbatch_size: int = 1
     image_noise_level: float = 0.7
@@ -134,9 +133,9 @@ class RlPlan:
             "prompts_per_batch",
             "policy_updates_per_batch",
             "save_every_steps",
-            "checkpoint_keep_last",
             "max_sequence_length",
             "max_new_tokens",
+            "image_size",
             "image_steps",
             "image_replay_microbatch_size",
             "weight_update_bucket_bytes",
@@ -162,8 +161,8 @@ class RlPlan:
             raise ValueError("max_steps must close a complete frozen-old PPO update batch")
         if self.max_new_tokens >= self.max_sequence_length:
             raise ValueError("max_new_tokens must leave room for the prompt")
-        if self.image_resolution_mode != "first_input":
-            raise ValueError("RL image resolution must follow the first prompt image")
+        if self.image_size % 32:
+            raise ValueError("image_size must be divisible by the U1.5 32-pixel generation grid")
         for name, value in (
             ("image_clip_range", self.image_clip_range),
             ("text_clip_range", self.text_clip_range),

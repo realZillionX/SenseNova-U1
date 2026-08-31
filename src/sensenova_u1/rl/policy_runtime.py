@@ -387,14 +387,6 @@ class _PolicySession:
             )
             pixel_values.append(pixels.to(self.device, dtype=self.dtype))
             grid_hw.append(grid.to(self.device))
-        if modality == "ti2ti" and not grid_hw:
-            raise ValueError("TI2TI first-input resolution requires a prompt image")
-        if grid_hw:
-            first_grid = grid_hw[0][0]
-            self.image_height = int(first_grid[0].item()) * int(self.model.patch_size)
-            self.image_width = int(first_grid[1].item()) * int(self.model.patch_size)
-        else:
-            self.image_height = self.image_width = 0
 
         get_template = getattr(self.model_module, "get_conv_template", None)
         if not callable(get_template):
@@ -487,9 +479,9 @@ class _PolicySession:
             raise ValueError(f"U1.5 prompt needs {prompt_tokens} cache tokens, RL limit is {plan_limit}")
 
     def generated_image_context_tokens(self) -> int:
+        size = int(self.runtime.plan.image_size)
         merge_size = int(1 / float(self.model.downsample_ratio))
-        stride = int(self.model.patch_size) * merge_size
-        image_tokens = (self.image_height // stride) * (self.image_width // stride)
+        image_tokens = (size // (int(self.model.patch_size) * merge_size)) ** 2
         return image_tokens + 1
 
     def constrained_logits(self, *, allow_image: bool = True) -> Tensor:
@@ -624,8 +616,8 @@ class _PolicySession:
         image_height: int | None = None,
         image_width: int | None = None,
     ) -> tuple[int, int, int, int, Tensor, float, Tensor]:
-        height = int(image_height or self.image_height)
-        width = int(image_width or self.image_width)
+        height = int(image_height or self.runtime.plan.image_size)
+        width = int(image_width or self.runtime.plan.image_size)
         merge_size = int(1 / float(self.model.downsample_ratio))
         token_h = height // (int(self.model.patch_size) * merge_size)
         token_w = width // (int(self.model.patch_size) * merge_size)
@@ -671,8 +663,8 @@ class _PolicySession:
     ):
         merge_size = int(1 / float(self.model.downsample_ratio))
         patch_size = int(self.model.patch_size)
-        height = int(image_height or self.image_height)
-        width = int(image_width or self.image_width)
+        height = int(image_height or self.runtime.plan.image_size)
+        width = int(image_width or self.runtime.plan.image_size)
         sequence_length = (height // (patch_size * merge_size)) * (width // (patch_size * merge_size))
 
         def run_velocity(sample_model: Tensor, timestep_values: Tensor) -> Tensor:
@@ -757,8 +749,8 @@ class _PolicySession:
         image_height: int | None = None,
         image_width: int | None = None,
     ) -> Tensor:
-        height = int(image_height or self.image_height)
-        width = int(image_width or self.image_width)
+        height = int(image_height or self.runtime.plan.image_size)
+        width = int(image_width or self.runtime.plan.image_size)
         patch_size = int(self.model.patch_size)
         merge_size = int(1 / float(self.model.downsample_ratio))
         pixels = self.model.unpatchify(
@@ -851,8 +843,9 @@ class _PolicySession:
     def sample_image(self, *, generator: torch.Generator) -> tuple[Tensor, ImageSdeTrace]:
         token_h, token_w, grid_h, grid_w, indexes, noise_scale, schedule = self._image_geometry()
         sequence_length = token_h * token_w
+        size = self.runtime.plan.image_size
         noise = noise_scale * torch.randn(
-            (1, 3, self.image_height, self.image_width),
+            (1, 3, size, size),
             device=self.device,
             dtype=self.dtype,
             generator=generator,
@@ -888,8 +881,8 @@ class _PolicySession:
         return pixels, trace
 
     def _validated_image_replay_geometry(self, event: ImageEvent) -> tuple[int, int, Tensor, float, int, int]:
-        height = int(event.trace.image_height or self.image_height)
-        width = int(event.trace.image_width or self.image_width)
+        height = int(event.trace.image_height or self.runtime.plan.image_size)
+        width = int(event.trace.image_width or self.runtime.plan.image_size)
         _token_h, _token_w, grid_h, grid_w, indexes, noise_scale, schedule = self._image_geometry(
             image_height=height, image_width=width
         )

@@ -7,20 +7,21 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "serving" / "configs" / "neopp_u15_forge_rl.json"
+CONFIG = ROOT / "serving" / "configs" / "neopp_u15_forge_512.json"
 
 
 class ServingContractTest(unittest.TestCase):
     def test_launcher_uses_the_sealed_forge_profile(self) -> None:
         launcher = (ROOT / "scripts" / "rl_engine" / "launch_server.sh").read_text()
-        self.assertIn("serving/configs/neopp_u15_forge_rl.json", launcher)
+        self.assertIn("serving/configs/neopp_u15_forge_512.json", launcher)
         self.assertIn('--x2v_gen_model_config "$X2V_CONFIG"', launcher)
         config = json.loads(CONFIG.read_text())
         self.assertEqual(config["infer_steps"], 30)
         self.assertEqual(config["timestep_shift"], 1.0)
-        self.assertIs(config["enable_cfg"], False)
-        self.assertEqual(config["cfg_scale"], 1.0)
-        self.assertEqual(config["cfg_norm"], "none")
+        self.assertIs(config["enable_cfg"], True)
+        self.assertEqual(config["cfg_scale"], 4.0)
+        self.assertEqual(config["min_pixels"], 512 * 512)
+        self.assertEqual(config["max_pixels"], 512 * 512)
         self.assertEqual(config["attn_type"], "flash_attn3")
         lightllm = ROOT / "serving/third_party/LightLLM"
         overlay = ROOT / "serving/patches/lightllm-sensenova-policy.patch"
@@ -79,6 +80,8 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn('"replica_id": int(os.getenv("MOVA_RL_REPLICA_ID", "0"))', manager)
         self.assertIn('if hasattr(generation_params, "rl_config"):', manager)
         self.assertIn("uncon_gen = con_gen", manager)
+        self.assertIn("generation_params.update_hw(", manager)
+        self.assertIn("multimodal_params.images[0].image_w", manager)
         self.assertIn("async def commit_weights_update", manager)
         api_http = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
@@ -89,6 +92,7 @@ class ServingContractTest(unittest.TestCase):
         ).read_text()
         self.assertIn("max_req_total_len=span_sequence_limit", api_rl)
         self.assertIn('"sequence_tokens": sequence_tokens', api_rl)
+        self.assertIn('"guidance_scale": 1.0', api_rl)
         rl_models = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py"
         ).read_text()
@@ -103,7 +107,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("supports only NVIDIA H200", preflight)
         self.assertIn('parser.add_argument("--require-rdma", action="store_true")', preflight)
         self.assertIn('parser.add_argument("--x2v-config")', preflight)
-        self.assertIn("must hard-disable classifier-free guidance", preflight)
+        self.assertIn("must preserve the U1.5 CFG profile", preflight)
         self.assertIn('"ttl_seconds": trace_ttl_seconds', preflight)
         api_http = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"

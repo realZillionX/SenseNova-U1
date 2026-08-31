@@ -6,7 +6,6 @@ import os
 
 from sensenovalm.utils.config_helpers import env_bool
 
-
 # -----------------------------------------------------------------------------
 # Job / cluster
 # -----------------------------------------------------------------------------
@@ -194,19 +193,15 @@ if llm_data_config is not None:
 # -----------------------------------------------------------------------------
 # Checkpoint
 # -----------------------------------------------------------------------------
-CHECKPOINT_EVERY = int(os.environ.get("checkpoint_every", "1000"))
-CHECKPOINT_KEEP_LAST = int(os.environ.get("checkpoint_keep_last", "2"))
+CHECKPOINT_EVERY = int(os.environ.get("checkpoint_every", "100"))
 if CHECKPOINT_EVERY < 1:
     raise ValueError("checkpoint_every must be positive")
-if CHECKPOINT_KEEP_LAST < 1:
-    raise ValueError("checkpoint_keep_last must be positive")
 
 ckpt = dict(
     # The shared config validator expects this object, while the FSDP2 runner
     # owns DCP model/optimizer/EMA/RNG checkpoints directly.
     enable_save_ckpt=False,
     checkpoint_every=CHECKPOINT_EVERY,
-    checkpoint_keep_last=CHECKPOINT_KEEP_LAST,
 )
 
 

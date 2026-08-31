@@ -36,8 +36,9 @@ serving policy version。
 
 `torchrun.nnodes` 支持任意正节点数，每张 H200 一个进程；rollout URL 列表可独立
 包含任意正数个 Serving 副本。每个 rank 拥有一个 prompt group，因此
-`prompts_per_batch` 等于 FSDP world size。checkpoint 间隔与最新 checkpoint 保留数
-分别封存，默认只保留两个已提交恢复点。
+`prompts_per_batch` 等于 FSDP world size。checkpoint 间隔进入 plan，但正式值仍待
+实机测量；保留策略没有自动数量上限。runner 保留全部已提交 checkpoint，只有完成
+跑分比较与下游消费者审计后才允许清理。
 
 达到 `max_images` 不会丢弃轨迹：后续文本 tail 会屏蔽 image-action token，让模型
 仍可闭合 `</think>` 并输出 `Answer:`。达到 `max_new_tokens` 或联合序列上限时返回

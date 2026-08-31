@@ -41,9 +41,16 @@ EXPECTED_DISTRIBUTIONS = {
 }
 MANIFEST_DIR = Path("/opt/sensenova-forge/manifests/rl-serving")
 LIGHTLLM_POLICY_MARKERS = {
-    "lightllm/server/api_rl.py": '"repetition_penalty": 1.0',
-    "lightllm/server/core/objs/x2i_params.py": "_cfg_norm: CfgNormType = CfgNormType.NONE",
-    "lightllm/server/x2i_server/manager.py": "scheduler.infer_steps = int(param.steps)",
+    "lightllm/server/api_rl.py": (
+        '"repetition_penalty": 1.0',
+        '"guidance_scale": 1.0',
+    ),
+    "lightllm/server/core/objs/x2i_params.py": (
+        "_cfg_norm: CfgNormType = CfgNormType.NONE",
+    ),
+    "lightllm/server/x2i_server/manager.py": (
+        "scheduler.infer_steps = int(param.steps)",
+    ),
 }
 
 
@@ -134,14 +141,15 @@ def _checkpoint_manifest(model_path: str | None) -> dict[str, object]:
 def _lightllm_policy_overlay() -> dict[str, object]:
     root = Path(os.getenv("FORGE_LIGHTLLM_ROOT", "/workspace/LightLLM"))
     missing = []
-    for relative, marker in LIGHTLLM_POLICY_MARKERS.items():
+    for relative, markers in LIGHTLLM_POLICY_MARKERS.items():
         path = root / relative
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
             text = ""
-        if marker not in text:
-            missing.append(f"{relative}: {marker}")
+        for marker in markers:
+            if marker not in text:
+                missing.append(f"{relative}: {marker}")
     return {"available": not missing, "missing": missing}
 
 
@@ -166,10 +174,10 @@ def _rdma_status() -> dict[str, object]:
     }
 
 
-def _rl_x2v_config(path: str | None) -> dict[str, object]:
+def _serving_x2v_config(path: str | None) -> dict[str, object]:
     result: dict[str, object] = {"path": path, "config": None, "error": None}
     if not path:
-        result["error"] = "RL LightX2V config path is missing"
+        result["error"] = "LightX2V serving config path is missing"
         return result
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -292,7 +300,7 @@ def main() -> None:
     checkpoint_manifest = _checkpoint_manifest(args.model_path)
     lightllm_policy_overlay = _lightllm_policy_overlay()
     rdma = _rdma_status()
-    rl_x2v_config = _rl_x2v_config(args.x2v_config)
+    serving_x2v_config = _serving_x2v_config(args.x2v_config)
     try:
         trace_ttl_seconds = int(os.getenv("MOVA_RL_TRACE_TTL", "3600"))
     except ValueError:
@@ -333,7 +341,7 @@ def main() -> None:
         "model_exists": bool(args.model_path and Path(args.model_path).is_dir()),
         "model_checkpoint": checkpoint_manifest,
         "lightllm_policy_overlay": lightllm_policy_overlay,
-        "rl_x2v_config": rl_x2v_config,
+        "serving_x2v_config": serving_x2v_config,
         "rl_trace": {
             "root": os.getenv("MOVA_RL_TRACE_DIR", "/dev/shm/mova_rl_traces"),
             "ttl_seconds": trace_ttl_seconds,
@@ -378,15 +386,16 @@ def main() -> None:
         errors.append(f"SenseNova LightLLM policy overlay is incomplete: {lightllm_policy_overlay['missing']}")
     if trace_ttl_seconds <= 0:
         errors.append("RL trace TTL must be a positive integer")
-    x2v_payload = rl_x2v_config["config"]
-    if rl_x2v_config["error"] or not isinstance(x2v_payload, dict):
-        errors.append(f"RL LightX2V config is unavailable: {rl_x2v_config['error']}")
+    x2v_payload = serving_x2v_config["config"]
+    if serving_x2v_config["error"] or not isinstance(x2v_payload, dict):
+        errors.append(
+            f"LightX2V serving config is unavailable: {serving_x2v_config['error']}"
+        )
     elif (
-        x2v_payload.get("enable_cfg") is not False
-        or x2v_payload.get("cfg_scale") != 1.0
-        or x2v_payload.get("cfg_norm") != "none"
+        x2v_payload.get("enable_cfg") is not True
+        or x2v_payload.get("cfg_scale") != 4.0
     ):
-        errors.append("RL LightX2V config must hard-disable classifier-free guidance")
+        errors.append("ordinary LightX2V serving config must preserve the U1.5 CFG profile")
     if args.require_rdma and not rdma["available"]:
         errors.append(
             "multi-node RL serving requires libibverbs.so.1 and a visible InfiniBand/RoCE device: "

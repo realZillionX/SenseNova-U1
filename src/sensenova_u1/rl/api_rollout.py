@@ -28,7 +28,6 @@ from urllib.request import Request, urlopen
 
 import torch
 import torch.distributed as dist
-from PIL import Image
 from safetensors.torch import load as load_safetensors
 
 from .policy_runtime import (
@@ -69,22 +68,6 @@ _IMAGE_SUFFIX = {
     "png": ".png",
     "webp": ".webp",
 }
-
-
-def _first_input_geometry(prompt_images: Sequence[str]) -> tuple[int, int]:
-    """Return ``(height, width)`` from the first immutable prompt image."""
-
-    if not prompt_images:
-        raise ValueError("TI2TI first-input resolution requires a prompt image")
-    path = Path(prompt_images[0]).expanduser().resolve()
-    try:
-        with Image.open(path) as image:
-            width, height = image.size
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"cannot read first prompt image geometry: {path}") from exc
-    if width < 1 or height < 1:
-        raise ValueError(f"first prompt image has invalid geometry: {path}")
-    return int(height), int(width)
 
 
 class RlApiTransport(Protocol):
@@ -338,7 +321,7 @@ class SenseNovaRlApiClient:
         max_sequence_length: int,
         max_new_tokens: int,
         max_images: int,
-        image_resolution_mode: str,
+        image_size: int,
         image_steps: int,
         image_noise_level: float,
         timestep_shift: float,
@@ -364,12 +347,9 @@ class SenseNovaRlApiClient:
             "top_p": 1.0,
         }
         if modality == "ti2ti":
-            if image_resolution_mode != "first_input":
-                raise ValueError("RL image resolution must follow the first prompt image")
-            image_height, image_width = _first_input_geometry(prompt_images)
             request["image_policy"] = {
-                "height": image_height,
-                "width": image_width,
+                "height": int(image_size),
+                "width": int(image_size),
                 "image_steps": int(image_steps),
                 "timestep_shift": float(timestep_shift),
                 "t_eps": float(t_eps),

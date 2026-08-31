@@ -640,7 +640,7 @@ def _generate_and_anchor(
                     max_sequence_length=plan.max_sequence_length,
                     max_new_tokens=plan.max_new_tokens,
                     max_images=plan.max_images,
-                    image_resolution_mode=plan.image_resolution_mode,
+                    image_size=plan.image_size,
                     image_steps=plan.image_steps,
                     image_noise_level=plan.image_noise_level,
                     timestep_shift=plan.timestep_shift,
@@ -1498,36 +1498,6 @@ def save_checkpoint(
     return destination
 
 
-def prune_checkpoints(
-    plan: RlPlan, *, context: DistributedContext | None = None
-) -> tuple[str, ...]:
-    """Keep only the newest committed recovery checkpoints for this run."""
-
-    context = context or _live_context()
-
-    def prune() -> object:
-        root = plan.run_dir / "checkpoints"
-        states = sorted(
-            (
-                _checkpoint_metadata(path)
-                for path in root.iterdir()
-                if _CHECKPOINT_NAME.fullmatch(path.name) and path.is_dir()
-            ),
-            key=lambda state: state.step,
-        )
-        removed = []
-        for state in states[: -plan.checkpoint_keep_last]:
-            shutil.rmtree(state.path)
-            removed.append(str(state.path))
-        return removed
-
-    removed = _broadcast_primary(context, prune)
-    if not isinstance(removed, list) or not all(isinstance(path, str) for path in removed):
-        raise RuntimeError("checkpoint retention broadcast is malformed")
-    dist.barrier()
-    return tuple(removed)
-
-
 def restore_checkpoint(
     *,
     state: CheckpointState,
@@ -1784,7 +1754,6 @@ def run_training_loop(
                     policy_version=active_policy_version,
                     context=context,
                 )
-                prune_checkpoints(plan, context=context)
         _broadcast_primary(
             context,
             lambda: publisher.close() if publisher is not None else None,
