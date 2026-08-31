@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "base_image": "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04",
-  "saved_image": "sensenova-u15-forge:unified-v3",
+  "saved_image": "sensenova-u15-forge:unified-v4",
   "python": "/opt/sensenova-forge-py312/bin/python",
   "platform": {
     "python_version": "3.12",
@@ -13,7 +13,7 @@
   },
   "sources": {
     "forge": "build-arg:FORGE_COMMIT",
-    "lightllm": "32359540f094520519a5da98c71541c5631b11f0",
+    "lightllm": "9cee6c9e78fd5e1f9a4e9ddd5586505d5a3228e1",
     "lightx2v": "a46d6c4d0dc00659c597078f86fb34c1d5b0f481"
   },
   "overlays": {

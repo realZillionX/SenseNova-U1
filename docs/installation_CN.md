@@ -14,7 +14,7 @@ SFT、RL 与 serving 共用仓库根目录的 Python 3.12、Torch 2.8/CUDA 12.8
 uv sync --locked
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:unified-v3 .
+  -t sensenova-u15-forge:unified-v4 .
 ```
 
 镜像同时包含 SFT/RL backward 使用的 FlashAttention 2 和 serving 使用的

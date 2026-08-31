@@ -469,25 +469,35 @@ class _PolicySession:
     def validate_capacity(self, *, text_tokens: int, images: int) -> None:
         if text_tokens < 1 or images < 0:
             raise ValueError("U1.5 rollout capacity arguments are invalid")
-        size = int(self.runtime.plan.image_size)
-        merge_size = int(1 / float(self.model.downsample_ratio))
-        image_tokens = (size // (int(self.model.patch_size) * merge_size)) ** 2
-        required = int(self.cache.get_seq_length()) + text_tokens + images * (image_tokens + 1)
+        prompt_tokens = int(self.cache.get_seq_length())
+        plan_limit = int(self.runtime.plan.max_sequence_length)
         limit = int(self.model.language_model.config.max_position_embeddings)
+        if plan_limit > limit:
+            raise ValueError(f"RL max_sequence_length={plan_limit} exceeds model context {limit}")
+        if prompt_tokens >= plan_limit:
+            raise ValueError(f"U1.5 prompt needs {prompt_tokens} cache tokens, RL limit is {plan_limit}")
+        image_tokens = self.generated_image_context_tokens()
+        required = prompt_tokens + text_tokens + images * image_tokens
         if required > limit:
             raise ValueError(f"U1.5 rollout needs {required} cache tokens, context is {limit}")
 
-    def constrained_logits(self) -> Tensor:
+    def generated_image_context_tokens(self) -> int:
+        size = int(self.runtime.plan.image_size)
+        merge_size = int(1 / float(self.model.downsample_ratio))
+        image_tokens = (size // (int(self.model.patch_size) * merge_size)) ** 2
+        return image_tokens + 1
+
+    def constrained_logits(self, *, allow_image: bool = True) -> Tensor:
         logits = self.next_logits.float()
         if logits.ndim != 2 or logits.shape[0] != 1:
             raise RuntimeError(f"U1.5 returned invalid next-token logits {tuple(logits.shape)}")
-        if self.modality == "ti2t":
+        if self.modality == "ti2t" or not allow_image:
             logits[:, self.img_start_id] = torch.finfo(logits.dtype).min
         return logits
 
-    def advance(self, token_ids: Tensor, accepted: Tensor) -> Tensor:
+    def advance(self, token_ids: Tensor, accepted: Tensor, *, allow_image: bool = True) -> Tensor:
         self.commit(token_ids, accepted)
-        return self.constrained_logits()
+        return self.constrained_logits(allow_image=allow_image)
 
     def commit(self, token_ids: Tensor, accepted: Tensor | None = None) -> None:
         """Append one action without materialising next-step constraints.
@@ -1162,6 +1172,7 @@ class U15PolicyRuntime:
         text_tokens = 0
         image_count = 0
         remaining = self.plan.max_new_tokens
+        text_only_tail = modality == "ti2t" or self.plan.max_images == 0
         with torch.no_grad():
             session = _PolicySession(
                 self,
@@ -1177,14 +1188,29 @@ class U15PolicyRuntime:
             # FSDP rollout uses the same ordinary collective model path as
             # replay; CUDA-graph capture would bypass parameter gather hooks.
             while remaining > 0:
+                context_tokens = int(session.cache.get_seq_length())
+                can_generate_image = modality == "ti2ti" and not text_only_tail
+                image_reserve = session.generated_image_context_tokens() + 1 if can_generate_image else 0
+                span_tokens = self.plan.max_sequence_length - context_tokens - image_reserve
+                if span_tokens < 1:
+                    text_only_tail = True
+                    can_generate_image = False
+                    image_reserve = 0
+                    span_tokens = self.plan.max_sequence_length - context_tokens
+                if span_tokens < 1:
+                    break
                 stops = (self.eos_id,)
-                if modality == "ti2ti":
+                if can_generate_image:
                     stops = (self.eos_id, self.img_start_id)
                 trace = sample_text_span(
-                    initial_logits=session.constrained_logits(),
-                    advance=session.advance,
+                    initial_logits=session.constrained_logits(allow_image=can_generate_image),
+                    advance=lambda token_ids, accepted, allow_image=can_generate_image: session.advance(
+                        token_ids,
+                        accepted,
+                        allow_image=allow_image,
+                    ),
                     stop_token_ids=stops,
-                    max_new_tokens=remaining,
+                    max_new_tokens=min(remaining, span_tokens),
                     pad_token_id=self.pad_id,
                     generator=generator,
                 )
@@ -1197,9 +1223,12 @@ class U15PolicyRuntime:
                 text_tokens += len(tokens)
                 events.append(TextEvent(trace=trace, stop_token_id=stop))
                 if stop != self.img_start_id:
+                    if stop is None and image_reserve and remaining > 0:
+                        text_only_tail = True
+                        continue
                     break
-                if image_count >= self.plan.max_images:
-                    break
+                if not can_generate_image:
+                    raise RuntimeError("U1.5 sampled a masked image action")
                 pixels, image_trace = session.sample_image(generator=generator)
                 image_name = f"{rollout_key}-image-{image_count:02d}.png"
                 image_path = artifact_dir / image_name
@@ -1207,11 +1236,17 @@ class U15PolicyRuntime:
                 items.append(ImageSegment(str(image_path.resolve())))
                 events.append(ImageEvent(trace=image_trace))
                 image_count += 1
+                if int(session.cache.get_seq_length()) > self.plan.max_sequence_length:
+                    raise RuntimeError("U1.5 image action exceeded max_sequence_length")
+                if image_count >= self.plan.max_images:
+                    text_only_tail = True
                 # A reasoning image never ends the response: the policy must
                 # still close its think block and emit the Answer line, so the
                 # loop continues until EOS or the token budget stops it.
         if not events:
             raise RuntimeError("U1.5 rollout emitted no policy action")
+        if int(session.cache.get_seq_length()) > self.plan.max_sequence_length:
+            raise RuntimeError("U1.5 rollout violated max_sequence_length")
         return U15PolicyRollout(
             candidate=CandidateResponse(modality=modality, items=tuple(items)),
             events=tuple(events),

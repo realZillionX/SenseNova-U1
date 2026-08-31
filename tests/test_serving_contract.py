@@ -68,6 +68,8 @@ class ServingContractTest(unittest.TestCase):
             ROOT
             / "serving/third_party/LightLLM/lightllm/server/httpserver/manager.py"
         ).read_text()
+        self.assertIn("max_req_total_len: Optional[int] = None", manager)
+        self.assertIn("request_limit = self.max_req_total_len if max_req_total_len is None", manager)
         self.assertIn('replica_count = int(payload.get("replica_count", 1))', manager)
         self.assertIn('"language_rank_base": 1 + replica_index', manager)
         self.assertIn('expected_world = 1 + 3 * replica_count', manager)
@@ -77,6 +79,15 @@ class ServingContractTest(unittest.TestCase):
             ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
         ).read_text()
         self.assertIn('@app.post("/commit_weights_update")', api_http)
+        api_rl = (
+            ROOT / "serving/third_party/LightLLM/lightllm/server/api_rl.py"
+        ).read_text()
+        self.assertIn("max_req_total_len=span_sequence_limit", api_rl)
+        self.assertIn('"sequence_tokens": sequence_tokens', api_rl)
+        rl_models = (
+            ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py"
+        ).read_text()
+        self.assertIn("max_sequence_length: int = Field(default=8192", rl_models)
         api_start = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py"
         ).read_text()

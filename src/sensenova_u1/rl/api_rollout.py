@@ -444,6 +444,7 @@ class SenseNovaRlApiClient:
                     key=f"{_safe_key(rollout_key)}-r{position:03d}",
                     seconds=per_rollout_seconds,
                     trace_tensors=trace_tensors,
+                    max_sequence_length=max_sequence_length,
                 )
             )
         return tuple(decoded)
@@ -457,6 +458,7 @@ class SenseNovaRlApiClient:
         key: str,
         seconds: float,
         trace_tensors: Mapping[str, Mapping[str, torch.Tensor]],
+        max_sequence_length: int,
     ) -> dict[str, object]:
         events = raw.get("events")
         usage = raw.get("usage")
@@ -464,6 +466,30 @@ class SenseNovaRlApiClient:
             raise RuntimeError("SenseNova RL rollout has no event list")
         if not isinstance(usage, Mapping):
             raise RuntimeError("SenseNova RL rollout has no usage object")
+        usage_fields = {
+            name: usage.get(name)
+            for name in (
+                "prompt_tokens",
+                "completion_tokens",
+                "image_count",
+                "image_context_tokens",
+                "sequence_tokens",
+            )
+        }
+        if any(type(value) is not int or value < 0 for value in usage_fields.values()):
+            raise RuntimeError("SenseNova RL rollout has invalid sequence usage")
+        if usage_fields["prompt_tokens"] < 1:
+            raise RuntimeError("SenseNova RL rollout has no prompt tokens")
+        expected_sequence_tokens = (
+            usage_fields["prompt_tokens"]
+            + usage_fields["completion_tokens"]
+            + usage_fields["image_context_tokens"]
+        )
+        if (
+            usage_fields["sequence_tokens"] != expected_sequence_tokens
+            or usage_fields["sequence_tokens"] > max_sequence_length
+        ):
+            raise RuntimeError("SenseNova RL rollout exceeded max_sequence_length")
         wire_events: list[dict[str, object]] = []
         text_tokens = 0
         image_count = 0
@@ -553,12 +579,10 @@ class SenseNovaRlApiClient:
                 }
             )
             image_count += 1
+        if text_tokens != usage_fields["completion_tokens"] or image_count != usage_fields["image_count"]:
+            raise RuntimeError("SenseNova RL rollout usage disagrees with its event trace")
         if not wire_events or not any(event["type"] == "text" for event in wire_events):
             raise RuntimeError("SenseNova RL rollout emitted no text policy action")
-        if int(usage.get("completion_tokens", -1)) != text_tokens:
-            raise RuntimeError("SenseNova RL usage disagrees with its text traces")
-        if int(usage.get("image_count", -1)) != image_count:
-            raise RuntimeError("SenseNova RL usage disagrees with its image traces")
         return {
             "events": wire_events,
             "text_tokens": text_tokens,

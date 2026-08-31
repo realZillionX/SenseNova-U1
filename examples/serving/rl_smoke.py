@@ -317,6 +317,13 @@ def _assert_text_event(event, tokenizer):
         raise AssertionError("token decode round-trip differs from the serving tokenizer")
 
 
+def _assert_sequence_usage(rollout, max_sequence_length):
+    usage = rollout["usage"]
+    expected = usage["prompt_tokens"] + usage["completion_tokens"] + usage["image_context_tokens"]
+    if usage["sequence_tokens"] != expected or expected > max_sequence_length:
+        raise AssertionError(f"invalid RL sequence usage: {usage}")
+
+
 def _check_trace(path: Path):
     tensors = load_file(str(path))
     required = {
@@ -467,16 +474,31 @@ def main():
         "modality": "ti2t",
         "messages": [{"role": "user", "content": "What is 17 + 25? Answer briefly."}],
         "seeds": [11, 12],
+        "max_sequence_length": 8192,
         "max_new_tokens": 256,
         "max_images": 0,
     }
     ti2t = _request("POST", f"{base_url}/v1/rl/rollouts", json=ti2t_request)
     for rollout in ti2t["rollouts"]:
+        _assert_sequence_usage(rollout, ti2t_request["max_sequence_length"])
         for event in rollout["events"]:
             _assert_text_event(event, tokenizer)
         if any(event["type"] == "image" for event in rollout["events"]):
             raise AssertionError("TI2T exposed an image action")
     receipt["stages"]["ti2t"] = {"rollouts": len(ti2t["rollouts"]), "usage": [r["usage"] for r in ti2t["rollouts"]]}
+
+    budget_request = {
+        **ti2t_request,
+        "seeds": [13],
+        "max_sequence_length": 128,
+        "max_new_tokens": 127,
+    }
+    budgeted = _request("POST", f"{base_url}/v1/rl/rollouts", json=budget_request)
+    budgeted_rollout = budgeted["rollouts"][0]
+    _assert_sequence_usage(budgeted_rollout, budget_request["max_sequence_length"])
+    if budgeted_rollout["usage"]["completion_tokens"] >= budget_request["max_new_tokens"]:
+        raise AssertionError("per-request max_sequence_length did not clamp completion capacity")
+    receipt["stages"]["sequence_budget"] = budgeted_rollout["usage"]
 
     ti2ti_request = {
         "expected_policy_version": rollout_version,
@@ -486,6 +508,7 @@ def main():
             {"role": "user", "content": "Create an image of a red cube on a white table, then describe it."},
         ],
         "seeds": [21, 22],
+        "max_sequence_length": 8192,
         "max_new_tokens": 1024,
         "max_images": 1,
         "image_policy": {
@@ -505,6 +528,7 @@ def main():
     interleaved = False
     trace_shapes = {}
     for rollout in ti2ti["rollouts"]:
+        _assert_sequence_usage(rollout, ti2ti_request["max_sequence_length"])
         types = [event["type"] for event in rollout["events"]]
         interleaved = interleaved or any(
             types[index : index + 3] == ["text", "image", "text"] for index in range(max(0, len(types) - 2))

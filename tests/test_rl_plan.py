@@ -40,7 +40,7 @@ class RlPlanTest(unittest.TestCase):
             self.assertEqual(restored.digest, plan.digest)
             self.assertEqual(restored.torchrun.world_size, 2)
             self.assertEqual(len(restored.rollout_api_base_urls), 2)
-            self.assertEqual(restored.max_sequence_length, 12288)
+            self.assertEqual(restored.max_sequence_length, 8192)
             self.assertEqual(restored.max_new_tokens, 6144)
             self.assertEqual(restored.optimizer_cpu_offload_min_images, 6)
 

@@ -64,7 +64,7 @@ class RlPlan:
     weight_update_base_port: int = 29680
     weight_update_backend: str = "nccl"
     weight_update_bucket_bytes: int = 256 * 1024 * 1024
-    max_sequence_length: int = 12288
+    max_sequence_length: int = 8192
     max_new_tokens: int = 6144
     max_images: int = 7
     image_size: int = 512
