@@ -54,7 +54,11 @@ export metric_interval_steps=${metric_interval_steps:-10}
 export activation_checkpoint_fraction=${activation_checkpoint_fraction:-0.75}
 export checkpoint_every=${checkpoint_every:-100}
 export SFT_CHECKPOINT_ROOT=${SFT_CHECKPOINT_ROOT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/checkpoints"}
-export SFT_HF_OUTPUT=${SFT_HF_OUTPUT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/hf"}
+if [[ ${SFT_BENCHMARK_ONLY:-false} == true ]]; then
+    unset SFT_HF_OUTPUT
+else
+    export SFT_HF_OUTPUT=${SFT_HF_OUTPUT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/hf"}
+fi
 
 # ============================ Data / sequence ============================ #
 export num_imgs=${num_imgs:-144}

@@ -25,6 +25,8 @@ class SftContractTest(unittest.TestCase):
         self.assertIn("FSDP2_PREFETCH_DEPTH", launcher)
         self.assertIn("SFT_CHECKPOINT_ROOT", launcher)
         self.assertIn("SFT_HF_OUTPUT", launcher)
+        self.assertIn("SFT_BENCHMARK_ONLY", launcher)
+        self.assertIn("unset SFT_HF_OUTPUT", launcher)
         config = (ROOT / "training/configs/sensenovavl_qwen3_gen/sensenovau1_5_8b_mot_sft.py").read_text()
         self.assertIn("enable_save_ckpt=False", config)
         self.assertIn('tensor_parallel_mode = "mtp"', config)
