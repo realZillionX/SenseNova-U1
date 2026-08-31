@@ -39,6 +39,25 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn('"frequency_penalty": 0.0', patch)
         contract = json.loads((ROOT / "docker/rl-engine/runtime_contract.json").read_text())
         self.assertEqual(contract["platform"]["gpu"], "NVIDIA H200")
+        for name, relative in (
+            ("lightllm", "serving/third_party/LightLLM"),
+            ("lightx2v", "serving/third_party/LightX2V"),
+        ):
+            checkout = subprocess.check_output(
+                ["git", "-C", str(ROOT / relative), "rev-parse", "HEAD"],
+                text=True,
+            ).strip()
+            self.assertEqual(contract["sources"][name], checkout)
+        dockerfile = (ROOT / "docker/rl-engine/Dockerfile").read_text()
+        self.assertIn(
+            f"ARG LIGHTLLM_COMMIT={contract['sources']['lightllm']}", dockerfile
+        )
+        self.assertIn(
+            f"ARG LIGHTX2V_COMMIT={contract['sources']['lightx2v']}", dockerfile
+        )
+        self.assertIn(
+            f"FORGE_RUNTIME_IMAGE={contract['saved_image']}", dockerfile
+        )
         expected_sha = contract["overlays"]["lightllm_sensenova_policy"]["sha256"]
         self.assertEqual(hashlib.sha256(overlay.read_bytes()).hexdigest(), expected_sha)
         smoke = (ROOT / "examples" / "serving" / "rl_smoke.py").read_text()
