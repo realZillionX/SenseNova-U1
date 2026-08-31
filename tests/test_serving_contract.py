@@ -118,6 +118,10 @@ class ServingContractTest(unittest.TestCase):
         ).read_text()
         self.assertIn("visualserver = None", visual_manager)
         self.assertIn("if visualserver is not None:", visual_manager)
+        for source in (ROOT / "serving/third_party/LightLLM/lightllm/server").rglob(
+            "*.py"
+        ):
+            self.assertNotIn('rpyc.connect("localhost"', source.read_text(), source)
         api_http = (
             ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
         ).read_text()
