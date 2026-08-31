@@ -293,6 +293,10 @@ def main() -> None:
     lightllm_policy_overlay = _lightllm_policy_overlay()
     rdma = _rdma_status()
     rl_x2v_config = _rl_x2v_config(args.x2v_config)
+    try:
+        trace_ttl_seconds = int(os.getenv("MOVA_RL_TRACE_TTL", "3600"))
+    except ValueError:
+        trace_ttl_seconds = 0
     payload = {
         "python": sys.version,
         "python_executable": sys.executable,
@@ -330,6 +334,10 @@ def main() -> None:
         "model_checkpoint": checkpoint_manifest,
         "lightllm_policy_overlay": lightllm_policy_overlay,
         "rl_x2v_config": rl_x2v_config,
+        "rl_trace": {
+            "root": os.getenv("MOVA_RL_TRACE_DIR", "/dev/shm/mova_rl_traces"),
+            "ttl_seconds": trace_ttl_seconds,
+        },
         "rdma": rdma,
     }
 
@@ -368,6 +376,8 @@ def main() -> None:
         errors.append(f"LightLLM HTTP server import closure failed: {http_server['error']}")
     if not lightllm_policy_overlay["available"]:
         errors.append(f"SenseNova LightLLM policy overlay is incomplete: {lightllm_policy_overlay['missing']}")
+    if trace_ttl_seconds <= 0:
+        errors.append("RL trace TTL must be a positive integer")
     x2v_payload = rl_x2v_config["config"]
     if rl_x2v_config["error"] or not isinstance(x2v_payload, dict):
         errors.append(f"RL LightX2V config is unavailable: {rl_x2v_config['error']}")

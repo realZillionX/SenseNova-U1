@@ -104,6 +104,12 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn('parser.add_argument("--require-rdma", action="store_true")', preflight)
         self.assertIn('parser.add_argument("--x2v-config")', preflight)
         self.assertIn("must hard-disable classifier-free guidance", preflight)
+        self.assertIn('"ttl_seconds": trace_ttl_seconds', preflight)
+        api_http = (
+            ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
+        ).read_text()
+        self.assertIn('"oldest_trace_age_seconds": oldest_trace_age_seconds', api_http)
+        self.assertIn('"trace_ttl_seconds": ttl_seconds', api_http)
         self.assertIn('ctypes.CDLL("libibverbs.so.1")', preflight)
         dockerfile = (ROOT / "docker/rl-engine/Dockerfile").read_text()
         self.assertIn("libibverbs1 ibverbs-providers librdmacm1 rdma-core", dockerfile)
