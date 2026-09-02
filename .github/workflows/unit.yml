@@ -5,6 +5,8 @@ on: [push, pull_request]
 jobs:
   cpu:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}/training
     steps:
       - uses: actions/checkout@v5
         with:
