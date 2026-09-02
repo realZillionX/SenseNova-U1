@@ -150,7 +150,10 @@ class RlPlan:
         if (
             not self.rollout_api_base_urls
             or len(set(self.rollout_api_base_urls)) != len(self.rollout_api_base_urls)
-            or any(not isinstance(url, str) or not url.startswith(("http://", "https://")) for url in self.rollout_api_base_urls)
+            or any(
+                not isinstance(url, str) or not url.startswith(("http://", "https://"))
+                for url in self.rollout_api_base_urls
+            )
         ):
             raise ValueError("rollout_api_base_urls must contain distinct absolute HTTP(S) URLs")
         if self.prompts_per_batch < 2:
@@ -183,15 +186,10 @@ class RlPlan:
             raise ValueError("full-parameter Forge RL requires CUDA")
         if type(self.activation_checkpointing) is not bool:
             raise TypeError("activation_checkpointing must be a boolean")
-        if (
-            type(self.optimizer_cpu_offload_min_images) is not int
-            or not 1
-            <= self.optimizer_cpu_offload_min_images
-            <= max(1, self.max_images)
-        ):
-            raise ValueError(
-                "optimizer_cpu_offload_min_images must lie inside [1, max(1, max_images)]"
-            )
+        if type(
+            self.optimizer_cpu_offload_min_images
+        ) is not int or not 1 <= self.optimizer_cpu_offload_min_images <= max(1, self.max_images):
+            raise ValueError("optimizer_cpu_offload_min_images must lie inside [1, max(1, max_images)]")
         if self.dtype != "bfloat16" or self.attention_backend not in {"flash", "sdpa"}:
             raise ValueError("unsupported dtype or attention backend")
         if self.weight_update_backend != "nccl":

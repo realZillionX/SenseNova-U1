@@ -481,9 +481,7 @@ class SenseNovaRlApiClient:
         if usage_fields["prompt_tokens"] < 1:
             raise RuntimeError("SenseNova RL rollout has no prompt tokens")
         expected_sequence_tokens = (
-            usage_fields["prompt_tokens"]
-            + usage_fields["completion_tokens"]
-            + usage_fields["image_context_tokens"]
+            usage_fields["prompt_tokens"] + usage_fields["completion_tokens"] + usage_fields["image_context_tokens"]
         )
         if (
             usage_fields["sequence_tokens"] != expected_sequence_tokens

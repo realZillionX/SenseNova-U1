@@ -45,12 +45,8 @@ LIGHTLLM_POLICY_MARKERS = {
         '"repetition_penalty": 1.0',
         '"guidance_scale": 1.0',
     ),
-    "lightllm/server/core/objs/x2i_params.py": (
-        "_cfg_norm: CfgNormType = CfgNormType.NONE",
-    ),
-    "lightllm/server/x2i_server/manager.py": (
-        "scheduler.infer_steps = int(param.steps)",
-    ),
+    "lightllm/server/core/objs/x2i_params.py": ("_cfg_norm: CfgNormType = CfgNormType.NONE",),
+    "lightllm/server/x2i_server/manager.py": ("scheduler.infer_steps = int(param.steps)",),
 }
 
 
@@ -388,19 +384,11 @@ def main() -> None:
         errors.append("RL trace TTL must be a positive integer")
     x2v_payload = serving_x2v_config["config"]
     if serving_x2v_config["error"] or not isinstance(x2v_payload, dict):
-        errors.append(
-            f"LightX2V serving config is unavailable: {serving_x2v_config['error']}"
-        )
-    elif (
-        x2v_payload.get("enable_cfg") is not True
-        or x2v_payload.get("cfg_scale") != 4.0
-    ):
+        errors.append(f"LightX2V serving config is unavailable: {serving_x2v_config['error']}")
+    elif x2v_payload.get("enable_cfg") is not True or x2v_payload.get("cfg_scale") != 4.0:
         errors.append("ordinary LightX2V serving config must preserve the U1.5 CFG profile")
     if args.require_rdma and not rdma["available"]:
-        errors.append(
-            "multi-node RL serving requires libibverbs.so.1 and a visible InfiniBand/RoCE device: "
-            f"{rdma}"
-        )
+        errors.append(f"multi-node RL serving requires libibverbs.so.1 and a visible InfiniBand/RoCE device: {rdma}")
     if payload["runtime_manifest"]["requirements_sha256"] is None:
         errors.append(f"runtime manifest is missing under {MANIFEST_DIR}")
     provenance = payload["provenance"]

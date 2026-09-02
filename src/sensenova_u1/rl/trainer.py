@@ -950,9 +950,7 @@ def _replay_backward(
         )
         advantage = advantages[item.advantage_index : item.advantage_index + 1]
         total_text_actions = sum(
-            int(event.trace.response_mask.sum().item())
-            for event in rollout.events
-            if not isinstance(event, ImageEvent)
+            int(event.trace.response_mask.sum().item()) for event in rollout.events if not isinstance(event, ImageEvent)
         )
         replayed_text_actions = 0
         text_spans = policy.iter_text_replay_spans(
@@ -978,9 +976,7 @@ def _replay_backward(
                 ratio_action_count += errors.numel()
                 numeric_error = max(numeric_error, text_span.numeric_max_error)
                 if update_index == 0 and ratio_error > 2e-4:
-                    raise RuntimeError(
-                        f"pre-update old/current ratio is not one: {ratio_error:.6g}"
-                    )
+                    raise RuntimeError(f"pre-update old/current ratio is not one: {ratio_error:.6g}")
             text_result = compute_uni_gdpo_loss(
                 advantages=advantage,
                 image_replay=None,
@@ -995,12 +991,7 @@ def _replay_backward(
                 image_clip_range=plan.image_clip_range,
                 text_clip_range=plan.text_clip_range,
             )
-            text_loss = (
-                text_result.value
-                * (span_actions / total_text_actions)
-                * item.loss_weight
-                / total
-            )
+            text_loss = text_result.value * (span_actions / total_text_actions) * item.loss_weight / total
             if not bool(torch.isfinite(text_loss)):
                 raise RuntimeError("SenseNova text GDPO loss is non-finite")
             emit_trace("text_backward_start", item_index=item_index, item=item)
@@ -1011,8 +1002,7 @@ def _replay_backward(
             del text_loss, text_result, current, old, text_span
         if replayed_text_actions != total_text_actions:
             raise RuntimeError(
-                f"SenseNova text replay yielded {replayed_text_actions} actions, "
-                f"expected {total_text_actions}"
+                f"SenseNova text replay yielded {replayed_text_actions} actions, expected {total_text_actions}"
             )
         emit_trace("policy_replay_end", item_index=item_index, item=item)
 
@@ -1044,9 +1034,7 @@ def _replay_backward(
             image_microbatches=image_microbatch_count,
         )
         total_image_actions = sum(
-            event.trace.steps * event.trace.batch_size
-            for event in rollout.events
-            if isinstance(event, ImageEvent)
+            event.trace.steps * event.trace.batch_size for event in rollout.events if isinstance(event, ImageEvent)
         )
         replayed_microbatches = 0
         pending_image_losses: list[Tensor] = []
@@ -1081,12 +1069,7 @@ def _replay_backward(
                 text_clip_range=plan.text_clip_range,
             )
             chunk_actions = image_replay.trace.steps * image_replay.trace.batch_size
-            image_loss = (
-                image_result.value
-                * (chunk_actions / total_image_actions)
-                * item.loss_weight
-                / total
-            )
+            image_loss = image_result.value * (chunk_actions / total_image_actions) * item.loss_weight / total
             if not bool(torch.isfinite(image_loss)):
                 raise RuntimeError("SenseNova image GDPO loss is non-finite")
             loss_total += float(image_loss.detach())
@@ -1101,9 +1084,7 @@ def _replay_backward(
                     image_microbatches=len(pending_image_losses),
                 )
                 image_backward_loss = torch.stack(pending_image_losses).sum()
-                image_backward_loss.backward(
-                    retain_graph=replayed_microbatches < image_microbatch_count
-                )
+                image_backward_loss.backward(retain_graph=replayed_microbatches < image_microbatch_count)
                 emit_trace(
                     "image_backward_end",
                     item_index=item_index,
@@ -1193,10 +1174,7 @@ def execute_on_policy_batch(
                     images=rollout.generated_images,
                     seconds=rollout.seconds,
                     truncated=rollout.finish_reason == "length",
-                    image_limit_hit=(
-                        plan.modality == "ti2ti"
-                        and rollout.generated_images == plan.max_images
-                    ),
+                    image_limit_hit=(plan.modality == "ti2ti" and rollout.generated_images == plan.max_images),
                 )
     # Reward evaluation is CPU/external work. Hide it under the mandatory
     # no-grad old-policy anchor instead of serializing verifier latency and an
@@ -1252,9 +1230,7 @@ def execute_on_policy_batch(
         dtype=torch.int64,
     )
     dist.all_reduce(maximum_images, op=dist.ReduceOp.MAX)
-    use_optimizer_cpu_offload = (
-        int(maximum_images.item()) >= plan.optimizer_cpu_offload_min_images
-    )
+    use_optimizer_cpu_offload = int(maximum_images.item()) >= plan.optimizer_cpu_offload_min_images
     results: list[StepResult] = []
     for update_index in range(plan.policy_updates_per_batch):
         replay_started = time.perf_counter()
@@ -1318,9 +1294,7 @@ def execute_on_policy_batch(
                 modality=plan.modality,
                 fsdp_world_size=context.world_size,
                 rollout_policy_version=(
-                    rollout_clients[0].expected_policy_version
-                    if rollout_clients
-                    else plan.rollout_policy_version
+                    rollout_clients[0].expected_policy_version if rollout_clients else plan.rollout_policy_version
                 ),
                 loss=loss,
                 grad_norm=grad_norm,

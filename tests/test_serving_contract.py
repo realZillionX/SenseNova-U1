@@ -49,15 +49,9 @@ class ServingContractTest(unittest.TestCase):
             ).strip()
             self.assertEqual(contract["sources"][name], checkout)
         dockerfile = (ROOT / "docker/rl-engine/Dockerfile").read_text()
-        self.assertIn(
-            f"ARG LIGHTLLM_COMMIT={contract['sources']['lightllm']}", dockerfile
-        )
-        self.assertIn(
-            f"ARG LIGHTX2V_COMMIT={contract['sources']['lightx2v']}", dockerfile
-        )
-        self.assertIn(
-            f"FORGE_RUNTIME_IMAGE={contract['saved_image']}", dockerfile
-        )
+        self.assertIn(f"ARG LIGHTLLM_COMMIT={contract['sources']['lightllm']}", dockerfile)
+        self.assertIn(f"ARG LIGHTX2V_COMMIT={contract['sources']['lightx2v']}", dockerfile)
+        self.assertIn(f"FORGE_RUNTIME_IMAGE={contract['saved_image']}", dockerfile)
         expected_sha = contract["overlays"]["lightllm_sensenova_policy"]["sha256"]
         self.assertEqual(hashlib.sha256(overlay.read_bytes()).hexdigest(), expected_sha)
         smoke = (ROOT / "examples" / "serving" / "rl_smoke.py").read_text()
@@ -84,83 +78,61 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("FORGE_SERVING_REPLICA_ID_OFFSET", launcher)
         self.assertIn("FORGE_SERVING_STAGGER_SECONDS", launcher)
         self.assertIn("torch.cuda.device_count()", launcher)
-        self.assertIn('device_pair="${VISIBLE_GPUS[$((2 * local_index))]},${VISIBLE_GPUS[$((2 * local_index + 1))]}"', launcher)
+        self.assertIn(
+            'device_pair="${VISIBLE_GPUS[$((2 * local_index))]},${VISIBLE_GPUS[$((2 * local_index + 1))]}"', launcher
+        )
         self.assertIn('MOVA_RL_TRACE_DIR="$TRACE_ROOT/replica-$replica_id"', launcher)
-        self.assertIn('MOVA_RL_LOCAL_REPLICA_ID=$local_index', launcher)
+        self.assertIn("MOVA_RL_LOCAL_REPLICA_ID=$local_index", launcher)
         self.assertIn('--port "$port"', launcher)
-        manager = (
-            ROOT
-            / "serving/third_party/LightLLM/lightllm/server/httpserver/manager.py"
-        ).read_text()
+        manager = (ROOT / "serving/third_party/LightLLM/lightllm/server/httpserver/manager.py").read_text()
         self.assertIn("max_req_total_len: Optional[int] = None", manager)
         self.assertIn("request_limit = self.max_req_total_len if max_req_total_len is None", manager)
         self.assertIn('replica_count = int(payload.get("replica_count", 1))', manager)
         self.assertIn('"language_rank_base": 1 + replica_index', manager)
-        self.assertIn('expected_world = 1 + 3 * replica_count', manager)
+        self.assertIn("expected_world = 1 + 3 * replica_count", manager)
         self.assertIn('"replica_id": int(os.getenv("MOVA_RL_REPLICA_ID", "0"))', manager)
         self.assertIn('if hasattr(generation_params, "rl_config"):', manager)
         self.assertIn("uncon_gen = con_gen", manager)
         self.assertIn("generation_params.update_hw(", manager)
         self.assertIn("multimodal_params.images[0].image_w", manager)
         self.assertIn("async def commit_weights_update", manager)
-        embed_cache = (
-            ROOT
-            / "serving/third_party/LightLLM/lightllm/server/embed_cache/manager.py"
-        ).read_text()
+        embed_cache = (ROOT / "serving/third_party/LightLLM/lightllm/server/embed_cache/manager.py").read_text()
         self.assertIn("def _serve_after_listening(", embed_cache)
         self.assertLess(
             embed_cache.index("server._listen()"),
             embed_cache.index('pipe_writer.send("init ok")'),
         )
-        visual_manager = (
-            ROOT
-            / "serving/third_party/LightLLM/lightllm/server/visualserver/manager.py"
-        ).read_text()
+        visual_manager = (ROOT / "serving/third_party/LightLLM/lightllm/server/visualserver/manager.py").read_text()
         self.assertIn("visualserver = None", visual_manager)
         self.assertIn("if visualserver is not None:", visual_manager)
-        for source in (ROOT / "serving/third_party/LightLLM/lightllm/server").rglob(
-            "*.py"
-        ):
+        for source in (ROOT / "serving/third_party/LightLLM/lightllm/server").rglob("*.py"):
             self.assertNotIn('rpyc.connect("localhost"', source.read_text(), source)
-        api_http = (
-            ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
-        ).read_text()
+        api_http = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py").read_text()
         self.assertIn('@app.post("/commit_weights_update")', api_http)
-        api_rl = (
-            ROOT / "serving/third_party/LightLLM/lightllm/server/api_rl.py"
-        ).read_text()
+        api_rl = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_rl.py").read_text()
         self.assertIn("max_req_total_len=span_sequence_limit", api_rl)
         self.assertIn('"sequence_tokens": sequence_tokens', api_rl)
         self.assertIn('"guidance_scale": 1.0', api_rl)
-        api_openai = (
-            ROOT
-            / "serving/third_party/LightLLM/lightllm/server/api_openai.py"
-        ).read_text()
+        api_openai = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_openai.py").read_text()
         self.assertIn("def _set_interleaved_completion_budget(", api_openai)
         self.assertEqual(
             api_openai.count("total_completion_tokens=total_completion_tokens"),
             2,
         )
         self.assertEqual(api_openai.count('finish_reason = "length"'), 2)
-        rl_models = (
-            ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py"
-        ).read_text()
+        rl_models = (ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py").read_text()
         self.assertIn("max_sequence_length: int = Field(default=8192", rl_models)
-        api_start = (
-            ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py"
-        ).read_text()
+        api_start = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py").read_text()
         self.assertIn('os.getenv("MOVA_RL_LOCAL_REPLICA_ID", "0")', api_start)
-        self.assertIn('internal_port_start = 10000 + local_replica_id * 2048', api_start)
-        self.assertIn('from_port_num=internal_port_start', api_start)
+        self.assertIn("internal_port_start = 10000 + local_replica_id * 2048", api_start)
+        self.assertIn("from_port_num=internal_port_start", api_start)
         preflight = (ROOT / "scripts" / "rl_engine" / "preflight.py").read_text()
         self.assertIn("supports only NVIDIA H200", preflight)
         self.assertIn('parser.add_argument("--require-rdma", action="store_true")', preflight)
         self.assertIn('parser.add_argument("--x2v-config")', preflight)
         self.assertIn("must preserve the U1.5 CFG profile", preflight)
         self.assertIn('"ttl_seconds": trace_ttl_seconds', preflight)
-        api_http = (
-            ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py"
-        ).read_text()
+        api_http = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py").read_text()
         self.assertIn('"oldest_trace_age_seconds": oldest_trace_age_seconds', api_http)
         self.assertIn('"trace_ttl_seconds": ttl_seconds', api_http)
         self.assertIn('ctypes.CDLL("libibverbs.so.1")', preflight)

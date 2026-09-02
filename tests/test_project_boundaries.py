@@ -82,9 +82,7 @@ class ProjectBoundariesTest(unittest.TestCase):
         with (REPO_ROOT / "pyproject.toml").open("rb") as file:
             project = tomllib.load(file)
 
-        projects = (
-            (REPO_ROOT / "requirements.txt", project["project"]["dependencies"], "pytorch-cu128"),
-        )
+        projects = ((REPO_ROOT / "requirements.txt", project["project"]["dependencies"], "pytorch-cu128"),)
 
         for requirements, dependencies, cuda_index in projects:
             self.assertTrue(requirements.is_file())
@@ -98,9 +96,7 @@ class ProjectBoundariesTest(unittest.TestCase):
                 self.assertNotIn("--extra-index-url", contents)
             else:
                 index_url = next(
-                    index["url"]
-                    for index in project["tool"]["uv"]["index"]
-                    if index["name"] == cuda_index
+                    index["url"] for index in project["tool"]["uv"]["index"] if index["name"] == cuda_index
                 )
                 self.assertIn(f"--extra-index-url {index_url}", contents)
 

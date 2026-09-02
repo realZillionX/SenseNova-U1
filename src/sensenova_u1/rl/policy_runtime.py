@@ -789,14 +789,10 @@ class _PolicySession:
             language_backbone = self.model.language_model.model
             unshard = getattr(language_backbone, "unshard", None)
             if not callable(unshard):
-                raise RuntimeError(
-                    "FSDP language root cannot be unsharded for image replay"
-                )
+                raise RuntimeError("FSDP language root cannot be unsharded for image replay")
             unshard(async_op=False)
             embedding = self.model.language_model.get_input_embeddings()
-        image_end = embedding(
-            torch.tensor([[self.runtime.img_end_id]], device=self.device)
-        )
+        image_end = embedding(torch.tensor([[self.runtime.img_end_id]], device=self.device))
         inputs = torch.cat([embeddings, image_end], dim=1)
         image_tokens = int(embeddings.shape[1])
         position_helper = getattr(self.model_module, "build_abs_positions_from_grid_hw", None)
@@ -1450,11 +1446,7 @@ class U15PolicyRuntime:
                 yield U15TextReplaySpan(
                     trace=event.trace,
                     log_probs=current,
-                    ref_log_probs=(
-                        reference_log_probs[text_index]
-                        if reference_log_probs
-                        else None
-                    ),
+                    ref_log_probs=(reference_log_probs[text_index] if reference_log_probs else None),
                     numeric_max_error=session._last_replay_numeric_error,
                     is_last=text_index + 1 == text_event_count,
                 )

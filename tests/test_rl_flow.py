@@ -81,13 +81,17 @@ class RlFlowTest(unittest.TestCase):
         split_kl = current.new_zeros(())
         for start, stop in ((0, 2), (2, 5)):
             weight = (stop - start) / current.shape[1]
-            split_policy = split_policy + weight * text_policy_loss(
-                log_probs=current[:, start:stop],
-                old_log_probs=old[:, start:stop],
-                advantages=advantage,
-                response_mask=mask[:, start:stop],
-                clip_range=0.2,
-            ).value
+            split_policy = (
+                split_policy
+                + weight
+                * text_policy_loss(
+                    log_probs=current[:, start:stop],
+                    old_log_probs=old[:, start:stop],
+                    advantages=advantage,
+                    response_mask=mask[:, start:stop],
+                    clip_range=0.2,
+                ).value
+            )
             split_kl = split_kl + weight * text_kl_loss(
                 log_probs=current[:, start:stop],
                 ref_log_probs=ref[:, start:stop],

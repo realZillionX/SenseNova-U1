@@ -99,11 +99,7 @@ def restore_optimizer_state(
             if value.device_mesh is None:
                 state[key] = local
             else:
-                if (
-                    value.placements is None
-                    or value.global_shape is None
-                    or value.global_stride is None
-                ):
+                if value.placements is None or value.global_shape is None or value.global_stride is None:
                     raise RuntimeError("CPU-offloaded DTensor optimizer metadata is incomplete")
                 state[key] = DTensor.from_local(
                     local,
@@ -144,9 +140,7 @@ def initialize_distributed() -> DistributedContext:
     torch.cuda.set_device(local_rank)
     gpu_name = torch.cuda.get_device_name(local_rank)
     if "H200" not in gpu_name.upper():
-        raise ValueError(
-            f"SenseNova full-parameter training supports only NVIDIA H200, found {gpu_name!r}"
-        )
+        raise ValueError(f"SenseNova full-parameter training supports only NVIDIA H200, found {gpu_name!r}")
     if not dist.is_initialized():
         dist.init_process_group(backend="nccl", timeout=timedelta(seconds=timeout_seconds))
     if dist.get_rank() != rank or dist.get_world_size() != world_size:

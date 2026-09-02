@@ -362,10 +362,7 @@ class ServingWeightPublisher:
 
     def pause_all(self) -> None:
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.replica_count) as executor:
-            pending = [
-                executor.submit(_request, "POST", f"{url}/pause_generation")
-                for url in self.base_urls
-            ]
+            pending = [executor.submit(_request, "POST", f"{url}/pause_generation") for url in self.base_urls]
             for future in pending:
                 future.result()
 
@@ -415,9 +412,7 @@ class ServingWeightPublisher:
                     or status.get("pending_policy_version") is not None
                     or status.get("paused") is not False
                 ):
-                    raise RuntimeError(
-                        f"serving replica {replica_index} did not expose the committed policy"
-                    )
+                    raise RuntimeError(f"serving replica {replica_index} did not expose the committed policy")
         except BaseException:
             # A control-plane failure after any replica committed must not let
             # a mixed-version set serve. Re-pause every reachable replica; the
