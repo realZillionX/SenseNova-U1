@@ -21,5 +21,5 @@ SenseNova-U1.5-8B-MoT.
   infrastructure after their evidence or reusable rule has been retained.
 - Durable documentation describes current behavior and open TODOs only; it
   does not record task progress or completed migration history.
-- Keep the visual quality and bilingual layout of the README while ensuring
-  every command and claim is executable against the current tree.
+- Maintain one version of each document; do not create `*_CN.md` translation
+  copies. Keep README visuals and ensure every command and claim is executable.

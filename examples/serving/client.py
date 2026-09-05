@@ -83,7 +83,7 @@ OFFICIAL_TEXT_PROFILES = {
         "top_p": 0.95,
         "top_k": 20,
         "repetition_penalty": 1.05,
-        "max_tokens": 8192,
+        "max_sequence_length": 16384,
     },
     "generation": {
         "do_sample": False,
@@ -91,7 +91,7 @@ OFFICIAL_TEXT_PROFILES = {
         "top_p": 1.0,
         "top_k": 1,
         "repetition_penalty": 1.0,
-        "max_tokens": 8192,
+        "max_sequence_length": 16384,
     },
 }
 
@@ -132,7 +132,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--repetition-penalty", type=float, default=None)
-    parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument("--max-sequence-length", type=int, default=None)
     parser.add_argument(
         "--enable-thinking",
         action=argparse.BooleanOptionalAction,
@@ -223,7 +223,8 @@ def build_text_config(args: argparse.Namespace) -> dict[str, Any]:
         "repetition_penalty": (
             profile["repetition_penalty"] if args.repetition_penalty is None else args.repetition_penalty
         ),
-        "max_tokens": profile["max_tokens"] if args.max_tokens is None else args.max_tokens,
+        "max_sequence_length": profile["max_sequence_length"] if args.max_sequence_length is None else args.max_sequence_length,
+        "max_images": 10,
     }
 
 

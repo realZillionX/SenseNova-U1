@@ -467,9 +467,7 @@ class _PolicySession:
             if tensors:
                 fully_shard.state(decoder)._register_pre_backward_hook(tensors)
 
-    def validate_capacity(self, *, text_tokens: int, images: int) -> None:
-        if text_tokens < 1 or images < 0:
-            raise ValueError("U1.5 rollout capacity arguments are invalid")
+    def validate_capacity(self) -> None:
         prompt_tokens = int(self.cache.get_seq_length())
         plan_limit = int(self.runtime.plan.max_sequence_length)
         limit = int(self.model.language_model.config.max_position_embeddings)
@@ -1164,7 +1162,6 @@ class U15PolicyRuntime:
         items: list[TextSegment | ImageSegment] = []
         text_tokens = 0
         image_count = 0
-        remaining = self.plan.max_new_tokens
         finish_reason = "length"
         text_only_tail = modality == "ti2t" or self.plan.max_images == 0
         with torch.no_grad():
@@ -1175,13 +1172,10 @@ class U15PolicyRuntime:
                 modality=modality,
                 system_message=system_message,
             )
-            session.validate_capacity(
-                text_tokens=self.plan.max_new_tokens,
-                images=self.plan.max_images if modality == "ti2ti" else 0,
-            )
+            session.validate_capacity()
             # FSDP rollout uses the same ordinary collective model path as
             # replay; CUDA-graph capture would bypass parameter gather hooks.
-            while remaining > 0:
+            while int(session.cache.get_seq_length()) < self.plan.max_sequence_length:
                 context_tokens = int(session.cache.get_seq_length())
                 can_generate_image = modality == "ti2ti" and not text_only_tail
                 image_reserve = session.generated_image_context_tokens() + 1 if can_generate_image else 0
@@ -1204,12 +1198,11 @@ class U15PolicyRuntime:
                         allow_image=allow_image,
                     ),
                     stop_token_ids=stops,
-                    max_new_tokens=min(remaining, span_tokens),
+                    max_new_tokens=span_tokens,
                     pad_token_id=self.pad_id,
                     generator=generator,
                 )
                 tokens = _single_row_tokens(trace)
-                remaining -= len(tokens)
                 stop = tokens[-1] if trace.stopped.item() else None
                 text = _decode_without_stop(self.tokenizer, trace, stop)
                 if text:
@@ -1217,7 +1210,7 @@ class U15PolicyRuntime:
                 text_tokens += len(tokens)
                 events.append(TextEvent(trace=trace, stop_token_id=stop))
                 if stop != self.img_start_id:
-                    if stop is None and image_reserve and remaining > 0:
+                    if stop is None and image_reserve and int(session.cache.get_seq_length()) < self.plan.max_sequence_length:
                         text_only_tail = True
                         continue
                     if stop is not None:

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MARKDOWN = (ROOT / "README.md", ROOT / "README_CN.md", *sorted((ROOT / "docs").glob("*.md")))
+MARKDOWN = (ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md")))
 
 
 class DocumentationTest(unittest.TestCase):

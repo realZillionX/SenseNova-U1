@@ -475,7 +475,6 @@ def main():
         "messages": [{"role": "user", "content": "What is 17 + 25? Answer briefly."}],
         "seeds": [11, 12],
         "max_sequence_length": 8192,
-        "max_new_tokens": 256,
         "max_images": 0,
     }
     ti2t = _request("POST", f"{base_url}/v1/rl/rollouts", json=ti2t_request)
@@ -487,18 +486,11 @@ def main():
             raise AssertionError("TI2T exposed an image action")
     receipt["stages"]["ti2t"] = {"rollouts": len(ti2t["rollouts"]), "usage": [r["usage"] for r in ti2t["rollouts"]]}
 
-    budget_request = {
-        **ti2t_request,
-        "seeds": [13],
-        "max_sequence_length": 128,
-        "max_new_tokens": 127,
-    }
-    budgeted = _request("POST", f"{base_url}/v1/rl/rollouts", json=budget_request)
-    budgeted_rollout = budgeted["rollouts"][0]
-    _assert_sequence_usage(budgeted_rollout, budget_request["max_sequence_length"])
-    if budgeted_rollout["usage"]["completion_tokens"] >= budget_request["max_new_tokens"]:
-        raise AssertionError("per-request max_sequence_length did not clamp completion capacity")
-    receipt["stages"]["sequence_budget"] = budgeted_rollout["usage"]
+    # A deployment's capacity is its trajectory limit, not a larger hidden cap.
+    budget_request = {**ti2t_request, "seeds": [13], "max_sequence_length": 128}
+    mismatch = requests.post(f"{base_url}/v1/rl/rollouts", json=budget_request, timeout=30)
+    if mismatch.status_code < 400:
+        raise AssertionError("server accepted a trajectory limit different from its capacity")
 
     ti2ti_request = {
         "expected_policy_version": rollout_version,
@@ -509,7 +501,6 @@ def main():
         ],
         "seeds": [21, 22],
         "max_sequence_length": 8192,
-        "max_new_tokens": 1024,
         "max_images": 1,
         "image_policy": {
             "height": 512,

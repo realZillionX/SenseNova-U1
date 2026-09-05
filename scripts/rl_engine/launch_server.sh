@@ -50,9 +50,10 @@ export MOVA_RL_TRACE_TTL=${FORGE_RL_TRACE_TTL:-3600}
 # Transformers applies repetition penalty to prompt tokens as well. Keep
 # ordinary VQA aligned while the RL route explicitly disables every penalty.
 export INPUT_PENALTY=${INPUT_PENALTY:-true}
-# The official VQA/interleave profile permits 8192 generated tokens, so the
-# server must also leave room for its prompt.
-MAX_REQ_TOTAL_LEN=${MAX_REQ_TOTAL_LEN:-16384}
+# One deployment limit controls both capacity and total trajectory truncation.
+# Ordinary inference defaults to 16K; RL deployments set this to 8192.
+MAX_SEQUENCE_LENGTH=${MAX_SEQUENCE_LENGTH:-16384}
+export FORGE_MAX_SEQUENCE_LENGTH="$MAX_SEQUENCE_LENGTH"
 # The H200-only runtime reserves twenty percent of HBM for online publication,
 # CUDA graphs, and transient kernels while keeping a large KV cache.
 LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.80}
@@ -130,7 +131,7 @@ launch_replica() {
     --x2v_gen_model_config "$X2V_CONFIG" \
     --host 0.0.0.0 \
     --port "$port" \
-    --max_req_total_len "$MAX_REQ_TOTAL_LEN" \
+    --max_req_total_len "$MAX_SEQUENCE_LENGTH" \
     --mem_fraction "$LIGHTLLM_MEM_FRACTION" \
     --tp 1
 }

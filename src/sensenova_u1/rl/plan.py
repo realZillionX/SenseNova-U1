@@ -65,7 +65,6 @@ class RlPlan:
     weight_update_backend: str = "nccl"
     weight_update_bucket_bytes: int = 256 * 1024 * 1024
     max_sequence_length: int = 8192
-    max_new_tokens: int = 6144
     max_images: int = 10
     image_size: int = 512
     image_steps: int = 30
@@ -134,7 +133,6 @@ class RlPlan:
             "policy_updates_per_batch",
             "save_every_steps",
             "max_sequence_length",
-            "max_new_tokens",
             "image_size",
             "image_steps",
             "image_replay_microbatch_size",
@@ -143,8 +141,8 @@ class RlPlan:
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be positive")
-        if type(self.max_images) is not int or self.max_images < 0:
-            raise ValueError("max_images must be non-negative")
+        if type(self.max_images) is not int or not 0 <= self.max_images <= 10:
+            raise ValueError("max_images must lie in [0, 10]")
         if self.group_size < 2:
             raise ValueError("GDPO requires at least two rollouts per prompt group")
         if (
@@ -162,8 +160,6 @@ class RlPlan:
             raise ValueError("production API rollout requires one prompt group per FSDP rank")
         if self.max_steps % self.policy_updates_per_batch:
             raise ValueError("max_steps must close a complete frozen-old PPO update batch")
-        if self.max_new_tokens >= self.max_sequence_length:
-            raise ValueError("max_new_tokens must leave room for the prompt")
         if self.image_size % 32:
             raise ValueError("image_size must be divisible by the U1.5 32-pixel generation grid")
         for name, value in (

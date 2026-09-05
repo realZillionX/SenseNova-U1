@@ -34,9 +34,10 @@ class ServingContractTest(unittest.TestCase):
         patch = overlay.read_text()
         self.assertGreaterEqual(patch.count("scheduler.infer_steps = int(param.steps)"), 2)
         self.assertIn("_cfg_norm: CfgNormType = CfgNormType.NONE", patch)
-        self.assertIn('"repetition_penalty": 1.0', patch)
-        self.assertIn('"presence_penalty": 0.0', patch)
-        self.assertIn('"frequency_penalty": 0.0', patch)
+        api_rl = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_rl.py").read_text()
+        self.assertIn('"repetition_penalty": 1.0', api_rl)
+        self.assertIn('"presence_penalty": 0.0', api_rl)
+        self.assertIn('"frequency_penalty": 0.0', api_rl)
         contract = json.loads((ROOT / "docker/rl-engine/runtime_contract.json").read_text())
         self.assertEqual(contract["platform"]["gpu"], "NVIDIA H200")
         for name, relative in (
@@ -69,7 +70,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn('"cfg_norm": "none"', client)
         launcher = (ROOT / "scripts/rl_engine/launch_server.sh").read_text()
         self.assertIn("INPUT_PENALTY", launcher)
-        self.assertIn("MAX_REQ_TOTAL_LEN:-16384", launcher)
+        self.assertIn("MAX_SEQUENCE_LENGTH:-16384", launcher)
         self.assertIn("LIGHTLLM_MEM_FRACTION:-0.80", launcher)
         self.assertIn('--mem_fraction "$LIGHTLLM_MEM_FRACTION"', launcher)
         self.assertIn("LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1", launcher)
@@ -113,13 +114,6 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("max_req_total_len=span_sequence_limit", api_rl)
         self.assertIn('"sequence_tokens": sequence_tokens', api_rl)
         self.assertIn('"guidance_scale": 1.0', api_rl)
-        api_openai = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_openai.py").read_text()
-        self.assertIn("def _set_interleaved_completion_budget(", api_openai)
-        self.assertEqual(
-            api_openai.count("total_completion_tokens=total_completion_tokens"),
-            2,
-        )
-        self.assertEqual(api_openai.count('finish_reason = "length"'), 2)
         rl_models = (ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py").read_text()
         self.assertIn("max_sequence_length: int = Field(default=8192", rl_models)
         api_start = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py").read_text()

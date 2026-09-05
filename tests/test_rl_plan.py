@@ -41,7 +41,7 @@ class RlPlanTest(unittest.TestCase):
             self.assertEqual(restored.torchrun.world_size, 2)
             self.assertEqual(len(restored.rollout_api_base_urls), 2)
             self.assertEqual(restored.max_sequence_length, 8192)
-            self.assertEqual(restored.max_new_tokens, 6144)
+            self.assertNotIn("max_new_tokens", payload)
             self.assertEqual(restored.max_images, 10)
             self.assertEqual(restored.image_size, 512)
             self.assertEqual(restored.save_every_steps, 10)

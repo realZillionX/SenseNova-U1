@@ -309,6 +309,8 @@ def main() -> None:
         "torch_cuda": torch.version.cuda,
         "cuda_available": torch.cuda.is_available(),
         "gpu_count": torch.cuda.device_count(),
+        "max_sequence_length": int(os.getenv("FORGE_MAX_SEQUENCE_LENGTH", "16384")),
+        "max_generated_images": 10,
         "gpu_names": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
         "nccl": nccl_version,
         "flash_attention": flash_attention,

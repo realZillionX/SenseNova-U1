@@ -13,13 +13,13 @@
   },
   "sources": {
     "forge": "build-arg:FORGE_COMMIT",
-    "lightllm": "c747b5104ee05c6625fabb1aca3d161a783486d9",
+    "lightllm": "d4e1537085fdd9351d0c63b07e4336b77e8ff9e9",
     "lightx2v": "a46d6c4d0dc00659c597078f86fb34c1d5b0f481"
   },
   "overlays": {
     "lightllm_sensenova_policy": {
       "path": "serving/patches/lightllm-sensenova-policy.patch",
-      "sha256": "92ef7f94c909caa9bb078aa1ef356158b7f3521276ca3ae4deafdf228199744d"
+      "sha256": "95303da2bd55d9ead59789fa973891801d11835eb636e5bd426f5003a0288212"
     }
   },
   "immutable_core": {

@@ -638,7 +638,6 @@ def _generate_and_anchor(
                     artifact_dir=artifact_dir,
                     rollout_key=f"{row.sample_id}-b{batch_index:08d}",
                     max_sequence_length=plan.max_sequence_length,
-                    max_new_tokens=plan.max_new_tokens,
                     max_images=plan.max_images,
                     image_size=plan.image_size,
                     image_steps=plan.image_steps,

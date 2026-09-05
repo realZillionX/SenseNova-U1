@@ -1,10 +1,6 @@
 # SenseNova-U1.5-8B-MoT Forge
 
 <p align="center">
-  <strong>English</strong> · <a href="./README_CN.md">简体中文</a>
-</p>
-
-<p align="center">
   <a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT"><img src="https://img.shields.io/badge/🤗%20Model-SenseNova--U1.5--8B--MoT-yellow" alt="Model"></a>
   <img src="https://img.shields.io/badge/SFT-FSDP2-6f42c1" alt="FSDP2 SFT">
   <img src="https://img.shields.io/badge/RL-GDPO%20%7C%20UniGDPO-2459B8" alt="GDPO and UniGDPO">

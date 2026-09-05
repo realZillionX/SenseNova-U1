@@ -93,8 +93,9 @@ downstream-consumer audit authorize cleanup.
 
 Reaching `max_images` does not discard a trajectory: the image-action token is
 masked for the remaining text tail so the policy can still close `</think>` and
-emit `Answer:`. Reaching `max_new_tokens` or the joint sequence limit returns a
+emit `Answer:`. Reaching the joint `max_sequence_length=8192` limit returns a
 `length` trajectory. It is still verified and optimized; a missing typed final
 therefore receives the ordinary parse/semantic failure rather than being
 silently filtered or resampled. Budget state separately records length
-truncations and image-limit hits.
+truncations and image-limit hits. Launch RL serving with `MAX_SEQUENCE_LENGTH=8192`;
+its actual capacity must equal the plan limit. There is no separate text ceiling.

@@ -29,6 +29,17 @@ serving runs the same launcher per node and assigns consecutive global ids via
 Run `examples/serving/client.py` for protocol inspection and
 `examples/serving/rl_smoke.py` for rollout/trace/weight-control validation.
 
+The only trajectory-length setting is `MAX_SEQUENCE_LENGTH`: 16384 for
+ordinary inference and 8192 for an RL deployment. The launcher sets the
+LightLLM capacity to this exact value and records it in preflight. Requests
+may repeat it as `max_sequence_length`, but a different value is rejected.
+Input text/images and output text/images all count toward the same limit.
+There is no independent completion cap. Both routes allow at most ten
+generated images and mask further image actions at that count or when the next
+image cannot fit; remaining context stays available for text. Usage reports
+initial prompt tokens, generated text actions, generated image context tokens,
+and their total.
+
 Ordinary inference and RL use different, explicit profiles:
 
 - VQA follows the published sampled text recipe: temperature 0.6, top-p 0.95,
@@ -53,7 +64,7 @@ after its rollout group returns, then deleted; disconnect cleanup is also
 eager. Formal serving seals the measured TTL with margin rather than silently
 inheriting the fallback.
 
-LightLLM reserves 70% of its post-weight memory for KV cache by default. The
+LightLLM reserves 80% of its post-weight memory for KV cache by default. The
 remaining headroom is part of the online-publication contract: a paused server
 must still receive a full-parameter bucket without OOM. Override
 `LIGHTLLM_MEM_FRACTION` only after measuring both rollout capacity and the
