@@ -15,6 +15,7 @@ import shutil
 import statistics
 import subprocess
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ import torch
 import torch.distributed as dist
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.utils import packed_data_normalizer
+from sensenovalm.data.sample_progress import SampleProgress
 from sensenovalm.initialize.launch import initialize_distributed_env
 from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
 from sensenovalm.train.fsdp import initialize_unit_mtp_communicators, training_profile
@@ -335,7 +337,8 @@ def _restore_rng(payload: dict[str, Any]) -> None:
 def _save_training_checkpoint(
     *,
     root: Path,
-    step: int,
+    progress: SampleProgress,
+    checkpoint_target_samples: int,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     ema: dict[str, Tensor] | None,
@@ -343,12 +346,13 @@ def _save_training_checkpoint(
     import torch.distributed.checkpoint as dcp
 
     rank = dist.get_rank()
-    target = root / f"step-{step:08d}"
-    staging = root / f".step-{step:08d}.staging"
+    name = "final" if progress.done else f"samples-{progress.consumed_samples:012d}"
+    target = root / name
+    staging = root / f".{name}.staging"
     if rank == 0:
         root.mkdir(parents=True, exist_ok=True)
         if target.exists() or staging.exists():
-            raise FileExistsError(f"refusing to overwrite SFT checkpoint step {step}")
+            raise FileExistsError(f"refusing to overwrite SFT checkpoint {name}")
         staging.mkdir()
     dist.barrier()
     dcp.save(_dcp_state(model, optimizer), checkpoint_id=staging / "dcp")
@@ -358,9 +362,10 @@ def _save_training_checkpoint(
     dist.barrier()
     if rank == 0:
         metadata = {
-            "schema": "sensenova.u15.forge.sft.checkpoint.v1",
+            "schema": "sensenova.u15.forge.sft.checkpoint.v2",
             "trainer": "torch_fsdp2",
-            "step": step,
+            **asdict(progress),
+            "checkpoint_target_samples": checkpoint_target_samples,
             "world_size": dist.get_world_size(),
             "ema": ema is not None,
         }
@@ -378,7 +383,7 @@ def _load_training_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     ema: dict[str, Tensor] | None,
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[SampleProgress, dict[str, Any]]:
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import (
         StateDictOptions,
@@ -387,7 +392,7 @@ def _load_training_checkpoint(
     )
 
     metadata = json.loads((checkpoint / "checkpoint.json").read_text(encoding="utf-8"))
-    if metadata.get("schema") != "sensenova.u15.forge.sft.checkpoint.v1":
+    if metadata.get("schema") != "sensenova.u15.forge.sft.checkpoint.v2":
         raise ValueError("unsupported SFT checkpoint schema")
     if metadata.get("trainer") != "torch_fsdp2" or int(metadata.get("world_size", 0)) != dist.get_world_size():
         raise ValueError("SFT checkpoint topology differs from the current FSDP2 run")
@@ -417,7 +422,7 @@ def _load_training_checkpoint(
     rng = torch.load(
         checkpoint / f"rank-{rank:05d}-rng.pt", map_location="cpu", weights_only=False
     )
-    return int(metadata["step"]), rng
+    return SampleProgress(**{name: metadata[name] for name in SampleProgress.__dataclass_fields__}), rng
 
 
 def _prune_empty_hf_shards(target: Path) -> None:
@@ -508,11 +513,11 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, float]:
     samples = sum(int(record["samples"]) for record in records)
     elapsed = sum(seconds)
     return {
-        "steps": len(records),
+        "optimizer_updates": len(records),
         "seconds": elapsed,
-        "step_seconds_mean": statistics.fmean(seconds),
-        "step_seconds_median": statistics.median(seconds),
-        "step_seconds_p95": sorted(seconds)[max(0, int(0.95 * len(seconds)) - 1)],
+        "update_seconds_mean": statistics.fmean(seconds),
+        "update_seconds_median": statistics.median(seconds),
+        "update_seconds_p95": sorted(seconds)[max(0, int(0.95 * len(seconds)) - 1)],
         "physical_tokens_per_second": physical_tokens / elapsed,
         "supervised_tokens_per_second": supervised_tokens / elapsed,
         "samples_per_second": samples / elapsed,
@@ -533,6 +538,11 @@ def main(args: Any) -> None:
     gpu_name = _require_h200()
     seed = int(args.seed)
     _seed_everything(seed)
+    obsolete = {"total_steps", "init_steps", "checkpoint_every", "metric_interval_steps",
+                "SFT_BENCHMARK_WARMUP_STEPS", "SFT_BENCHMARK_MEASURED_STEPS"} & os.environ.keys()
+    if obsolete:
+        raise ValueError(f"SFT accepts sample counts only; remove obsolete settings: {sorted(obsolete)}")
+    progress = SampleProgress(int(gpc.config.data.samples_per_epoch), int(gpc.config.data.max_samples))
     train_dl, _dataset_types = build_train_loader_with_data_type()
     model = get_model(gpc.config.model, gpc.config.data).to(torch.cuda.current_device())
     # The checkpoint-specific model constructs parallel-aware linear modules
@@ -564,7 +574,6 @@ def main(args: Any) -> None:
             for name, parameter in model.named_parameters()
         }
 
-    total_steps = int(gpc.config.data.total_steps)
     benchmark_report = os.environ.get("SFT_BENCHMARK_REPORT")
     benchmark_only = _env_bool("SFT_BENCHMARK_ONLY", False)
     if benchmark_only and benchmark_report is None:
@@ -573,14 +582,12 @@ def main(args: Any) -> None:
         raise ValueError("benchmark-only SFT cannot resume a production checkpoint")
     if benchmark_only and os.environ.get("SFT_HF_OUTPUT"):
         raise ValueError("benchmark-only SFT cannot publish an HF checkpoint")
-    warmup_steps = _env_int("SFT_BENCHMARK_WARMUP_STEPS", 0 if benchmark_report is None else 3)
-    measured_steps = _env_int(
-        "SFT_BENCHMARK_MEASURED_STEPS",
-        total_steps - warmup_steps,
-        minimum=1,
-    )
-    if benchmark_report is not None and total_steps != warmup_steps + measured_steps:
-        raise ValueError("benchmark total_steps must equal warmup plus measured steps")
+    benchmark_warmup_samples = _env_int("SFT_BENCHMARK_WARMUP_SAMPLES", 0)
+    if benchmark_warmup_samples >= progress.max_samples:
+        raise ValueError("benchmark warmup must leave measured samples")
+    warmup_samples = int(gpc.config.lr_scheduler.warmup_samples)
+    logging_samples = _env_int("logging_samples", 1, minimum=1)
+    last_logged_samples = 0
     grad_accumulation = int(gpc.config.data.micro_num)
     if grad_accumulation < 1:
         raise ValueError("FSDP2 SFT gradient accumulation must be positive")
@@ -601,31 +608,40 @@ def main(args: Any) -> None:
         )
     ).expanduser().resolve()
     resume_raw = os.environ.get("SFT_RESUME_CHECKPOINT")
-    start_step = 0
     resume_rng = None
     if resume_raw:
-        start_step, resume_rng = _load_training_checkpoint(
+        restored, resume_rng = _load_training_checkpoint(
             checkpoint=Path(resume_raw).expanduser().resolve(),
             model=model,
             optimizer=optimizer,
             ema=ema,
         )
-        if not 0 <= start_step < total_steps:
-            raise ValueError("SFT resume step is outside the current plan")
+        if restored.samples_per_epoch != progress.samples_per_epoch or restored.max_samples != progress.max_samples or restored.done:
+            raise ValueError("SFT resume sample clock differs from the current plan")
+        progress = restored
     iterator = iter(train_dl)
-    for _ in range(start_step):
+    replayed_samples = 0
+    replayed_updates = 0
+    while replayed_samples < progress.consumed_samples:
         try:
-            next(iterator)
+            replay_batch = next(iterator)
         except StopIteration:
             iterator = iter(train_dl)
-            next(iterator)
+            replay_batch = next(iterator)
+        replay_count = _distributed_sum(int(replay_batch[0]["num_samples"]))
+        if replay_count < 1:
+            raise ValueError("SFT resume replay produced no raw samples")
+        replayed_samples += replay_count
+        replayed_updates += 1
+    if replayed_samples != progress.consumed_samples or replayed_updates != progress.optimizer_updates:
+        raise ValueError("SFT loader replay differs from the checkpoint sample clock")
     if resume_rng is not None:
         _restore_rng(resume_rng)
     launch_time = time.strftime("%Y-%m-%d_%H-%M-%S")
     with training_profile(bool(args.profiling), start_time=launch_time) as profiler:
-        for step in range(start_step, total_steps):
+        while not progress.done:
             torch.cuda.synchronize()
-            step_start = time.perf_counter()
+            update_start = time.perf_counter()
             try:
                 raw_batch = next(iterator)
             except StopIteration:
@@ -642,8 +658,16 @@ def main(args: Any) -> None:
             supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) else 0
             samples_local = int(data.pop("num_samples", 0))
             data.pop("num_padding_tokens", None)
-            if not samples_local:
-                samples_local = sum(len(item) - 1 for item in data["cu_seqlens"])
+            # The collator excludes padding copies and reports raw packed samples.
+            # Attention/padding segments are not a substitute for this count.
+            batch_samples = int(_distributed_sum(samples_local))
+            progress.checkpoint_target(batch_samples)  # validate before mutating weights
+            lr_ratio = progress.learning_rate_ratio(
+                warmup_samples, gpc.config.lr_scheduler_type,
+                float(gpc.config.lr_scheduler.eta_min),
+            )
+            for group in optimizer.param_groups:
+                group["lr"] = float(gpc.config.adam.lr) * lr_ratio
 
             optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
@@ -652,7 +676,7 @@ def main(args: Any) -> None:
             grad_norm = None
             for micro_step in range(grad_accumulation):
                 is_last = micro_step + 1 == grad_accumulation
-                global_position = step * world_size * grad_accumulation + rank * grad_accumulation + micro_step
+                global_position = progress.optimizer_updates * world_size * grad_accumulation + rank * grad_accumulation + micro_step
                 sample_seed = seed + global_position
                 torch.manual_seed(sample_seed)
                 torch.cuda.manual_seed_all(sample_seed)
@@ -691,7 +715,7 @@ def main(args: Any) -> None:
                         current = _local_parameter_view(parameter.detach()).to(dtype=torch.bfloat16)
                         ema[name].lerp_(current, 1.0 - ema_decay)
             torch.cuda.synchronize()
-            seconds = _distributed_max(time.perf_counter() - step_start)
+            seconds = _distributed_max(time.perf_counter() - update_start)
             loss_metrics = torch.tensor(
                 [loss_value, main_loss_value, auxiliary_loss_value],
                 device=torch.cuda.current_device(),
@@ -703,8 +727,13 @@ def main(args: Any) -> None:
                 float(value) for value in loss_metrics.tolist()
             )
             profiler.step()
+            before_samples = progress.consumed_samples
+            checkpoint_target = progress.advance(batch_samples)
             record = {
-                "step": step + 1,
+                "consumed_samples": progress.consumed_samples,
+                "max_samples": progress.max_samples,
+                "epoch": progress.consumed_samples / progress.samples_per_epoch,
+                "learning_rate": optimizer.param_groups[0]["lr"],
                 "seconds": seconds,
                 "loss": loss_value,
                 "main_loss": main_loss_value,
@@ -712,32 +741,29 @@ def main(args: Any) -> None:
                 "grad_norm": float(grad_norm.detach().float().item()),
                 "physical_tokens": _distributed_sum(physical_tokens_local),
                 "supervised_tokens": _distributed_sum(supervised_tokens_local),
-                "samples": _distributed_sum(samples_local),
+                "samples": batch_samples,
             }
-            if report_path is not None and step >= warmup_steps:
+            if report_path is not None and before_samples >= benchmark_warmup_samples:
                 records.append(record)
-            if rank == 0:
+            if rank == 0 and (progress.done or progress.consumed_samples - last_logged_samples >= logging_samples):
+                last_logged_samples = progress.consumed_samples
                 print(
                     json.dumps(
                         {
                             "component": "sensenova_u15.sft_fsdp2",
-                            "event": "step_complete",
-                            "measured": step >= warmup_steps,
+                            "event": "samples_complete",
+                            "measured": before_samples >= benchmark_warmup_samples,
                             **record,
                         },
                         sort_keys=True,
                     ),
                     flush=True,
                 )
-            completed_step = step + 1
-            checkpoint_every = _env_int("checkpoint_every", 100, minimum=1)
-            if not benchmark_only and (
-                completed_step % checkpoint_every == 0
-                or completed_step == total_steps
-            ):
+            if not benchmark_only and checkpoint_target is not None:
                 _save_training_checkpoint(
                     root=checkpoint_root,
-                    step=completed_step,
+                    progress=progress,
+                    checkpoint_target_samples=checkpoint_target,
                     model=model,
                     optimizer=optimizer,
                     ema=ema,
@@ -795,7 +821,8 @@ def main(args: Any) -> None:
             "prefetch_depth": _env_int("FSDP2_PREFETCH_DEPTH", 1),
             "fused_adamw": _env_bool("FSDP2_FUSED_ADAMW", True),
             "wrapped_modules": list(wrapped_modules),
-            "warmup_steps": warmup_steps,
+            "warmup_samples": benchmark_warmup_samples,
+            "progress": asdict(progress),
             "records": records,
             "aggregate": _aggregate(records),
             "peak_memory_bytes": int(peak_memory),

@@ -49,19 +49,17 @@ tensor_parallel_mode = "mtp"
 lr = float(os.environ['lr'])
 weight_decay = float(os.environ['weight_decay'])
 grad_accm = int(os.environ['grad_accm'])
-total_steps = int(os.environ['total_steps'])
-init_steps = int(os.environ['init_steps'])
+max_samples = int(os.environ['max_samples'])
+samples_per_epoch = int(os.environ['samples_per_epoch'])
+warmup_samples = int(os.environ.get('warmup_samples', max_samples // 100))
 min_lr_ratio = float(os.environ['min_lr_ratio'])
 mlp_lr_scale = float(os.environ['mlp_lr_scale'])
 fm_modules_lr_scale = float(os.environ.get('fm_modules_lr_scale', 1.0))
 mot_gen_lr_scale = float(os.environ.get('mot_gen_lr_scale', 1.0))
 lr_scheduler_type = os.environ.get('lr_scheduler_type', 'cosine')
-lr_scheduler_offset = int(os.environ.get('lr_scheduler_offset', 0))
 ce_loss_weight = float(os.environ.get('ce_loss_weight', 1.0))
-metric_interval_steps = int(os.environ.get('metric_interval_steps', '10'))
+
 activation_checkpoint_fraction = float(os.environ.get('activation_checkpoint_fraction', '1'))
-if metric_interval_steps < 1:
-    raise ValueError('metric_interval_steps must be a positive integer')
 if not 0 <= activation_checkpoint_fraction <= 1:
     raise ValueError('activation_checkpoint_fraction must be in [0, 1]')
 
@@ -215,8 +213,8 @@ data = dict(
     micro_num=grad_accm,
     micro_bsz=1,
     pack_sample_into_one=False,
-    total_steps=total_steps,
-    total_epochs=1,
+    max_samples=max_samples,
+    samples_per_epoch=samples_per_epoch,
     skip_batches="",
     min_length=50,
     train_folder=None,  # SenseNovaVL drives this via data.meta_path
@@ -438,10 +436,8 @@ lr_scale = dict(
 )
 
 lr_scheduler = dict(
-    total_steps=total_steps,
-    init_steps=init_steps,
-    warmup_ratio=0.0,
-    last_epoch=-1,
+    max_samples=max_samples,
+    warmup_samples=warmup_samples,
     eta_min=min_lr_ratio,
 )
 
@@ -500,7 +496,6 @@ monitor = dict(
         light_monitor_address=None,  # light_monitor heartbeat target
         alert_file_path=f"llm_alter/{JOB_NAME}_alert.log",
     ),
-    tensorboard=dict(queue_max_length=10, interval_step=5),
 )
 tensorboard = dict(queue_max_length=100)
 

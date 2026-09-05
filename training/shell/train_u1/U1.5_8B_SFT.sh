@@ -46,13 +46,13 @@ export lr_scheduler_type=${lr_scheduler_type:-"constant"}
 export min_lr_ratio=${min_lr_ratio:-0.5}
 export mlp_lr_scale=${mlp_lr_scale:-1.0}
 export weight_decay=${weight_decay:-0}
-export total_steps=${total_steps:-200000}
-export init_steps=${init_steps:-2000}
-export metric_interval_steps=${metric_interval_steps:-10}
+export samples_per_epoch=${samples_per_epoch:?set samples_per_epoch to the sealed raw dataset row count}
+export max_samples=${max_samples:-$samples_per_epoch}
+export warmup_samples=${warmup_samples:-$((max_samples / 100))}
+export logging_samples=${logging_samples:-1}
 # The production H200 profile keeps this conservative recomputation level so
 # native-resolution outliers retain ample headroom.
 export activation_checkpoint_fraction=${activation_checkpoint_fraction:-0.75}
-export checkpoint_every=${checkpoint_every:-100}
 export SFT_CHECKPOINT_ROOT=${SFT_CHECKPOINT_ROOT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/checkpoints"}
 if [[ ${SFT_BENCHMARK_ONLY:-false} == true ]]; then
     unset SFT_HF_OUTPUT
