@@ -43,10 +43,14 @@ class RewardProviderTest(unittest.TestCase):
                     "group-1",
                     (
                         SimpleNamespace(
-                            candidate=CandidateResponse(modality="ti2t", items=(TextSegment("Answer: A"),))
+                            candidate=CandidateResponse(modality="ti2t", items=(TextSegment("Answer: A"),)),
+                            text_tokens=4,
+                            image_context_tokens=0,
                         ),
                         SimpleNamespace(
-                            candidate=CandidateResponse(modality="ti2t", items=(TextSegment("Answer: B"),))
+                            candidate=CandidateResponse(modality="ti2t", items=(TextSegment("Answer: B"),)),
+                            text_tokens=5,
+                            image_context_tokens=0,
                         ),
                     ),
                     root,

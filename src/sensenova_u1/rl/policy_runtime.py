@@ -72,6 +72,7 @@ class U15PolicyRollout:
     generated_images: int
     seconds: float
     finish_reason: str = "stop"
+    image_context_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -1162,6 +1163,7 @@ class U15PolicyRuntime:
         items: list[TextSegment | ImageSegment] = []
         text_tokens = 0
         image_count = 0
+        image_context_tokens = 0
         finish_reason = "length"
         text_only_tail = modality == "ti2t" or self.plan.max_images == 0
         with torch.no_grad():
@@ -1222,7 +1224,9 @@ class U15PolicyRuntime:
                     break
                 if not can_generate_image:
                     raise RuntimeError("U1.5 sampled a masked image action")
+                image_start_length = int(session.cache.get_seq_length())
                 pixels, image_trace = session.sample_image(generator=generator)
+                image_context_tokens += int(session.cache.get_seq_length()) - image_start_length
                 image_name = f"{rollout_key}-image-{image_count:02d}.png"
                 image_path = artifact_dir / image_name
                 self._save_png(pixels, image_path)
@@ -1245,6 +1249,7 @@ class U15PolicyRuntime:
             events=tuple(events),
             text_tokens=text_tokens,
             generated_images=image_count,
+            image_context_tokens=image_context_tokens,
             seconds=time.perf_counter() - started,
             finish_reason=finish_reason,
         )

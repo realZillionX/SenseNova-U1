@@ -28,7 +28,14 @@ Relative media paths resolve against the prompt file.
 
 `reward_command` starts one persistent downstream process. Forge writes one
 JSON request per line containing `sample_id`, `modality`, `rollout_group_key`,
-and ordered response items. The provider returns:
+and ordered response items. Request schema `sensenova.u15.forge.reward.request.v2`
+also supplies `max_sequence_length` and an aligned `usage` list with integer
+`text_tokens` and `image_context_tokens` for each rollout. These are actual
+generated counts, excluding prompt context; providers can define explicit
+resource objectives without re-tokenizing decoded text. Forge carries these
+counts through distributed rollout materialization and its checkpoint budget
+ledger, and emits reward means/weights and output counts in `reward_batch`
+events. The provider returns:
 
 ```json
 {

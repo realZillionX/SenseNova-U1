@@ -585,6 +585,7 @@ class SenseNovaRlApiClient:
         return {
             "events": wire_events,
             "text_tokens": text_tokens,
+            "image_context_tokens": usage_fields["image_context_tokens"],
             "generated_images": image_count,
             "seconds": float(seconds),
             "finish_reason": finish_reason,
@@ -706,6 +707,7 @@ class SenseNovaRlApiClient:
                     candidate=CandidateResponse(modality=modality, items=tuple(items)),
                     events=(),
                     text_tokens=int(raw["text_tokens"]),
+                    image_context_tokens=int(raw["image_context_tokens"]),
                     generated_images=int(raw["generated_images"]),
                     seconds=float(raw["seconds"]),
                     finish_reason=str(raw.get("finish_reason") or "stop"),
@@ -794,6 +796,7 @@ class SenseNovaRlApiClient:
             candidate=CandidateResponse(modality=modality, items=tuple(items)),
             events=tuple(events),
             text_tokens=int(raw["text_tokens"]),
+            image_context_tokens=int(raw["image_context_tokens"]),
             generated_images=int(raw["generated_images"]),
             seconds=float(raw["seconds"]),
             finish_reason=str(raw.get("finish_reason") or "stop"),

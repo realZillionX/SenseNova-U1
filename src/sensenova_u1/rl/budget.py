@@ -41,6 +41,7 @@ class BudgetLedger:
     samples: int = 0
     rollouts: int = 0
     generated_text_tokens: int = 0
+    generated_image_context_tokens: int = 0
     generated_images: int = 0
     length_truncated_rollouts: int = 0
     image_limit_hits: int = 0
@@ -58,6 +59,7 @@ class BudgetLedger:
         count: int = 1,
         *,
         text_tokens: int = 0,
+        image_context_tokens: int = 0,
         images: int = 0,
         seconds: float = 0.0,
         truncated: bool = False,
@@ -67,6 +69,7 @@ class BudgetLedger:
 
         self.rollouts += int(count)
         self.generated_text_tokens += int(text_tokens)
+        self.generated_image_context_tokens += int(image_context_tokens)
         self.generated_images += int(images)
         self.length_truncated_rollouts += int(truncated)
         self.image_limit_hits += int(image_limit_hit)
@@ -108,6 +111,7 @@ class BudgetLedger:
         self.samples += other.samples
         self.rollouts += other.rollouts
         self.generated_text_tokens += other.generated_text_tokens
+        self.generated_image_context_tokens += other.generated_image_context_tokens
         self.generated_images += other.generated_images
         self.length_truncated_rollouts += other.length_truncated_rollouts
         self.image_limit_hits += other.image_limit_hits

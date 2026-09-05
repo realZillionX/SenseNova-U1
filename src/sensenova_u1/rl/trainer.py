@@ -310,13 +310,17 @@ def _reward_request(
     artifact_root: Path,
 ) -> dict[str, object]:
     return {
-        "schema": "sensenova.u15.forge.reward.request.v1",
+        "schema": "sensenova.u15.forge.reward.request.v2",
         "artifact_root": str(artifact_root.resolve()),
         "modality": modality,
         "sample_id": sample_id,
         "rollout_group_key": rollout_group_key,
         "reward_context": dict(plan.reward_context),
         "rollouts": [item.candidate.to_dict() for item in rollouts],
+        "max_sequence_length": plan.max_sequence_length,
+        "usage": [
+            {"text_tokens": item.text_tokens, "image_context_tokens": item.image_context_tokens} for item in rollouts
+        ],
     }
 
 
@@ -855,9 +859,28 @@ def _primary_advantages(
         rewards.append(reward)
     elapsed = time.monotonic() - started
     ledger.verifier_seconds += elapsed
-    advantages = compute_reward_advantages(
-        _combine_rewards(rewards), modality=plan.modality, weights=plan.reward_weights
-    ).advantages
+    combined = _combine_rewards(rewards)
+    advantages = compute_reward_advantages(combined, modality=plan.modality, weights=plan.reward_weights).advantages
+    print(
+        json.dumps(
+            {
+                "event": "reward_batch",
+                "dimension_names": list(combined.dimension_names),
+                "weights": list(plan.reward_weights),
+                "means": [
+                    float(combined.matrix[combined.availability[:, column], column].mean())
+                    if combined.availability[:, column].any()
+                    else None
+                    for column in range(len(combined.dimension_names))
+                ],
+                "generated_text_tokens": sum(item.text_tokens for group in groups for item in group),
+                "generated_image_context_tokens": sum(item.image_context_tokens for group in groups for item in group),
+            },
+            sort_keys=True,
+            allow_nan=False,
+        ),
+        flush=True,
+    )
     return {
         "advantages": advantages.tolist(),
         "budget": ledger.as_dict(),
@@ -1170,6 +1193,7 @@ def execute_on_policy_batch(
             for rollout in group:
                 ledger.record_rollouts(
                     text_tokens=rollout.text_tokens,
+                    image_context_tokens=rollout.image_context_tokens,
                     images=rollout.generated_images,
                     seconds=rollout.seconds,
                     truncated=rollout.finish_reason == "length",

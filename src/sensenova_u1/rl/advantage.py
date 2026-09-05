@@ -28,8 +28,8 @@ rather than passing the raw reward through; the group stage divides by
 moments are accumulated in float64 regardless of the input dtype, and the
 returned tensors are cast back to it.
 
-Rewards must be the raw final-answer reward vector produced by the ``data/``
-verifiers.  KL belongs in the loss and must never be folded into a reward, so
+Rewards are the downstream-defined vector of terminal task evidence and any
+explicit resource objectives. The downstream provider owns their semantics.  KL belongs in the loss and must never be folded into a reward, so
 this module refuses a KL-adjusted input surface: it accepts no ``beta`` or
 ``kl_values`` argument at all, and the one ``kl_in_reward`` keyword it does
 accept raises on anything but ``False``.  The keyword is kept precisely so that
