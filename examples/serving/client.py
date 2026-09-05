@@ -223,7 +223,9 @@ def build_text_config(args: argparse.Namespace) -> dict[str, Any]:
         "repetition_penalty": (
             profile["repetition_penalty"] if args.repetition_penalty is None else args.repetition_penalty
         ),
-        "max_sequence_length": profile["max_sequence_length"] if args.max_sequence_length is None else args.max_sequence_length,
+        "max_sequence_length": profile["max_sequence_length"]
+        if args.max_sequence_length is None
+        else args.max_sequence_length,
         "max_images": 10,
     }
 

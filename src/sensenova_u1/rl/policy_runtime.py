@@ -1210,7 +1210,11 @@ class U15PolicyRuntime:
                 text_tokens += len(tokens)
                 events.append(TextEvent(trace=trace, stop_token_id=stop))
                 if stop != self.img_start_id:
-                    if stop is None and image_reserve and int(session.cache.get_seq_length()) < self.plan.max_sequence_length:
+                    if (
+                        stop is None
+                        and image_reserve
+                        and int(session.cache.get_seq_length()) < self.plan.max_sequence_length
+                    ):
                         text_only_tail = True
                         continue
                     if stop is not None:
