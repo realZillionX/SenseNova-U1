@@ -42,6 +42,9 @@ class RlPlanTest(unittest.TestCase):
             self.assertEqual(len(restored.rollout_api_base_urls), 2)
             self.assertEqual(restored.max_sequence_length, 8192)
             self.assertNotIn("max_new_tokens", payload)
+            for retired in ("max_new_tokens", "max_tokens", "max_completion_length"):
+                with self.subTest(retired=retired), self.assertRaises((TypeError, ValueError)):
+                    RlPlan.from_dict({**payload, retired: 6144})
             self.assertEqual(restored.max_images, 10)
             self.assertEqual(restored.image_size, 512)
             self.assertEqual(restored.save_every_steps, 10)
