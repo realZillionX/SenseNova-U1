@@ -3,7 +3,7 @@
 This repository is an independent, checkpoint-specific framework for
 SenseNova-U1.5-8B-MoT.
 
-- `training/` owns H200-only full-parameter FSDP2 SFT, DCP resume state, and
+- `training/` owns H200-only full-parameter FSDP2 SFT, model-only DCP checkpoints, and
   atomic Hugging Face safetensors publication.
 - `src/sensenova_u1/rl/` owns full-parameter FSDP2 GDPO/UniGDPO, replay,
   checkpointing, and online policy publication.

@@ -422,50 +422,41 @@ def clip_global_grad_norm(parameters: Iterable[nn.Parameter], max_norm: float) -
     return norm
 
 
-def dcp_state(model: nn.Module, optimizer: torch.optim.Optimizer) -> dict[str, object]:
-    """Return per-rank sharded model and optimizer state for DCP."""
+def dcp_state(model: nn.Module) -> dict[str, object]:
+    """Return only the full model's per-rank parameter shards for DCP."""
 
     from torch.distributed.checkpoint.state_dict import (
         StateDictOptions,
         get_model_state_dict,
-        get_optimizer_state_dict,
     )
 
     options = StateDictOptions(full_state_dict=False, cpu_offload=False)
     return {
         "model": get_model_state_dict(model, options=options),
-        "optimizer": get_optimizer_state_dict(model, optimizer, options=options),
     }
 
 
-def save_dcp(path: Path, model: nn.Module, optimizer: torch.optim.Optimizer) -> None:
-    """Collectively save sharded full-model and optimizer state."""
+def save_dcp(path: Path, model: nn.Module) -> None:
+    """Collectively save sharded full-model weights without training state."""
 
     import torch.distributed.checkpoint as dcp
 
-    dcp.save(dcp_state(model, optimizer), checkpoint_id=path)
+    dcp.save(dcp_state(model), checkpoint_id=path)
 
 
-def load_dcp(path: Path, model: nn.Module, optimizer: torch.optim.Optimizer) -> None:
-    """Collectively restore a sharded full-model and optimizer checkpoint."""
+def load_dcp(path: Path, model: nn.Module) -> None:
+    """Collectively load sharded full-model weights for model consumption."""
 
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import (
         StateDictOptions,
         set_model_state_dict,
-        set_optimizer_state_dict,
     )
 
-    state = dcp_state(model, optimizer)
+    state = dcp_state(model)
     dcp.load(state, checkpoint_id=path)
     options = StateDictOptions(full_state_dict=False, strict=True)
     set_model_state_dict(model, state["model"], options=options)
-    set_optimizer_state_dict(
-        model,
-        optimizer,
-        optim_state_dict=state["optimizer"],
-        options=options,
-    )
 
 
 __all__ = [

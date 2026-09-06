@@ -152,10 +152,6 @@ cfg_img_uncond_drop_prob = float(os.environ.get('cfg_img_uncond_drop_prob', 0.1)
 cfg_txtimg_uncond_drop_prob = float(os.environ.get('cfg_txtimg_uncond_drop_prob', 0))
 cfg_is_uncond_drop_independent = env_bool('cfg_is_uncond_drop_independent', True)
 
-# EMA of the unified model.
-ema_decay = float(os.environ.get('ema_decay', 0.999))
-enable_ema = env_bool('enable_ema', True)
-
 
 # -----------------------------------------------------------------------------
 # Understanding (CE on text tokens)
@@ -197,7 +193,7 @@ if CHECKPOINT_EVERY < 1:
 
 ckpt = dict(
     # The shared config validator expects this object, while the FSDP2 runner
-    # owns DCP model/optimizer/EMA/RNG checkpoints directly.
+    # owns model-only DCP checkpoints directly.
     enable_save_ckpt=False,
     checkpoint_every=CHECKPOINT_EVERY,
 )
@@ -398,17 +394,6 @@ model = dict(
             multiple_of=128,
         ),
     ),
-)
-
-
-# -----------------------------------------------------------------------------
-# EMA copy of the model
-# -----------------------------------------------------------------------------
-averaged_model = dict(
-    enable=enable_ema,
-    decay=ema_decay,
-    multi_avg_fn="ema",
-    use_buffers=False,
 )
 
 

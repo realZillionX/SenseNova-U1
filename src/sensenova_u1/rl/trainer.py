@@ -39,7 +39,6 @@ from .full_parameter import (
     clip_global_grad_norm,
     full_parameter_groups,
     initialize_distributed,
-    load_dcp,
     offload_optimizer_state,
     restore_optimizer_state,
     save_dcp,
@@ -63,7 +62,7 @@ from .weight_publisher import (
     publish_sharded_model_state,
 )
 
-CHECKPOINT_SCHEMA = "sensenova.u15.forge.rl.checkpoint.v1"
+CHECKPOINT_SCHEMA = "sensenova.u15.forge.rl.checkpoint.v2"
 FINAL_STATE_SCHEMA = "sensenova.u15.forge.rl.final.v1"
 RL_PROMPT_SCHEMA = "sensenova.u15.forge.prompt.v1"
 _CHECKPOINT_NAME = re.compile(r"^checkpoint-([0-9]{8})$")
@@ -1366,6 +1365,9 @@ def _checkpoint_metadata(path: Path) -> CheckpointState:
         or set(payload) != expected
         or payload.get("schema") != CHECKPOINT_SCHEMA
         or not (path / "COMMIT").is_file()
+        or not (path / "dcp" / ".metadata").is_file()
+        or not any((path / "dcp").glob("*.distcp"))
+        or {item.name for item in path.iterdir()} != {"dcp", "trainer_state.json", "COMMIT"}
     ):
         raise ValueError(f"incomplete FSDP checkpoint: {path}")
     if not isinstance(payload["policy_version"], str) or not payload["policy_version"].strip():
@@ -1423,27 +1425,14 @@ def latest_checkpoint(
     )
 
 
-def _rng_payload(generator: torch.Generator) -> dict[str, object]:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch_cpu": torch.get_rng_state(),
-        "torch_cuda": torch.cuda.get_rng_state(),
-        "rollout": generator.get_state(),
-    }
-
-
 def save_checkpoint(
     *,
     plan: RlPlan,
     step: int,
     model: Any,
-    optimizer: Any,
-    generator: torch.Generator,
     ledger: BudgetLedger,
     policy_version: str,
     context: DistributedContext | None = None,
-    **_unused: object,
 ) -> Path:
     context = context or _live_context()
     destination = _checkpoint_path(plan, step)
@@ -1467,8 +1456,7 @@ def save_checkpoint(
     if action == "exists":
         dist.barrier()
         return destination
-    save_dcp(temporary / "dcp", model, optimizer)
-    torch.save(_rng_payload(generator), temporary / f"rank-{context.rank:05d}-rng.pt")
+    save_dcp(temporary / "dcp", model)
     dist.barrier()
     if context.is_primary:
         (temporary / "trainer_state.json").write_text(
@@ -1493,35 +1481,6 @@ def save_checkpoint(
         os.replace(temporary, destination)
     dist.barrier()
     return destination
-
-
-def restore_checkpoint(
-    *,
-    state: CheckpointState,
-    plan: RlPlan,
-    model: Any,
-    optimizer: Any,
-    generator: torch.Generator,
-    ledger: BudgetLedger,
-    context: DistributedContext | None = None,
-    **_unused: object,
-) -> int:
-    context = context or _live_context()
-    if state.plan_digest != plan.digest or state.world_size != context.world_size:
-        raise ValueError("FSDP checkpoint is incompatible with this plan")
-    load_dcp(state.path / "dcp", model, optimizer)
-    payload = torch.load(
-        state.path / f"rank-{context.rank:05d}-rng.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    random.setstate(payload["python"])
-    np.random.set_state(payload["numpy"])
-    torch.set_rng_state(payload["torch_cpu"])
-    torch.cuda.set_rng_state(payload["torch_cuda"])
-    generator.set_state(payload["rollout"])
-    _set_ledger(ledger, state.budget)
-    return state.step
 
 
 def _publish_live_policy(
@@ -1570,26 +1529,12 @@ def run_training_loop(
     optimizer: Any,
     rows: Sequence[PromptRow],
     reward_client: RewardClient = score_with_verifier_worker,
-    resume: CheckpointState | None = None,
     context: DistributedContext | None = None,
-    **_unused: object,
 ) -> tuple[int, BudgetLedger, str]:
     context = context or _live_context()
     generator = torch.Generator(device=context.device)
     generator.manual_seed(plan.seed ^ 0x15A8)
     ledger, completed = BudgetLedger(), 0
-    if resume is not None:
-        completed = restore_checkpoint(
-            state=resume,
-            plan=plan,
-            model=policy.model,
-            optimizer=optimizer,
-            generator=generator,
-            ledger=ledger,
-            context=context,
-        )
-    if completed % plan.policy_updates_per_batch:
-        raise ValueError("checkpoint splits a frozen-old update batch")
     scratch = plan.run_dir / ".tmp"
     reward_owner = (
         PersistentRewardClient(plan) if context.is_primary and reward_client is score_with_verifier_worker else None
@@ -1612,7 +1557,6 @@ def run_training_loop(
         if context.is_primary
         else None
     )
-    active_policy_version = resume.policy_version if resume is not None else plan.rollout_policy_version
     serving_statuses = _broadcast_primary(
         context,
         lambda: (
@@ -1636,29 +1580,17 @@ def run_training_loop(
             raise RuntimeError(f"SenseNova serving replica {replica_index} is not in a stable active state")
     if len(observed_versions) != 1:
         raise RuntimeError("SenseNova serving replicas expose different active policy versions")
-    observed_version = next(iter(observed_versions))
-    if resume is None:
-        # Bootstrap every fresh arm from the live FSDP policy before admitting
-        # its first rollout.  Besides preventing a stale serving copy, this
-        # eagerly creates and warms the persistent NCCL update groups instead
-        # of discovering transport failures after the first optimizer batch.
-        active_policy_version = policy_version_for_initial(
-            plan.rollout_policy_version,
-            plan.digest,
-        )
-        _publish_live_policy(
-            policy=policy,
-            publisher=publisher,
-            policy_version=active_policy_version,
-            context=context,
-        )
-    elif resume is not None and observed_version != active_policy_version:
-        _publish_live_policy(
-            policy=policy,
-            publisher=publisher,
-            policy_version=active_policy_version,
-            context=context,
-        )
+    # Publish the fresh arm before its first rollout and warm the NCCL groups.
+    active_policy_version = policy_version_for_initial(
+        plan.rollout_policy_version,
+        plan.digest,
+    )
+    _publish_live_policy(
+        policy=policy,
+        publisher=publisher,
+        policy_version=active_policy_version,
+        context=context,
+    )
     rollout_clients = tuple(
         SenseNovaRlApiClient(
             base_url=base_url,
@@ -1745,8 +1677,6 @@ def run_training_loop(
                     plan=plan,
                     step=completed,
                     model=policy.model,
-                    optimizer=optimizer,
-                    generator=generator,
                     ledger=ledger,
                     policy_version=active_policy_version,
                     context=context,
@@ -1777,6 +1707,8 @@ def _seed_process(seed: int) -> None:
 def _run_plan(plan: RlPlan, context: DistributedContext) -> None:
     if plan.torchrun.world_size != context.world_size:
         raise ValueError("live FSDP world size differs from immutable plan")
+    if latest_checkpoint(plan, context=context) is not None:
+        raise ValueError("RL checkpoints contain model weights only; start a fresh run directory")
     rows = SenseNovaRlvrRows(plan.prompts)
     if any(row.modality != plan.modality for row in rows):
         raise ValueError("RL prompt asset crossed independent arms")
@@ -1790,13 +1722,11 @@ def _run_plan(plan: RlPlan, context: DistributedContext) -> None:
             weight_decay=plan.weight_decay,
         )
     )
-    resume = latest_checkpoint(plan, context=context)
     completed, ledger, active_policy_version = run_training_loop(
         plan=plan,
         policy=policy,
         optimizer=optimizer,
         rows=rows,
-        resume=resume,
         context=context,
     )
     if completed != plan.max_steps:
@@ -1875,7 +1805,6 @@ __all__ = [
     "StepResult",
     "execute_on_policy_batch",
     "latest_checkpoint",
-    "restore_checkpoint",
     "run_training_loop",
     "save_checkpoint",
     "scheduled_prompt_batch",

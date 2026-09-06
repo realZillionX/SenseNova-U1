@@ -3,7 +3,8 @@
 
 The model, native-resolution packed loader, forward, and losses remain the
 checkpoint-specific U1.5 implementations. FSDP2 is the sole trainer and owns
-full-parameter sharding, optimizer state, EMA, checkpointing, and publication.
+full-parameter sharding, optimizer state in memory, model-only checkpointing,
+and publication.
 """
 
 from __future__ import annotations
@@ -246,49 +247,24 @@ def _checkpoint_roundtrip(
     *,
     checkpoint: Path,
     model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    ema: dict[str, Tensor] | None,
 ) -> tuple[float, float, int]:
     import torch.distributed.checkpoint as dcp
     from torch.distributed.checkpoint.state_dict import (
         StateDictOptions,
-        get_model_state_dict,
-        get_optimizer_state_dict,
         set_model_state_dict,
-        set_optimizer_state_dict,
     )
-
-    options = StateDictOptions(full_state_dict=False, cpu_offload=False)
-
-    def state() -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "model": get_model_state_dict(model, options=options),
-            "optimizer": get_optimizer_state_dict(model, optimizer, options=options),
-        }
-        if ema is not None:
-            result["ema"] = ema
-        return result
 
     dist.barrier()
     start = time.perf_counter()
-    dcp.save(state(), checkpoint_id=checkpoint)
+    dcp.save(_dcp_state(model), checkpoint_id=checkpoint)
     dist.barrier()
     save_seconds = _distributed_max(time.perf_counter() - start)
 
-    loaded = state()
+    loaded = _dcp_state(model)
     dist.barrier()
     start = time.perf_counter()
     dcp.load(loaded, checkpoint_id=checkpoint)
     set_model_state_dict(model, loaded["model"], options=StateDictOptions(full_state_dict=False, strict=True))
-    set_optimizer_state_dict(
-        model,
-        optimizer,
-        optim_state_dict=loaded["optimizer"],
-        options=StateDictOptions(full_state_dict=False, strict=True),
-    )
-    if ema is not None:
-        for name, value in loaded["ema"].items():
-            ema[name].copy_(value)
     dist.barrier()
     load_seconds = _distributed_max(time.perf_counter() - start)
 
@@ -304,34 +280,16 @@ def _checkpoint_roundtrip(
     return save_seconds, load_seconds, int(size_tensor.item())
 
 
-def _dcp_state(model: nn.Module, optimizer: torch.optim.Optimizer) -> dict[str, Any]:
+def _dcp_state(model: nn.Module) -> dict[str, Any]:
     from torch.distributed.checkpoint.state_dict import (
         StateDictOptions,
         get_model_state_dict,
-        get_optimizer_state_dict,
     )
 
     options = StateDictOptions(full_state_dict=False, cpu_offload=False)
     return {
         "model": get_model_state_dict(model, options=options),
-        "optimizer": get_optimizer_state_dict(model, optimizer, options=options),
     }
-
-
-def _rng_payload() -> dict[str, Any]:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch_cpu": torch.get_rng_state(),
-        "torch_cuda": torch.cuda.get_rng_state(),
-    }
-
-
-def _restore_rng(payload: dict[str, Any]) -> None:
-    random.setstate(payload["python"])
-    np.random.set_state(payload["numpy"])
-    torch.set_rng_state(payload["torch_cpu"])
-    torch.cuda.set_rng_state(payload["torch_cuda"])
 
 
 def _save_training_checkpoint(
@@ -340,8 +298,6 @@ def _save_training_checkpoint(
     progress: SampleProgress,
     checkpoint_target_samples: int,
     model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    ema: dict[str, Tensor] | None,
 ) -> Path:
     import torch.distributed.checkpoint as dcp
 
@@ -355,19 +311,16 @@ def _save_training_checkpoint(
             raise FileExistsError(f"refusing to overwrite SFT checkpoint {name}")
         staging.mkdir()
     dist.barrier()
-    dcp.save(_dcp_state(model, optimizer), checkpoint_id=staging / "dcp")
-    torch.save(_rng_payload(), staging / f"rank-{rank:05d}-rng.pt")
-    if ema is not None:
-        torch.save(ema, staging / f"rank-{rank:05d}-ema.pt")
+    dcp.save(_dcp_state(model), checkpoint_id=staging / "dcp")
     dist.barrier()
     if rank == 0:
         metadata = {
-            "schema": "sensenova.u15.forge.sft.checkpoint.v2",
+            "schema": "sensenova.u15.forge.sft.checkpoint.v3",
             "trainer": "torch_fsdp2",
             **asdict(progress),
             "checkpoint_target_samples": checkpoint_target_samples,
             "world_size": dist.get_world_size(),
-            "ema": ema is not None,
+            "model_only": True,
         }
         (staging / "checkpoint.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -375,54 +328,6 @@ def _save_training_checkpoint(
         os.rename(staging, target)
     dist.barrier()
     return target
-
-
-def _load_training_checkpoint(
-    *,
-    checkpoint: Path,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    ema: dict[str, Tensor] | None,
-) -> tuple[SampleProgress, dict[str, Any]]:
-    import torch.distributed.checkpoint as dcp
-    from torch.distributed.checkpoint.state_dict import (
-        StateDictOptions,
-        set_model_state_dict,
-        set_optimizer_state_dict,
-    )
-
-    metadata = json.loads((checkpoint / "checkpoint.json").read_text(encoding="utf-8"))
-    if metadata.get("schema") != "sensenova.u15.forge.sft.checkpoint.v2":
-        raise ValueError("unsupported SFT checkpoint schema")
-    if metadata.get("trainer") != "torch_fsdp2" or int(metadata.get("world_size", 0)) != dist.get_world_size():
-        raise ValueError("SFT checkpoint topology differs from the current FSDP2 run")
-    if bool(metadata.get("ema")) != (ema is not None):
-        raise ValueError("SFT checkpoint EMA contract differs from the current run")
-    state = _dcp_state(model, optimizer)
-    dcp.load(state, checkpoint_id=checkpoint / "dcp")
-    options = StateDictOptions(full_state_dict=False, cpu_offload=False, strict=True)
-    set_model_state_dict(model, state["model"], options=options)
-    set_optimizer_state_dict(
-        model,
-        optimizer,
-        optim_state_dict=state["optimizer"],
-        options=options,
-    )
-    rank = dist.get_rank()
-    if ema is not None:
-        loaded_ema = torch.load(
-            checkpoint / f"rank-{rank:05d}-ema.pt",
-            map_location=torch.device("cuda", torch.cuda.current_device()),
-            weights_only=False,
-        )
-        if set(loaded_ema) != set(ema):
-            raise ValueError("SFT checkpoint EMA parameter closure differs from the model")
-        for name, value in loaded_ema.items():
-            ema[name].copy_(value)
-    rng = torch.load(
-        checkpoint / f"rank-{rank:05d}-rng.pt", map_location="cpu", weights_only=False
-    )
-    return SampleProgress(**{name: metadata[name] for name in SampleProgress.__dataclass_fields__}), rng
 
 
 def _prune_empty_hf_shards(target: Path) -> None:
@@ -535,6 +440,8 @@ def _forge_revision() -> str:
 def main(args: Any) -> None:
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+    if os.environ.get("SFT_RESUME_CHECKPOINT"):
+        raise ValueError("SFT checkpoints contain model weights only; start a fresh run")
     gpu_name = _require_h200()
     seed = int(args.seed)
     _seed_everything(seed)
@@ -566,20 +473,10 @@ def main(args: Any) -> None:
         label_smoothing=gpc.config.loss.label_smoothing,
         ce_loss_weight=float(gpc.config.get("ce_loss_weight", 1.0)),
     )
-    ema_decay = float(gpc.config.averaged_model.decay)
-    ema = None
-    if bool(gpc.config.averaged_model.enable):
-        ema = {
-            name: _local_parameter_view(parameter.detach()).to(dtype=torch.bfloat16).clone()
-            for name, parameter in model.named_parameters()
-        }
-
     benchmark_report = os.environ.get("SFT_BENCHMARK_REPORT")
     benchmark_only = _env_bool("SFT_BENCHMARK_ONLY", False)
     if benchmark_only and benchmark_report is None:
         raise ValueError("SFT_BENCHMARK_ONLY requires SFT_BENCHMARK_REPORT")
-    if benchmark_only and os.environ.get("SFT_RESUME_CHECKPOINT"):
-        raise ValueError("benchmark-only SFT cannot resume a production checkpoint")
     if benchmark_only and os.environ.get("SFT_HF_OUTPUT"):
         raise ValueError("benchmark-only SFT cannot publish an HF checkpoint")
     benchmark_warmup_samples = _env_int("SFT_BENCHMARK_WARMUP_SAMPLES", 0)
@@ -607,36 +504,7 @@ def main(args: Any) -> None:
             str(Path(os.environ.get("RUN_ROOT", "RUN")) / gpc.config.JOB_NAME / "checkpoints"),
         )
     ).expanduser().resolve()
-    resume_raw = os.environ.get("SFT_RESUME_CHECKPOINT")
-    resume_rng = None
-    if resume_raw:
-        restored, resume_rng = _load_training_checkpoint(
-            checkpoint=Path(resume_raw).expanduser().resolve(),
-            model=model,
-            optimizer=optimizer,
-            ema=ema,
-        )
-        if restored.samples_per_epoch != progress.samples_per_epoch or restored.max_samples != progress.max_samples or restored.done:
-            raise ValueError("SFT resume sample clock differs from the current plan")
-        progress = restored
     iterator = iter(train_dl)
-    replayed_samples = 0
-    replayed_updates = 0
-    while replayed_samples < progress.consumed_samples:
-        try:
-            replay_batch = next(iterator)
-        except StopIteration:
-            iterator = iter(train_dl)
-            replay_batch = next(iterator)
-        replay_count = _distributed_sum(int(replay_batch[0]["num_samples"]))
-        if replay_count < 1:
-            raise ValueError("SFT resume replay produced no raw samples")
-        replayed_samples += replay_count
-        replayed_updates += 1
-    if replayed_samples != progress.consumed_samples or replayed_updates != progress.optimizer_updates:
-        raise ValueError("SFT loader replay differs from the checkpoint sample clock")
-    if resume_rng is not None:
-        _restore_rng(resume_rng)
     launch_time = time.strftime("%Y-%m-%d_%H-%M-%S")
     with training_profile(bool(args.profiling), start_time=launch_time) as profiler:
         while not progress.done:
@@ -709,11 +577,6 @@ def main(args: Any) -> None:
                     auxiliary_loss_value += float(auxiliary) / grad_accumulation
             grad_norm = _clip_global_grad_norm(parameters, float(gpc.config.hybrid_zero_optimizer.clip_grad_norm))
             optimizer.step()
-            if ema is not None:
-                with torch.no_grad():
-                    for name, parameter in model.named_parameters():
-                        current = _local_parameter_view(parameter.detach()).to(dtype=torch.bfloat16)
-                        ema[name].lerp_(current, 1.0 - ema_decay)
             torch.cuda.synchronize()
             seconds = _distributed_max(time.perf_counter() - update_start)
             loss_metrics = torch.tensor(
@@ -765,8 +628,6 @@ def main(args: Any) -> None:
                     progress=progress,
                     checkpoint_target_samples=checkpoint_target,
                     model=model,
-                    optimizer=optimizer,
-                    ema=ema,
                 )
 
     peak_memory = _distributed_max(float(torch.cuda.max_memory_allocated()))
@@ -780,8 +641,6 @@ def main(args: Any) -> None:
         save_seconds, load_seconds, checkpoint_bytes = _checkpoint_roundtrip(
             checkpoint=checkpoint,
             model=model,
-            optimizer=optimizer,
-            ema=ema,
         )
         checkpoint_result = {
             "save_seconds": save_seconds,

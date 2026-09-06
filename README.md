@@ -25,7 +25,7 @@ LightX2V engines. The complete stack runs in one H200-only runtime.
 | Full-parameter U1.5 training | GDPO and UniGDPO | Continuous-batch text decode |
 | Native-resolution packing | Text-token and image-SDE PPO objectives | T2T, T2I, IT2I and interleaved generation |
 | Block-level FSDP2 | Frozen old policy and SFT reference | Hybrid SDE–ODE rollout traces |
-| EMA + DCP exact state | Block-level FSDP2 + DCP checkpoint | Atomic online NCCL weight updates |
+| Model-only DCP checkpoints | Block-level FSDP2 + DCP checkpoint | Atomic online NCCL weight updates |
 | Atomic HF safetensors publication | Downstream reward-provider protocol | Policy-version admission barrier |
 
 ## Architecture
@@ -82,7 +82,7 @@ RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh
 ```
 
-The launcher saves sharded DCP model/optimizer/EMA/RNG state and atomically
+The launcher saves sharded DCP model weights and sample metadata and atomically
 publishes the ordinary policy weights as a complete HF directory. See
 [SFT](docs/sft.md) and [checkpoint handoff](docs/checkpoints.md).
 

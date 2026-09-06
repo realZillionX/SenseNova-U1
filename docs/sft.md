@@ -55,16 +55,14 @@ before changing weights: reduce the batch or increase the epoch size.
 
 All committed checkpoints are retained for downstream evaluation. Intermediate
 DCP directories use `samples-<actual count>`; the final DCP uses `final`, with its
-sample count in `checkpoint.json`. Each contains model/optimizer shards and
-per-rank EMA/RNG. `SFT_RESUME_CHECKPOINT` restores the sample clock and replays
-to the recorded raw-sample count before restoring model RNG, checking that the
-number of completed optimizer batches agrees. Resume requires the
-same sample budget, epoch size and topology. Final ordinary policy weights are
+sample count in `checkpoint.json`. Each contains full-model parameter shards
+only. Optimizer, scheduler, EMA and RNG are not serialized; interrupted runs
+are not resumed. Final ordinary policy weights are
 atomically published as a complete Hugging Face safetensors directory for RL
 and serving. Killing a run does not produce this final publication.
 
 System probes set `max_samples`, `SFT_BENCHMARK_REPORT` and optionally
 `SFT_BENCHMARK_WARMUP_SAMPLES`. Reports contain actual sample counts, update
 wall times, loss, gradient norms and peak HBM. `SFT_BENCHMARK_ONLY=true`
-suppresses DCP/HF publication, requires a report, and forbids resume and HF
-output; it is never a formal or resumable training run.
+suppresses DCP/HF publication, requires a report, and forbids HF output; it is
+never a formal training run.
