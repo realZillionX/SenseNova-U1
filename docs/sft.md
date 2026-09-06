@@ -18,7 +18,7 @@ Required inputs:
 | `MODEL_NAME_OR_PATH` | Complete U1.5 Hugging Face checkpoint |
 | `VOCAB_FILE`, `TOKENIZER_PATH` | Matching tokenizer directory |
 | `mm_data_path` | U1.5 loader meta JSON |
-| `samples_per_epoch` | Sealed number of raw dataset rows (at least five) |
+| `samples_per_epoch` | Sealed number of raw dataset rows (at least ten) |
 | `max_samples` | Global raw-sample visits; defaults to one epoch |
 | `warmup_samples`, `logging_samples` | Sample-based warmup and logging intervals |
 | `JOB_NAME` | New run namespace |
@@ -42,12 +42,12 @@ summed over every rank and accumulation microbatch. Packing, token counts,
 prefetch and padding copies do not advance it. An exposure epoch is
 `samples_per_epoch` visits; this count alone does not prove unique-ID coverage.
 Warmup, constant/cosine learning-rate progress, stopping, and logs use samples.
-Optimizer update counts exist only for execution/RNG replay.
+Optimizer update counts exist only for execution and checkpoint metadata.
 
-Every full exposure epoch saves five checkpoints at the first completed update
-reaching 20%, 40%, 60%, 80%, and 100% of its raw-sample count. Integer targets
+Every full exposure epoch saves ten checkpoints at the first completed update
+reaching each 10% boundary through 100% of its raw-sample count. Integer targets
 round upward independently, preventing cadence drift when the row count is not
-divisible by five. The epoch-end checkpoint is the fifth save, not a sixth.
+divisible by ten. The epoch-end checkpoint is the tenth save, not an eleventh.
 A partial final epoch also saves its final sample boundary. Metadata records
 both the target and actual sample count; an update can overshoot a target by
 less than its raw batch size. Crossing two targets in one update is rejected

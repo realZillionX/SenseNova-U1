@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 import math
 
+CHECKPOINTS_PER_EPOCH = 10
+
 
 @dataclass
 class SampleProgress:
@@ -16,21 +18,25 @@ class SampleProgress:
         for name in ("samples_per_epoch", "max_samples"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.samples_per_epoch < 5:
-            raise ValueError("five checkpoints per epoch require at least five samples")
+        if self.samples_per_epoch < CHECKPOINTS_PER_EPOCH:
+            raise ValueError(
+                f"{CHECKPOINTS_PER_EPOCH} checkpoints per epoch require at least "
+                f"{CHECKPOINTS_PER_EPOCH} samples"
+            )
         if self.consumed_samples < 0 or self.optimizer_updates < 0:
             raise ValueError("sample progress cannot be negative")
 
     @property
     def targets(self):
         n = self.samples_per_epoch
+        parts = CHECKPOINTS_PER_EPOCH
         return tuple(
             sorted(
                 {
-                    epoch * n + (part * n + 4) // 5
+                    epoch * n + (part * n + parts - 1) // parts
                     for epoch in range((self.max_samples + n - 1) // n)
-                    for part in range(1, 6)
-                    if epoch * n + (part * n + 4) // 5 <= self.max_samples
+                    for part in range(1, parts + 1)
+                    if epoch * n + (part * n + parts - 1) // parts <= self.max_samples
                 }
                 | {self.max_samples}
             )

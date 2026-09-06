@@ -66,8 +66,8 @@ class ModelCheckpointTest(unittest.TestCase):
             patch.object(torch.distributed, "get_world_size", return_value=1),
             patch.object(torch.distributed, "barrier"),
         ):
-            for count in range(20, 101, 20):
-                target = progress.advance(20)
+            for count in range(10, 101, 10):
+                target = progress.advance(10)
                 path = writer(
                     root=Path(folder), progress=progress,
                     checkpoint_target_samples=target, model=model,
@@ -77,7 +77,7 @@ class ModelCheckpointTest(unittest.TestCase):
                 self.assertIs(payload["model_only"], True)
                 self.assertEqual(payload["consumed_samples"], count)
                 self.assert_model_roundtrip(path, model)
-            self.assertEqual(len(list(Path(folder).iterdir())), 5)
+            self.assertEqual(len(list(Path(folder).iterdir())), 10)
 
     def test_rl_writes_only_model_and_budget_metadata(self):
         model = torch.nn.Linear(3, 2)
