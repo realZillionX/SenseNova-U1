@@ -7,6 +7,27 @@ reduction use BF16, optimizer masters remain FP32, and the production profile
 uses forward resharding, two-layer prefetch, fused AdamW, and native-resolution
 packing.
 
+The public launcher defaults to learning rate `2e-5`, 1% sample warmup and a
+constant schedule. AdamW uses betas `(0.9, 0.95)`, epsilon `1e-8` and zero
+weight decay. The text CE/image velocity coefficients remain `0.1/1.0`;
+velocity conversion uses `t_eps=0.02`, matching RL replay.
+
+Text and image actions first average within each original sample. Each rank
+then divides the sum by the complete optimizer batch's raw sample count
+(including accumulation) divided by world size. FSDP's averaged gradients
+therefore give a global sample mean; long responses, multiple images and
+uneven packing do not increase a sample's total weight. Zero-image samples
+contribute zero to the visual branch and remain in the sample denominator.
+Padding copies have zero loss and do not advance exposure.
+
+The SFT reader shuffles global annotation row indices by seed and epoch before
+sharding across ranks and workers. Equal ordered source ids give the two arms
+the same semantic permutation despite different response sizes. Byte offsets
+are indexed in memory without rewriting annotation files. The packer decodes
+each row once; malformed or oversized supervision raises instead of silently
+skipping data. Actual consumption through packing and final batch boundaries
+still requires an identity audit; the exposure clock alone is not coverage.
+
 The preset disables text, image, and joint CFG-drop augmentation: deleting a
 condition from DiVR cold-start data would delete authored reasoning and change
 the controlled TI2T/TI2TI supervision.

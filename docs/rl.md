@@ -88,14 +88,21 @@ sensenova-forge rl-plan rl-plan-input.json
 sensenova-forge rl-run /runs/u15-rl/plan.json
 ```
 
-The runner saves FSDP2 model and AdamW state through Distributed Checkpoint,
-per-rank RNG, budget counters, and the active serving policy version.
+The runner saves FSDP2 model weights through Distributed Checkpoint, budget
+counters and the active serving policy version. Optimizer and RNG state stay
+in memory and are not serialized; interrupted runs are not resumed.
+AdamW explicitly uses betas `(0.9, 0.95)` and epsilon `1e-8`, with constant
+text/shared and visual-generation learning rates of `1e-6` and zero weight
+decay. Plan defaults use text KL `0.04`, activation checkpointing and a
+50-update checkpoint interval. TI2TI resolves image objective/MSE weights to
+`1.0/0.01`; TI2T resolves both to zero. Explicit overrides are sealed, including
+zero MSE for a named method-removal experiment.
 `torchrun.nnodes` may be any positive node count with one H200 process per GPU;
 the rollout URL list may independently contain any positive number of serving
 replicas. Each rank owns one prompt group, so `prompts_per_batch` equals the
-FSDP world size. The checkpoint interval is sealed in the plan, but its formal
-value remains pending hardware measurement. Retention has no automatic count
-cap: the runner keeps every committed checkpoint until score comparison and
+FSDP world size. The 50-update checkpoint interval is sealed in the plan;
+hardware validation measures its cost without opening a cadence search.
+Retention has no automatic count cap: the runner keeps every committed checkpoint until score comparison and
 downstream-consumer audit authorize cleanup.
 
 Reaching `max_images` does not discard a trajectory: the image-action token is

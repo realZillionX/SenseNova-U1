@@ -1720,7 +1720,10 @@ def _run_plan(plan: RlPlan, context: DistributedContext) -> None:
             text_learning_rate=plan.text_learning_rate,
             visual_learning_rate=plan.visual_learning_rate,
             weight_decay=plan.weight_decay,
-        )
+        ),
+        # A short second-moment horizon tracks the changing on-policy batches.
+        betas=(0.9, 0.95),
+        eps=1e-8,
     )
     completed, ledger, active_policy_version = run_training_loop(
         plan=plan,

@@ -991,9 +991,7 @@ class PackedDataset(IterableDataset):
         except Exception as e:
             exhausted = self._is_dataset_exhaustion(e)
             if not exhausted:
-                logger.error(
-                    f"Dataloader caught exception type  {type(e)} which is: {e}"
-                )
+                raise
             if self.replacement:
                 if self._should_log():
                     logger.info(
@@ -1022,11 +1020,7 @@ class PackedDataset(IterableDataset):
                         current_sample = next(self.dataset_iter_list[current_dataset_idx])
                 except Exception as e:
                     if not self._is_dataset_exhaustion(e):
-                        logger.error(
-                            f"{self.worker_id=} Fail to get any data from "
-                            f"{self.datasets[current_dataset_idx].ds_name} "
-                            f"with error {type(e)} {e}!"
-                        )
+                        raise
                     self.dataset_weight[current_dataset_idx] = 0
 
 
@@ -1782,7 +1776,6 @@ def u15_packed_collate_fn(
     pad_id: int = 0,
     micro_num: int = 1,
     len2weight: callable = None,
-    loss_reduction_all_gather: bool = False,
     patch_size: int = 16,
 ):
     if not isinstance(features, list):
@@ -1812,6 +1805,7 @@ def u15_packed_collate_fn(
     worker_state_custom_infos_list = []
 
     num_samples = 0
+    samples_per_microbatch = []
     num_padding_tokens = 0
 
     for feat_idx, feat in enumerate(features):
@@ -1871,8 +1865,9 @@ def u15_packed_collate_fn(
 
         feat['loss_weight'] = curr_loss_weight
 
-        if feat_idx < num_features:
-            num_samples += len(curr_cu_seqlens) - 1
+        sample_count = len(curr_cu_seqlens) - 1 if feat_idx < num_features else 0
+        num_samples += sample_count
+        samples_per_microbatch.append(sample_count)
 
         if curr_cu_seqlens[-1] < max_item_length:
             curr_cu_seqlens.append(max_item_length)
@@ -1893,7 +1888,6 @@ def u15_packed_collate_fn(
     batch, labels = concat_pad_data_collator(features=features, max_item_length=max_item_length, pad_id=pad_id)
     loss_weight = batch.pop("loss_weight")
     loss_weight = torch.where(labels == IGNORE_TOKEN_ID, 0, loss_weight).tolist()
-    loss_reduction_all_gather = loss_reduction_all_gather
     input_ids = batch.pop('input_ids')
     type_ids = batch.pop('type_ids', torch.zeros_like(input_ids))
 
@@ -1972,12 +1966,12 @@ def u15_packed_collate_fn(
         "indexes": indexes,
         "type_ids": type_ids,
         "num_samples": num_samples,
+        "samples_per_microbatch": samples_per_microbatch,
         "num_padding_tokens": num_padding_tokens,
         "worker_state_key_list": worker_state_key_list,
         "worker_state_dict_list": worker_state_dict_list,
         "worker_state_custom_infos_list": worker_state_custom_infos_list,
         "loss_weight": loss_weight,
-        "loss_reduction_all_gather": loss_reduction_all_gather,
         "image_grid_hw": image_grid_hw
     }
 

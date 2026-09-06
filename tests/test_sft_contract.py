@@ -43,7 +43,7 @@ class SftContractTest(unittest.TestCase):
         launcher = (ROOT / "training/shell/train_u1/U1.5_8B_SFT.sh").read_text()
         runner = (ROOT / "training/train_sensenovau1_fsdp2.py").read_text()
         self.assertIn("tensor_parallel_mode=mtp", launcher)
-        self.assertIn("SFT_PER_RANK_LOSS_REDUCTION", launcher)
+        self.assertNotIn("SFT_PER_RANK_LOSS_REDUCTION", launcher)
         self.assertIn("FSDP2_PREFETCH_DEPTH", runner)
         self.assertIn("reduce_dtype=torch.bfloat16", runner)
         self.assertIn("torch.distributed.checkpoint", runner)

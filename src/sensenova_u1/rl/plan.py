@@ -57,7 +57,7 @@ class RlPlan:
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
     seed: int = 42
-    save_every_steps: int = 10
+    save_every_steps: int = 50
     rollout_api_base_urls: tuple[str, ...] = ("http://127.0.0.1:8000",)
     rollout_policy_version: str = "startup"
     weight_update_master_address: str = "127.0.0.1"
@@ -72,9 +72,9 @@ class RlPlan:
     image_noise_level: float = 0.7
     timestep_shift: float = 1.0
     t_eps: float = 0.02
-    text_kl_beta: float = 0.0
-    image_objective_weight: float = 0.0
-    velocity_mse_weight: float = 0.0
+    text_kl_beta: float = 0.04
+    image_objective_weight: float | None = None
+    velocity_mse_weight: float | None = None
     image_clip_range: float = 1e-4
     text_clip_range: float = 0.2
     sde_window_start: int = 0
@@ -83,7 +83,7 @@ class RlPlan:
     device: str = "cuda"
     dtype: str = "bfloat16"
     attention_backend: str = "flash"
-    activation_checkpointing: bool = False
+    activation_checkpointing: bool = True
     optimizer_cpu_offload_min_images: int = 6
     torchrun: TorchrunSpec = TorchrunSpec()
 
@@ -91,6 +91,11 @@ class RlPlan:
         self.torchrun.validate()
         if self.modality not in {"ti2t", "ti2ti"}:
             raise ValueError("modality must be ti2t or ti2ti")
+        # Resolve once so serialization seals concrete values for either arm.
+        if self.image_objective_weight is None:
+            object.__setattr__(self, "image_objective_weight", 1.0 if self.modality == "ti2ti" else 0.0)
+        if self.velocity_mse_weight is None:
+            object.__setattr__(self, "velocity_mse_weight", 0.01 if self.modality == "ti2ti" else 0.0)
         if not self.reward_command:
             raise ValueError("reward_command must be non-empty")
         if self.policy_init_kind not in {"sft_checkpoint", "published_base"}:

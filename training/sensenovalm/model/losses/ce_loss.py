@@ -4,10 +4,8 @@
 # -*- encoding: utf-8 -*-
 
 import torch
-import torch.distributed as dist
 from torch import nn
 
-from sensenovalm.core.context import ParallelMode
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.model.ops.cross_entropy import new_cross_entropy
 from sensenovalm.utils.logger import get_logger
@@ -47,7 +45,7 @@ class FlashGPTLMLoss(nn.Module):
 
         self.ce_loss_weight = ce_loss_weight
 
-    def forward(self, *args, loss_weight=None, loss_reduction_all_gather=False):
+    def forward(self, *args, loss_weight=None, sample_denominator=None):
         if len(args) >= 3:
             # residual is to match prenorm
             logits, *_, labels = args
@@ -68,12 +66,10 @@ class FlashGPTLMLoss(nn.Module):
         else:
             loss_weight = torch.tensor(loss_weight, dtype=torch.float32, device=shift_labels.device)
             loss = self.loss_weight_fn(shift_logits, shift_labels)
-            weight_sum = loss_weight.sum()
-            if loss_reduction_all_gather:
-                dist.all_reduce(weight_sum, op=dist.ReduceOp.AVG, group=gpc.get_group(ParallelMode.DATA))
-
+            if sample_denominator is None or sample_denominator <= 0:
+                raise ValueError("packed SFT requires the optimizer batch sample denominator")
             loss = loss * loss_weight
-            loss = loss.sum() / weight_sum
+            loss = loss.sum() / sample_denominator
 
         loss = loss * self.ce_loss_weight
 

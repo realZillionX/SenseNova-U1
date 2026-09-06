@@ -17,6 +17,7 @@ from sensenovalm.core.context import ParallelMode
 from sensenovalm.core.context.parallel_context import global_context as gpc
 from sensenovalm.model.builder import create_model
 from sensenovalm.model.moe.utils import SenseNovaVLMoEOutput
+from sensenovalm.model.losses.sample_mean import sample_mean_sum
 from sensenovalm.utils.common import get_current_device
 from sensenovalm.utils.logger import get_logger
 from sensenovalm.utils.parallel import is_using_isp
@@ -47,10 +48,10 @@ except ImportError:
 
 
 def global_all_reduce_loss(local_sum, local_cnt) -> torch.Tensor:
-    if os.environ.get("SFT_PER_RANK_LOSS_REDUCTION", "false").lower() == "true":
-        return local_sum / local_cnt.clamp_min(1)
-    dist.all_reduce(local_cnt, op=dist.ReduceOp.AVG, group=gpc.get_group(ParallelMode.DATA))
-    return local_sum / local_cnt.clamp_min(1)
+    # Diagnostics only; the differentiable objective uses original samples.
+    totals = torch.stack((local_sum.detach().float(), local_cnt.detach().float()))
+    dist.all_reduce(totals, op=dist.ReduceOp.SUM, group=gpc.get_group(ParallelMode.DATA))
+    return totals[0] / totals[1].clamp_min(1)
 
 
 def calculate_pad_length(seqlen, div_num):
@@ -1411,6 +1412,7 @@ class SenseNovaVLChatMoTModel(PreTrainedModel):
         if self.image_gen_loss_weight > 0:
             type_ids = type_ids.view(-1)
             image_gen_type_ids = type_ids[image_gen_indicators.view(-1)]
+            image_gen_sample_ids = document_ids[image_gen_indicators.view(-1)]
             if pad_dummy_image_gen:
                 image_gen_indicators = torch.cat([image_gen_indicators_packed[:pad_dummy_image_num].view(1, -1), image_gen_indicators], 1)
             image_gen_hidden_states = hidden_states_before_output.view(-1, hidden_states_before_output.shape[-1])[image_gen_indicators.view(-1)]
@@ -1472,20 +1474,11 @@ class SenseNovaVLChatMoTModel(PreTrainedModel):
             losses_for_log_only["image_gen_loss_editing"] = image_gen_loss_editing
             losses_for_log_only["image_gen_loss_interleave"] = image_gen_loss_interleave
 
-            image_gen_loss_weight = []
-            for image_i in range(len(image_for_gen_flags[0])):
-                if image_for_gen_flags[0][image_i]:
-                    cur_image_h = grid_hw[image_i, 0]
-                    cur_image_w = grid_hw[image_i, 1]
-                    cur_image_token_num = cur_image_h * cur_image_w
-                    merge_size = round(1 / self.downsample_ratio)
-                    cur_image_seq_len = cur_image_token_num // (merge_size**2)
-                    image_gen_loss_weight.extend([(1 / cur_image_seq_len**0.5)]*cur_image_seq_len)
-            image_gen_loss_weight = torch.tensor(image_gen_loss_weight, dtype=torch.float32, device=image_gen_loss.device)
-            image_gen_loss[pad_dummy_image_num:] *= image_gen_loss_weight
-            image_gen_loss_weight_sum = image_gen_loss_weight.sum()
-            dist.all_reduce(image_gen_loss_weight_sum, op=dist.ReduceOp.AVG, group=gpc.get_group(ParallelMode.DATA))
-            image_gen_loss = image_gen_loss.sum() / image_gen_loss_weight_sum.clamp_min(1)
+            image_gen_loss = sample_mean_sum(
+                image_gen_loss[pad_dummy_image_num:],
+                image_gen_sample_ids,
+                kwargs["sample_loss_denominator"],
+            )
 
 
 

@@ -37,11 +37,10 @@ export grad_accm=${grad_accm:-1}
 export FSDP2_RESHARD_AFTER_FORWARD=${FSDP2_RESHARD_AFTER_FORWARD:-true}
 export FSDP2_PREFETCH_DEPTH=${FSDP2_PREFETCH_DEPTH:-2}
 export FSDP2_FUSED_ADAMW=${FSDP2_FUSED_ADAMW:-true}
-export SFT_PER_RANK_LOSS_REDUCTION=${SFT_PER_RANK_LOSS_REDUCTION:-true}
 
 # ============================ Optimization ============================ #
 export SEED=${SEED:-42}
-export lr=${lr:-2e-4}
+export lr=${lr:-2e-5}
 export lr_scheduler_type=${lr_scheduler_type:-"constant"}
 export min_lr_ratio=${min_lr_ratio:-0.5}
 export mlp_lr_scale=${mlp_lr_scale:-1.0}

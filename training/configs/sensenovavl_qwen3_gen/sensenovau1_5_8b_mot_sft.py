@@ -56,7 +56,7 @@ min_lr_ratio = float(os.environ['min_lr_ratio'])
 mlp_lr_scale = float(os.environ['mlp_lr_scale'])
 fm_modules_lr_scale = float(os.environ.get('fm_modules_lr_scale', 1.0))
 mot_gen_lr_scale = float(os.environ.get('mot_gen_lr_scale', 1.0))
-lr_scheduler_type = os.environ.get('lr_scheduler_type', 'cosine')
+lr_scheduler_type = os.environ.get('lr_scheduler_type', 'constant')
 ce_loss_weight = float(os.environ.get('ce_loss_weight', 1.0))
 
 activation_checkpoint_fraction = float(os.environ.get('activation_checkpoint_fraction', '1'))
@@ -258,8 +258,7 @@ data = dict(
     mm_cc_data_weights=mm_cc_data_weights,
     nlp_mm_sampling_fixed_token=True,
     # loss reduction
-    loss_reduction='square',
-    loss_reduction_all_gather=True,
+    loss_reduction='sample',
     use_bos=False,
     use_eos=True,
     # generation
@@ -345,7 +344,7 @@ model = dict(
     noise_scale=noise_scale,
     P_mean=P_mean,
     P_std=P_std,
-    t_eps=0.05,
+    t_eps=0.02,
     fm_head_dim=1536,
     fm_head_layers=2,
     fm_head_mlp_ratio=1,

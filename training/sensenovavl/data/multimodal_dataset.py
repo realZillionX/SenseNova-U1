@@ -12,6 +12,7 @@ from PIL import Image
 from torch.utils.data import ConcatDataset, Dataset, get_worker_info
 
 from sensenovalm.core.context import global_context as gpc
+from sensenovalm.data.annotation_order import annotation_offsets, indexed_lines, shard_order
 from sensenovalm.utils.logger import get_logger
 from sensenovavl.data.constants import (
     IGNORE_INDEX,
@@ -34,8 +35,6 @@ from .dataset_interleaved_iterable import (
     ImageTextPairDataset,
     u15_packed_collate_fn,
 )
-import mmap
-from io import TextIOWrapper
 
 from .t2i_prompts import T2I_EDITING_SYSTEM_MESSAGE
 from .cfg_cond_drop_utils import *
@@ -139,6 +138,8 @@ class LazySupervisedDataset(Dataset):
         self.tcs_loader = tcs_loader
         self.group_by_length = group_by_length
         self.force_shuffle = force_shuffle
+        self.shuffle_seed = int(gpc.config.data.get("seed", 42)) + int(random_seed)
+        self.annotation_epoch = 0
         self.dynamic_image_size = dynamic_image_size
         self.dynamic_image_version = dynamic_image_version
         if self.dynamic_image_version is None:
@@ -164,6 +165,9 @@ class LazySupervisedDataset(Dataset):
         self.meta = meta
 
         self.annotation_file = meta["annotation"]
+        # Build before DataLoader workers start, so one rank indexes once and
+        # forked readers share the compact, read-only byte-offset array.
+        self._annotation_offsets = annotation_offsets(self.annotation_file)
 
         self.length = math.ceil(meta["length"] * meta["repeat_time"])
 
@@ -203,22 +207,9 @@ class LazySupervisedDataset(Dataset):
             raise ValueError(f"template_name {self.template_name}")
 
         self.preprocess_function = preprocess_function
-        self.dataset_replacement = gpc.config.dataset_replacement
 
     def load_state_dict(self, state_dict):
         self._state_dict.update(state_dict)
-
-    def _get_mmap(self, data_path):
-
-        assert data_path.endswith(".jsonl") or data_path.endswith(".txt")
-        f = open(data_path, "rb")  # pylint: disable=consider-using-with
-        try:
-            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        except ValueError as e:
-            print(f"Meet ValueError when loading {data_path}", flush=True)
-            raise e
-        self.handles = [f, mm]
-        return self.handles[-1]
 
     def __len__(self):
         return self.length
@@ -1202,172 +1193,56 @@ class LazySupervisedDataset(Dataset):
                 )
 
     def get_sample(self, line) -> Dict[str, torch.Tensor]:
-
-        try:
-            line = line.decode("utf-8")
-            data_item = json.loads(line)
-        except Exception as e:
-            logger.info(
-                f"[{self.ds_name}] [Worker id {self.worker_id}] Encounting Error with {type(e)} \n Error message: {e}"
-            )
-            return None
+        # Sealed SFT inputs must not silently disappear or restart the reader
+        # after a decode/length error. The packer decodes each row exactly once.
+        data_item = json.loads(line.decode("utf-8"))
         try:
             if "image" in data_item or "images" in data_item:
                 ret = self.multi_modal_get_item(data_item)
-            elif (
-                "video" in data_item
-                and data_item["video"] is not None
-                and data_item["video"] != ""
-            ):
+            elif data_item.get("video"):
                 ret = self.video_get_item(data_item)
             else:
                 ret = self.pure_text_get_item(data_item)
-            # skip all turncated data
-            ### TODO comment to ignore skip, cut in split buffer
             if len(ret["input_ids"]) > self.max_tokens:
-                raise ValueError(
-                    f"Too Long Sample, Skip: {self.ds_name}  [Worker id {self.worker_id}] "
-                    f"[Length {len(ret['input_ids'])}]"
-                )
-            if (ret["labels"] == IGNORE_TOKEN_ID).all() and self.typeid2type[
-                self.type_id
-            ] not in ["mm_t2i", "mm_it2i", "mm_interleave_gen"]:
-                # do not have
-                sample_conv = "|-|".join(
-                    [c["value"] for c in data_item["conversations"]]
-                )
-                raise ValueError(
-                    f"Do not have valid value in sample target in dataset {self.ds_name} {sample_conv}"
-                )
-
-            if (
-                len(ret["input_ids"]) == 0
-                or len(ret["labels"]) == 0
-                or len(ret["input_ids"]) != len(ret["labels"])
-            ):
-                # do not have
-                # sample_conv = '|-|'.join([c['value'] for c in data_item['conversations']])
-                raise ValueError(
-                    f"Empty data {self.ds_name}  [Worker id {self.worker_id}] {data_item}"
-                )
-
-            # add type ids
-
+                raise ValueError(f"supervision exceeds {self.max_tokens} tokens")
+            if (ret["labels"] == IGNORE_TOKEN_ID).all() and self.typeid2type[self.type_id] not in {
+                "mm_t2i", "mm_it2i", "mm_interleave_gen",
+            }:
+                raise ValueError("sample has no supervised target")
+            if not len(ret["input_ids"]) or len(ret["input_ids"]) != len(ret["labels"]):
+                raise ValueError("empty or misaligned supervision")
             ret["type_ids"] = torch.zeros_like(ret["input_ids"]) + self.type_id
+            return ret
+        except Exception as exc:
+            raise ValueError(
+                f"invalid SFT sample {data_item.get('sample_id', '<unknown>')} in {self.ds_name}: {exc}"
+            ) from exc
 
-        except Exception as e:
-            if isinstance(e, IndexError):
-                logger.exception(e)
-            # import traceback; traceback.print_exc()
-            # if gpc.is_rank_for_log():
-            if self.ds_name not in [
-                "coyo1_caption",
-                "coyo2_caption",
-                "laion400m1_caption",
-                "laion400m2_caption",
-                "laioncoco_caption",
-                "WikiWeb2M-train-single-image",
-                "WikiWeb2M-train-multi-image",
-                "wukong_ocr_zh_bak",
-            ]:
-                data_path = "null"
-                tmp_root = "" if self.root is None else self.root
-                if "image" in data_item:
-                    if isinstance(data_item["image"], list):
-                        data_path = [
-                            os.path.join(tmp_root, item) for item in data_item["image"]
-                        ]
-                    else:
-                        data_path = os.path.join(tmp_root, data_item["image"])
+    def reset(self):
+        self._state_dict = {"file_shift": 0, "bytes_offset": 0, "line_shift": 0}
 
-                logger.info(
-                    f"[{self.ds_name}] [Worker id {self.worker_id}] skip data with image {data_path} for exception(first 200 char): {str(e)[:200]}"
-                )
-
-            return None
-
-        return ret
-
-    def reset(
-        self,
-    ):
-        # reset
-        self._state_dict = {
-            "file_shift": 0,
-            "bytes_offset": 0,
-            "line_shift": 0,  # 用于整体的文件行数计数
-        }
-
-    def __iter__(self):  # NOTE:
-        self._enable_worker_distributed()
-
-        worker_id = 0 if get_worker_info() is None else get_worker_info().id
-        num_workers = 1 if get_worker_info() is None else get_worker_info().num_workers
-
-        self.worker_id = worker_id = num_workers * self.data_rank + worker_id
-        self.num_workers = num_workers = num_workers * self.data_world_size
-
+    def __iter__(self):
+        local_worker = 0 if get_worker_info() is None else get_worker_info().id
+        local_workers = 1 if get_worker_info() is None else get_worker_info().num_workers
+        self.worker_id = local_workers * self.data_rank + local_worker
+        self.num_workers = local_workers * self.data_world_size
         self.worker_state_key = f"work_state_{self.worker_id}"
-
-        repeat_time = math.ceil(self.repeat_time)  # 文件需要打开的次数
-
-        file_shift = self._state_dict["file_shift"]
-
-        if file_shift >= repeat_time:
-            # the dataset should have been used up
-            self.reset()
-            raise StopIteration
-
-        for file_idx in range(file_shift, repeat_time):
-            file: TextIOWrapper = self._get_mmap(self.annotation_file)
-            file.seek(0, 0)
-            relative_offset = self._state_dict["bytes_offset"] - file.tell()
-            assert (
-                relative_offset >= 0
-            ), f"Invalid offset {relative_offset} in file {self.annotation_file}"
-            file.seek(relative_offset, 1)
-
-            line_offset = -1  # 用于文件内部计数
-            for line_offset, line in enumerate(iter(file.readline, b"")):
-                old_bytes_offset = self._state_dict["bytes_offset"]
-                old_line_shift = self._state_dict["line_shift"]
-
-                self._state_dict["bytes_offset"] = file.tell()
+        self._enable_worker_distributed()
+        rows = len(self._annotation_offsets) - 1
+        if rows != self.meta["length"]:
+            raise ValueError(f"annotation row count differs from meta: {rows} != {self.meta['length']}")
+        for _ in range(math.ceil(self.repeat_time)):
+            order = shard_order(
+                rows, seed=self.shuffle_seed, epoch=self.annotation_epoch,
+                shard_id=self.worker_id, shard_count=self.num_workers,
+                shuffle=self.force_shuffle,
+            )
+            for line in indexed_lines(self.annotation_file, self._annotation_offsets, order):
                 self._state_dict["line_shift"] += 1
-                file.madvise(mmap.MADV_DONTNEED, 0, file.tell())
-
-                if old_line_shift % num_workers == worker_id:
-                    # next_sample = self.get_sample(line)
-                    # if next_sample is not None:
-                    #     next_sample['meta_info'] = deepcopy(self._state_dict)
-                    #     yield next_sample
-                    # yield string instead of sample to save memory usage
-                    if self.get_sample(line):
-                        yield line
-
-                if (
-                    self._state_dict["line_shift"] >= self.length
-                    and not self.dataset_replacement
-                ):
-                    break
-
-            # if gpc.is_rank_for_log():
-            #     logger.info(f"[{worker_id}] dataset {self.ds_name} datafile {self.annotation_file} has been used up for {file_idx} time & the end line is {self._state_dict['line_shift']}")
-
+                yield line
+            self.annotation_epoch += 1
             self._state_dict["file_shift"] += 1
-            self._state_dict["bytes_offset"] = 0
-
-            if (
-                self._state_dict["line_shift"] >= self.length
-                and not self.dataset_replacement
-            ):
-                break
-
-        if worker_id == 0:
-            logger.info(f"[{worker_id}] dataset {self.ds_name} has been ran out of!!!")
-
         self.reset()
-        return
 
 
 def get_dataset_type_ids_map(ds_collections, type_id_offset):

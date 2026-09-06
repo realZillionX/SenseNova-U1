@@ -445,6 +445,7 @@ def main(args: Any) -> None:
     gpu_name = _require_h200()
     seed = int(args.seed)
     _seed_everything(seed)
+    gpc.config.data.seed = seed
     obsolete = {"total_steps", "init_steps", "checkpoint_every", "metric_interval_steps",
                 "SFT_BENCHMARK_WARMUP_STEPS", "SFT_BENCHMARK_MEASURED_STEPS"} & os.environ.keys()
     if obsolete:
@@ -525,11 +526,15 @@ def main(args: Any) -> None:
             physical_tokens_local = int(data["input_ids"].numel())
             supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) else 0
             samples_local = int(data.pop("num_samples", 0))
+            samples_per_microbatch = data.pop("samples_per_microbatch")
+            if len(samples_per_microbatch) != grad_accumulation or sum(samples_per_microbatch) != samples_local:
+                raise ValueError("packed microbatch sample counts disagree with the exposure clock")
             data.pop("num_padding_tokens", None)
             # The collator excludes padding copies and reports raw packed samples.
             # Attention/padding segments are not a substitute for this count.
             batch_samples = int(_distributed_sum(samples_local))
             progress.checkpoint_target(batch_samples)  # validate before mutating weights
+            sample_denominator = batch_samples / world_size
             lr_ratio = progress.learning_rate_ratio(
                 warmup_samples, gpc.config.lr_scheduler_type,
                 float(gpc.config.lr_scheduler.eta_min),
@@ -551,30 +556,29 @@ def main(args: Any) -> None:
                 model.set_requires_gradient_sync(is_last, recurse=True)
                 model.set_is_last_backward(is_last)
                 micro_data, micro_labels = _prepare_microbatch((data, labels), micro_step)
+                micro_data["sample_loss_denominator"] = sample_denominator
                 output, _mtp_outputs, *_extra = model(**micro_data)
                 loss_weight = micro_data.pop("loss_weight", None)
-                loss_reduction_all_gather = micro_data.pop("loss_reduction_all_gather", False)
-                if _env_bool("SFT_PER_RANK_LOSS_REDUCTION", True):
-                    # Each data rank owns one packed row, so it must keep its
-                    # own denominator before FSDP averages gradients. A global
-                    # denominator would change the objective to a token-weighted
-                    # mean and let variable packing alter sample weights.
-                    loss_reduction_all_gather = False
                 loss = criterion(
                     output,
                     micro_labels,
                     loss_weight=loss_weight,
-                    loss_reduction_all_gather=loss_reduction_all_gather,
+                    sample_denominator=sample_denominator,
                 )
                 auxiliary = _numeric_extra_losses(tuple(_extra))
-                total = (loss + auxiliary) / grad_accumulation
+                # Both branches already divide by the entire update's sample
+                # count. Padding microbatches participate in collectives only.
+                if samples_per_microbatch[micro_step] == 0:
+                    loss = loss * 0.0
+                    auxiliary = auxiliary * 0.0
+                total = loss + auxiliary
                 total.backward()
                 loss_value += float(total.detach().float().item())
-                main_loss_value += float((loss / grad_accumulation).detach().float().item())
+                main_loss_value += float(loss.detach().float().item())
                 if isinstance(auxiliary, Tensor):
-                    auxiliary_loss_value += float((auxiliary / grad_accumulation).detach().float().item())
+                    auxiliary_loss_value += float(auxiliary.detach().float().item())
                 else:
-                    auxiliary_loss_value += float(auxiliary) / grad_accumulation
+                    auxiliary_loss_value += float(auxiliary)
             grad_norm = _clip_global_grad_norm(parameters, float(gpc.config.hybrid_zero_optimizer.clip_grad_norm))
             optimizer.step()
             torch.cuda.synchronize()

@@ -207,7 +207,6 @@ def get_multimodal_streaming_train_loader_items(data_cfg):   # NOTE:
             ignored_token_ids=[tokenizer.bos_token_id, tokenizer.convert_tokens_to_ids("\n")],
             micro_num=data_cfg.micro_num,
             len2weight=partial(len2weight, loss_reduction=getattr(data_cfg, "loss_reduction", "token")),
-            loss_reduction_all_gather=getattr(data_cfg, "loss_reduction_all_gather", False),
             patch_size=data_cfg.patch_size,
         )
     else:

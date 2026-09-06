@@ -54,7 +54,7 @@ class SenseNovaVLChatConfig(PretrainedConfig):
         noise_scale=1,
         P_mean=-0.8,
         P_std=0.8,
-        t_eps=0.05,
+        t_eps=0.02,
         fm_head_dim=1536,
         fm_head_layers=12,
         fm_head_mlp_ratio=1,
