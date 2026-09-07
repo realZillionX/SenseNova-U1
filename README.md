@@ -88,10 +88,13 @@ publishes the ordinary policy weights as a complete HF directory. See
 
 ### 3. Production serving
 
-Build the self-contained Torch 2.8/CUDA 12.8 runtime and start one or more
-two-GPU serving replicas. The launcher uses every visible GPU by default,
-pairs each even local index with the following odd index, and exposes
-consecutive HTTP ports:
+Build the self-contained Torch 2.8/CUDA 12.8 runtime. Ordinary inference
+selects `FORGE_SERVING_MODALITY=ti2t` for one replica per GPU (input vision
+and text decoding, without an image-generation worker), or `ti2ti` for
+two-GPU LightLLM/LightX2V replicas. Eight GPUs therefore provide eight TI2T
+replicas or four TI2TI replicas. The launcher uses every visible GPU by
+default and exposes consecutive HTTP ports. RDMA online weight publication
+continues to use the paired TI2TI topology:
 
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
@@ -100,13 +103,14 @@ docker build -f docker/rl-engine/Dockerfile \
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 FORGE_REQUIRE_RDMA=true \
+FORGE_SERVING_MODALITY=ti2ti \
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash scripts/rl_engine/launch_server.sh
 ```
 
 Run the same launcher on any number of serving nodes. Give each node the next
 global `FORGE_SERVING_REPLICA_ID_OFFSET`; private LightLLM ports use only the
-node-local pair index, so global replica ids do not impose a cluster-size cap.
+node-local replica index, so global replica ids do not impose a cluster-size cap.
 On storage-constrained cold starts, set `FORGE_SERVING_STAGGER_SECONDS` to a
 nonzero integer to delay each local replica after the previous launch while
 preserving the same final GPU topology and endpoints.

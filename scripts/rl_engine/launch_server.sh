@@ -61,6 +61,12 @@ LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.80}
 # reuses the selected config for steady-state serving.
 export LIGHTLLM_TRITON_AUTOTUNE_LEVEL=${LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1}
 
+export FORGE_SERVING_MODALITY=${FORGE_SERVING_MODALITY:-ti2ti}
+case "$FORGE_SERVING_MODALITY" in
+  ti2t) GPUS_PER_REPLICA=1 ;;
+  ti2ti) GPUS_PER_REPLICA=2 ;;
+  *) echo "FORGE_SERVING_MODALITY must be ti2t or ti2ti" >&2; exit 2 ;;
+esac
 IFS=',' read -r -a VISIBLE_GPUS <<< "$CUDA_VISIBLE_DEVICES"
 for device in "${VISIBLE_GPUS[@]}"; do
   [[ "$device" =~ ^[0-9]+$ ]] || {
@@ -68,11 +74,11 @@ for device in "${VISIBLE_GPUS[@]}"; do
     exit 2
   }
 done
-(( ${#VISIBLE_GPUS[@]} >= 2 && ${#VISIBLE_GPUS[@]} % 2 == 0 )) || {
-  echo "SenseNova serving requires an even number of GPUs (LightLLM, LightX2V pairs)" >&2
+(( ${#VISIBLE_GPUS[@]} >= GPUS_PER_REPLICA && ${#VISIBLE_GPUS[@]} % GPUS_PER_REPLICA == 0 )) || {
+  echo "GPU count must fit the declared SenseNova serving modality" >&2
   exit 2
 }
-AVAILABLE_REPLICAS=$((${#VISIBLE_GPUS[@]} / 2))
+AVAILABLE_REPLICAS=$((${#VISIBLE_GPUS[@]} / GPUS_PER_REPLICA))
 REPLICA_COUNT=${FORGE_SERVING_REPLICAS:-$AVAILABLE_REPLICAS}
 [[ "$REPLICA_COUNT" =~ ^[0-9]+$ ]] || {
   echo "FORGE_SERVING_REPLICAS must be an integer" >&2
@@ -101,7 +107,13 @@ launch_replica() {
   local local_index=$1
   local replica_id=$((REPLICA_ID_OFFSET + local_index))
   local port=$((PORT_BASE + local_index))
-  local device_pair="${VISIBLE_GPUS[$((2 * local_index))]},${VISIBLE_GPUS[$((2 * local_index + 1))]}"
+  local device_pair="${VISIBLE_GPUS[$((GPUS_PER_REPLICA * local_index))]}"
+  local image_args=()
+  if [[ "$FORGE_SERVING_MODALITY" == ti2ti ]]; then
+    device_pair+=",${VISIBLE_GPUS[$((2 * local_index + 1))]}"
+    image_args=(--enable_multimodal_x2i --x2i_server_deploy_mode separate
+                --x2i_server_used_gpus 1 --x2v_gen_model_config "$X2V_CONFIG")
+  fi
   local preflight_output
   if (( REPLICA_COUNT == 1 )) && [[ -n ${PREFLIGHT_OUTPUT:-} ]]; then
     preflight_output=$PREFLIGHT_OUTPUT
@@ -119,16 +131,14 @@ launch_replica() {
   "$PYTHON_BIN" "$SOURCE_ROOT/scripts/rl_engine/preflight.py" \
     --model-path "$MODEL_ROOT" \
     --x2v-config "$X2V_CONFIG" \
-    --expected-gpus 2 \
+    --expected-gpus "$GPUS_PER_REPLICA" \
     "${rdma_args[@]}" \
     --output "$preflight_output"
   echo "starting Forge serving replica=$replica_id GPUs=$device_pair port=$port" >&2
   exec "$PYTHON_BIN" -m lightllm.server.api_server \
     --model_dir "$MODEL_ROOT" \
-    --enable_multimodal_x2i \
-    --x2i_server_deploy_mode separate \
-    --x2i_server_used_gpus 1 \
-    --x2v_gen_model_config "$X2V_CONFIG" \
+    --sensenova_modality "$FORGE_SERVING_MODALITY" \
+    "${image_args[@]}" \
     --host 0.0.0.0 \
     --port "$port" \
     --max_req_total_len "$MAX_SEQUENCE_LENGTH" \
