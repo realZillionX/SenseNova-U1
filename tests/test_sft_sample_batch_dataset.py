@@ -51,6 +51,8 @@ class SampleBatchDatasetTest(unittest.TestCase):
                         combined.setdefault(batch['sample_start'], []).extend(ids)
                         physical += len(batch['microbatches'])
                         self.assertTrue(all(data['input_ids'].shape[1] <= 512 for data, _ in batch['microbatches']))
+                        sizes = [data['input_ids'].shape[1] for data, _ in batch['microbatches']]
+                        self.assertEqual(sizes, sorted(sizes, reverse=True))
                     self.assertEqual(starts, list(range(0, 101, 16)))
                 membership = {k: sorted(v, key=int) for k, v in combined.items()}
                 self.assertEqual([len(v) for v in membership.values()], [16] * 6 + [5])

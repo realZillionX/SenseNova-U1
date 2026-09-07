@@ -54,7 +54,9 @@ class SampleBatchDataset(IterableDataset):
             buffer = packer.find_buffer(buffers, sample)
             buffers.append(packer.update_buffer(buffer, sample))
         batches = []
-        for buffer in buffers:
+        # Align long physical sequences across ranks; otherwise a different
+        # rank can become the straggler on every accumulation microbatch.
+        for buffer in sorted(buffers, key=lambda item: len(item['input_ids']), reverse=True):
             buffer['worker_state_key'] = ''
             buffer['worker_state_dict'] = b''
             # Pad to a small kernel-alignment boundary, not the full sequence

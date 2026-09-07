@@ -134,7 +134,6 @@ class LazySupervisedDataset(Dataset):
         self.max_tokens = tokenizer.model_max_length
 
         self.root = meta["root"]
-        self.cached_data_dict = {}
         self.tcs_loader = tcs_loader
         self.group_by_length = group_by_length
         self.force_shuffle = force_shuffle

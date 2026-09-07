@@ -32,7 +32,8 @@ only their actual remainder; `max_samples` is exact.
 Byte offsets are indexed in memory without rewriting annotations. Each row
 is fully decoded once; malformed or oversized supervision raises. Packing stays
 inside the sample batch and pads physical sequences only to the necessary
-kernel alignment. Accumulation adapts to the required FSDP forwards; ranks
+kernel alignment, and orders long physical sequences together across ranks
+to avoid taking turns as the straggler. Accumulation adapts to the required FSDP forwards; ranks
 with fewer physical sequences contribute zero-loss padding calls. These
 calls do not add examples. `SFT_SAMPLE_AUDIT_DIR` records actual ids per rank
 and update so membership, duplicates and omissions can be checked directly.
@@ -119,3 +120,12 @@ checks its visible device count and H200 type and, when sample auditing is
 enabled, records its hostname, GPU UUID and memory beside the sample journal.
 Shared software-runtime validation does not require different nodes to expose
 the same GPU UUIDs.
+
+`--profiling` captures rank zero with sample-based windows:
+`SFT_PROFILE_START_SAMPLES`, `SFT_PROFILE_WARMUP_SAMPLES`, and
+`SFT_PROFILE_ACTIVE_SAMPLES`. Defaults are two, one, and one global sample
+batches respectively; explicit windows must fit the run budget and include
+at least one batch of warmup and recording. Traces live under
+`SFT_PROFILE_ROOT` and are diagnostic artifacts. The progress clock advances
+before the profiler selects the next window. Timing reports use the
+nearest-rank definition for P95.

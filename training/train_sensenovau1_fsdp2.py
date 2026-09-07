@@ -10,6 +10,7 @@ and publication.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import shutil
@@ -420,11 +421,12 @@ def _publish_hf_checkpoint(model: nn.Module, *, target: Path, base_model: Path) 
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for HF publication marker: {marker}")
-            time.sleep(0.2)
-            time.sleep(10)
+            time.sleep(1)
 
 
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, float]:
+    if not records:
+        raise ValueError("SFT benchmark has no measured updates after sample warmup")
     seconds = [float(record["seconds"]) for record in records]
     physical_tokens = sum(int(record["physical_tokens"]) for record in records)
     supervised_tokens = sum(int(record["supervised_tokens"]) for record in records)
@@ -435,7 +437,7 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, float]:
         "seconds": elapsed,
         "update_seconds_mean": statistics.fmean(seconds),
         "update_seconds_median": statistics.median(seconds),
-        "update_seconds_p95": sorted(seconds)[max(0, int(0.95 * len(seconds)) - 1)],
+        "update_seconds_p95": sorted(seconds)[math.ceil(0.95 * len(seconds)) - 1],
         "physical_tokens_per_second": physical_tokens / elapsed,
         "supervised_tokens_per_second": supervised_tokens / elapsed,
         "samples_per_second": samples / elapsed,
@@ -521,7 +523,7 @@ def main(args: Any) -> None:
             raise FileExistsError(f"refusing to overwrite benchmark report: {report_path}")
     dist.barrier()
 
-    initial_moments = _parameter_moments(model)
+    initial_moments = _parameter_moments(model) if report_path is not None else None
     torch.cuda.reset_peak_memory_stats()
     records: list[dict[str, Any]] = []
     checkpoint_root = Path(
@@ -540,7 +542,8 @@ def main(args: Any) -> None:
         audit_path.mkdir(parents=True, exist_ok=True)
         audit_stream = (audit_path / f"rank-{rank:05d}.jsonl").open("x", encoding="utf-8")
     launch_time = time.strftime("%Y-%m-%d_%H-%M-%S")
-    with training_profile(bool(args.profiling), start_time=launch_time) as profiler:
+    with training_profile(bool(args.profiling) or _env_bool("SFT_PROFILE_ENABLED", False), start_time=launch_time,
+                          progress=progress, batch_samples=batch_samples_target) as profiler:
         while not progress.done:
             torch.cuda.synchronize()
             update_start = time.perf_counter()
@@ -645,9 +648,9 @@ def main(args: Any) -> None:
             loss_value, main_loss_value, auxiliary_loss_value = (
                 float(value) for value in loss_metrics.tolist()
             )
-            profiler.step()
             before_samples = progress.consumed_samples
             checkpoint_target = progress.advance(batch_samples)
+            profiler.step()
             seen_sample_ids.update(sample_ids)
             if audit_stream is not None:
                 audit_stream.write(json.dumps({"epoch": epoch, "update": progress.optimizer_updates,
@@ -696,7 +699,7 @@ def main(args: Any) -> None:
                 )
 
     peak_memory = _distributed_max(float(torch.cuda.max_memory_allocated()))
-    final_moments = _parameter_moments(model)
+    final_moments = _parameter_moments(model) if report_path is not None else None
     checkpoint_result = None
     if audit_stream is not None:
         audit_stream.close()

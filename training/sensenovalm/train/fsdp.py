@@ -59,20 +59,41 @@ class _NoopProfiler:
         pass
 
 
+def sample_profile_schedule(progress, batch_samples):
+    obsolete = {"SFT_PROFILE_WAIT", "SFT_PROFILE_WARMUP", "SFT_PROFILE_ACTIVE", "SFT_PROFILE_SKIP_FIRST"}
+    if obsolete.intersection(os.environ):
+        raise ValueError("SFT profiling windows use sample counts, not optimizer/packed step counts")
+    start = int(os.environ.get("SFT_PROFILE_START_SAMPLES", 2 * batch_samples))
+    warmup = int(os.environ.get("SFT_PROFILE_WARMUP_SAMPLES", batch_samples))
+    active = int(os.environ.get("SFT_PROFILE_ACTIVE_SAMPLES", batch_samples))
+    if start < 0 or warmup < batch_samples or active < batch_samples:
+        raise ValueError("SFT profile warmup/active windows must each cover a sample batch")
+    end = start + warmup + active
+    if end > progress.max_samples:
+        raise ValueError("SFT profiling window exceeds the declared sample budget")
+
+    def schedule(_execution_step):
+        position = progress.consumed_samples
+        if position < start or position >= end:
+            return torch.profiler.ProfilerAction.NONE
+        if position < start + warmup:
+            return torch.profiler.ProfilerAction.WARMUP
+        remaining = min(batch_samples, progress.max_samples - position,
+                        progress.samples_per_epoch - position % progress.samples_per_epoch)
+        if position + remaining >= end:
+            return torch.profiler.ProfilerAction.RECORD_AND_SAVE
+        return torch.profiler.ProfilerAction.RECORD
+    return schedule
+
+
 @contextmanager
-def training_profile(enabled: bool, *, start_time: str) -> Iterator[object]:
-    if not enabled:
+def training_profile(enabled: bool, *, start_time: str, progress, batch_samples: int) -> Iterator[object]:
+    if not enabled or gpc.get_global_rank() != 0:
         yield _NoopProfiler()
         return
-    schedule = torch.profiler.schedule(
-        wait=int(os.environ.get("SFT_PROFILE_WAIT", "1")),
-        warmup=int(os.environ.get("SFT_PROFILE_WARMUP", "1")),
-        active=int(os.environ.get("SFT_PROFILE_ACTIVE", "1")),
-        repeat=1,
-        skip_first=int(os.environ.get("SFT_PROFILE_SKIP_FIRST", "3")),
-    )
+    schedule = sample_profile_schedule(progress, batch_samples)
     trace_root = Path(os.environ.get("SFT_PROFILE_ROOT", "RUN"))
-    trace = trace_root / str(gpc.config.JOB_NAME) / start_time / f"rank-{gpc.get_global_rank():05d}"
+    trace = trace_root / str(gpc.config.JOB_NAME) / start_time / "rank-00000"
     with torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
         schedule=schedule,
