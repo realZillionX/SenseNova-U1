@@ -77,6 +77,7 @@ VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
 TOKENIZER_PATH=/models/SenseNova-U1.5-8B-MoT \
 mm_data_path=/datasets/u15/meta.json \
 samples_per_epoch=1185000 \
+batch_samples=${SFT_BATCH_SAMPLES:?set the global original-sample batch} \
 JOB_NAME=u15-ti2t-sft \
 RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh

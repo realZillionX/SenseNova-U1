@@ -7,7 +7,7 @@ import copy
 from functools import partial
 
 import torch
-from torch.utils.data import BatchSampler, ConcatDataset, DataLoader
+from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from sensenovalm.core.context import ParallelMode
@@ -15,7 +15,7 @@ from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.build_dataloader import get_tokenized_train_loader_items
 from sensenovalm.data.build_dataloader import build_train_loader_with_data_type as pretrain_build_train_loader_with_data_type
 from sensenovalm.utils.logger import get_logger
-from sensenovavl.data.batch_sampler import LengthGroupedSampler
+from sensenovavl.data.sample_batch_dataset import SampleBatchDataset, identity_collate
 from sensenovavl.data.constants import (
     ALL_SPECIAL_TOKEN_LIST,
     BOX_END_TOKEN,
@@ -41,7 +41,6 @@ from sensenovavl.data.distributed_sampler import DistributedSampler
 
 from sensenovavl.data.multimodal_dataset import (
     build_datasets,
-    image_pair_collator,
 )
 from sensenovalm.data.utils import get_dataset_type_ids_map
 from sensenovalm.core.context import ParallelMode
@@ -128,10 +127,7 @@ def get_multimodal_streaming_train_loader_items(data_cfg):   # NOTE:
         return None, None, None, None
 
 
-    # NLP/streaming data mix removed for OSS; multimodal-only path.
-    nlp_mm_sampling_fixed_token = False
-
-    datasets, dataset_weights = [], []
+    datasets = []
     dataset_types = []
 
     # multimodal dataset
@@ -160,78 +156,28 @@ def get_multimodal_streaming_train_loader_items(data_cfg):   # NOTE:
     )
     dataset_types.extend(mm_dataset_types)
     datasets.extend(mm_paired_datasets + mm_cc_datasets + mm_plain_pair_datasets)
-    paired_total_length = sum(mm_paired_lengths)
-    cc_total_length = sum(mm_cc_lengths)
-    plain_pair_total_length = sum(mm_plain_pair_lengths)
-
-    mm_total_weight = 1.0 - getattr(data_cfg, 'llm_data_weights', 0.0)
-    mm_cc_data_weights = getattr(data_cfg, 'mm_cc_data_weights', 0.0) * mm_total_weight
-    mm_plain_pair_data_weights = getattr(data_cfg, 'mm_plain_pair_data_weights', 0.0) * mm_total_weight
-    mm_paired_total_weight = mm_total_weight - mm_cc_data_weights - mm_plain_pair_data_weights
-
-    mm_paired_weights = [l / paired_total_length * mm_paired_total_weight for l in mm_paired_lengths]
-    mm_cc_weights = [l / cc_total_length * (mm_total_weight- mm_paired_total_weight) for l in mm_cc_lengths]
-    mm_plain_pair_weights = [l / plain_pair_total_length * mm_plain_pair_data_weights for l in mm_plain_pair_lengths]
-
-    if gpc.is_rank_for_log():
-        logger.info(f'the sampling weight:\n paired: {sum(mm_paired_weights)}\n cc: {sum(mm_cc_weights)}\n plain_pair: {sum(mm_plain_pair_weights)}')
-    dataset_weights.extend(mm_paired_weights + mm_cc_weights + mm_plain_pair_weights)
-
-    if data_cfg.use_packed_ds:
-        train_ds = PackedDataset(       # NOTE:
-            tokenizer=tokenizer,
-            data_rank=gpc.get_local_rank(ParallelMode.DATA),
-            data_world_size=gpc.get_world_size(ParallelMode.DATA),
-            datasets=datasets,
-            dataset_weight=dataset_weights,
-            num_images_expected=data_cfg.num_images_expected,
-            max_packed_tokens=data_cfg.max_packed_tokens,
-            max_buffer_size=data_cfg.max_buffer_size,
-            log_freq=data_cfg.log_freq,
-            strict_mode=data_cfg.strict_mode,
-            debug_mode=getattr(data_cfg, "debug_mode", False),
-            replacement=getattr(data_cfg, "replacement", False),
-            allow_overflow=getattr(data_cfg, "allow_overflow", False),
-            allow_empty_data=getattr(data_cfg, "allow_empty_data", False),
-            allow_deduplicated_ds_name=False,
-            nlp_mm_sampling_fixed_token=nlp_mm_sampling_fixed_token,
-            packed_buffer_stale_threshold=getattr(data_cfg, "packed_buffer_stale_threshold", 200),
-        )
-        train_sampler = None
-        train_collate_fn = partial(
-            u15_packed_collate_fn,
-            max_item_length=data_cfg.max_packed_tokens,
-            img_start_token_id=img_start_token_id,
-            img_token_id=img_context_token_id,
-            img_end_token_id=img_end_token_id,
-            ignored_token_ids=[tokenizer.bos_token_id, tokenizer.convert_tokens_to_ids("\n")],
-            micro_num=data_cfg.micro_num,
-            len2weight=partial(len2weight, loss_reduction=getattr(data_cfg, "loss_reduction", "token")),
-            patch_size=data_cfg.patch_size,
-        )
-    else:
-        raise NotImplementedError('data_cfg.use_packed_ds is False')   # NOTE:
-        train_sampler = LengthGroupedSampler(
-            train_ds.datasets if isinstance(train_ds, ConcatDataset) else [train_ds],
-            batch_size=data_cfg.micro_num
-            * data_cfg.micro_bsz,  # because multimodal SenseNovaVL-MoE-Chat is non-pack data, we use the same data format
-            rampup_batch_size=data_cfg.rampup_batch_size,
-            micro_bsz=data_cfg.micro_bsz,
-            seed=data_cfg.get("seed", 42),
-            drop_last=True,
-            data_rank=gpc.get_local_rank(ParallelMode.DATA),
-            data_world_size=gpc.get_world_size(ParallelMode.DATA),
-        )
-        train_collate_fn = partial(
-            image_pair_collator,
-            max_item_length=data_cfg.max_packed_tokens,
-            img_start_token_id=img_start_token_id,
-            img_token_id=img_context_token_id,
-            img_end_token_id=img_end_token_id,
-            ignored_token_ids=[tokenizer.bos_token_id, tokenizer.convert_tokens_to_ids("\n")],
-        )
-
-    return train_ds, train_sampler, train_collate_fn, dataset_types
+    if getattr(data_cfg, "llm_data_weights", 0) or getattr(data_cfg, "mm_cc_data_weights", 0):
+        raise ValueError("finite sample-batched SFT does not use weighted replacement sampling")
+    packed_collate = partial(
+        u15_packed_collate_fn,
+        img_start_token_id=img_start_token_id,
+        img_token_id=img_context_token_id,
+        img_end_token_id=img_end_token_id,
+        ignored_token_ids=[tokenizer.bos_token_id, tokenizer.convert_tokens_to_ids("\n")],
+        micro_num=1,
+        len2weight=partial(len2weight, loss_reduction="sample"),
+        patch_size=data_cfg.patch_size,
+    )
+    train_ds = SampleBatchDataset(
+        datasets=datasets, batch_samples=int(data_cfg.batch_samples),
+        max_samples=int(data_cfg.max_samples), seed=int(data_cfg.get("seed", 42)),
+        rank=gpc.get_local_rank(ParallelMode.DATA), world_size=gpc.get_world_size(ParallelMode.DATA),
+        max_tokens=data_cfg.max_packed_tokens, max_images=data_cfg.num_images_expected,
+        collate=packed_collate,
+    )
+    if train_ds.rows != data_cfg.samples_per_epoch:
+        raise ValueError("SFT source row count differs from samples_per_epoch")
+    return train_ds, None, identity_collate, dataset_types
 
 
 def get_multimodal_packed_streaming_train_loader_items(data_cfg):
@@ -507,7 +453,7 @@ def build_train_loader_with_data_type():
 
     train_dl = RestartableDataLoader(      # NOTE:
         dataset=train_ds,
-        batch_size=data_cfg.micro_num,
+        batch_size=None if isinstance(train_ds, SampleBatchDataset) else data_cfg.micro_num,
         batch_sampler=train_sampler,
         **dataloader_kwargs,
     )

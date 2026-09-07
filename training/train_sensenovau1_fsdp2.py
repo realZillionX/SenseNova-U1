@@ -321,6 +321,7 @@ def _save_training_checkpoint(
             "checkpoint_target_samples": checkpoint_target_samples,
             "world_size": dist.get_world_size(),
             "model_only": True,
+            "batch_samples": int(gpc.config.data.batch_samples),
             "conversion_config": {
                 "vit_cfg": {"num_hidden_layers": int(gpc.config.model.vit_cfg.num_hidden_layers)},
                 "num_layers": int(gpc.config.model.num_layers),
@@ -455,6 +456,7 @@ def main(args: Any) -> None:
     _seed_everything(seed)
     gpc.config.data.seed = seed
     obsolete = {"total_steps", "init_steps", "checkpoint_every", "metric_interval_steps",
+                "grad_accm", "gradient_accumulation_steps", "packed_buffer_max_size", "packed_buffer_stale_threshold",
                 "SFT_BENCHMARK_WARMUP_STEPS", "SFT_BENCHMARK_MEASURED_STEPS"} & os.environ.keys()
     if obsolete:
         raise ValueError(f"SFT accepts sample counts only; remove obsolete settings: {sorted(obsolete)}")
@@ -494,9 +496,9 @@ def main(args: Any) -> None:
     warmup_samples = int(gpc.config.lr_scheduler.warmup_samples)
     logging_samples = _env_int("logging_samples", 1, minimum=1)
     last_logged_samples = 0
-    grad_accumulation = int(gpc.config.data.micro_num)
-    if grad_accumulation < 1:
-        raise ValueError("FSDP2 SFT gradient accumulation must be positive")
+    batch_samples_target = int(gpc.config.data.batch_samples)
+    if batch_samples_target < world_size:
+        raise ValueError("batch_samples must provide at least one sample per H200 rank")
     report_path = Path(benchmark_report).resolve() if benchmark_report else None
     if rank == 0 and report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -514,7 +516,6 @@ def main(args: Any) -> None:
         )
     ).expanduser().resolve()
     iterator = iter(train_dl)
-    previous_batch = None
     epoch = 0
     seen_sample_ids: set[str] = set()
     audit_root = os.environ.get("SFT_SAMPLE_AUDIT_DIR")
@@ -528,56 +529,29 @@ def main(args: Any) -> None:
         while not progress.done:
             torch.cuda.synchronize()
             update_start = time.perf_counter()
-            active = True
-            try:
-                raw_batch = next(iterator)
-                previous_batch = raw_batch
-            except StopIteration:
-                # Exhausted ranks still execute a zero-loss copy to keep FSDP
-                # collectives aligned until every rank drains this epoch.
-                active = False
-                raw_batch = previous_batch
-            samples_local = int(raw_batch[0]["num_samples"]) if active else 0
-            batch_samples = int(_distributed_sum(samples_local))
-            if not batch_samples:
-                if progress.consumed_samples != (epoch + 1) * progress.samples_per_epoch:
-                    raise RuntimeError("finite SFT epoch sample coverage differs from sealed row count")
-                epoch += 1
+            batch = next(iterator)
+            if batch["sample_start"] != progress.consumed_samples:
+                raise ValueError("SFT loader changed the global sample batch order")
+            if batch["epoch"] != epoch:
+                epoch = batch["epoch"]
                 seen_sample_ids.clear()
-                # Worker processes receive the explicit common epoch, including
-                # when non-persistent DataLoader workers are recreated.
-                for dataset in train_dl.dataset.datasets_orig:
-                    dataset.annotation_epoch = epoch
-                if getattr(train_dl, "persistent_workers", False):
-                    iterator = train_dl.restart_workers()
-                else:
-                    iterator = iter(train_dl)
-                previous_batch = None
-                continue
-            if raw_batch is None:
-                raise RuntimeError("SFT rank has no input row for collective padding")
-            raw_batch = move_to_device(raw_batch)
-            data, labels = raw_batch
-            data.pop("worker_state_key_list", None)
-            data.pop("worker_state_dict_list", None)
-            data.pop("worker_state_custom_infos_list", None)
-            if data.pop("is_empty_data_list", False):
-                raise RuntimeError("SFT input exhausted and produced an empty packed row")
-            physical_tokens_local = int(data["input_ids"].numel())
-            supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) and active else 0
-            data.pop("num_samples")
-            sample_ids = data.pop("sample_ids") if active else []
-            data.pop("sample_ids", None)
-            if len(sample_ids) != samples_local:
-                raise ValueError("SFT sample identity count differs from the exposure clock")
+            expected_samples = min(batch_samples_target,
+                                   progress.max_samples - progress.consumed_samples,
+                                   (epoch + 1) * progress.samples_per_epoch - progress.consumed_samples)
+            if batch["sample_count"] != expected_samples:
+                raise ValueError("SFT loader changed the global sample batch size")
+            raw_microbatches = batch["microbatches"]
+            sample_ids = [identity for data, _labels in raw_microbatches for identity in data["sample_ids"]]
+            samples_local = sum(int(data["num_samples"]) for data, _labels in raw_microbatches)
+            batch_samples = int(_distributed_sum(samples_local))
+            if batch_samples != expected_samples or len(sample_ids) != samples_local:
+                raise ValueError("SFT actual sample identities disagree with the global batch")
             if len(set(sample_ids)) != len(sample_ids) or seen_sample_ids.intersection(sample_ids):
-                raise ValueError("SFT consumed a duplicate sample within one finite epoch")
-            samples_per_microbatch = data.pop("samples_per_microbatch")
-            if not active:
-                samples_per_microbatch = [0] * grad_accumulation
-            if len(samples_per_microbatch) != grad_accumulation or sum(samples_per_microbatch) != samples_local:
-                raise ValueError("packed microbatch sample counts disagree with the exposure clock")
-            data.pop("num_padding_tokens", None)
+                raise ValueError("SFT consumed a duplicate sample within one epoch")
+            # All ranks execute the same number of FSDP forwards/backwards.
+            # Short ranks pad with their cheapest physical sequence at zero loss.
+            micro_steps = int(_distributed_max(len(raw_microbatches)))
+            padding_batch = min(raw_microbatches, key=lambda item: item[0]["input_ids"].numel())
             data_seconds = time.perf_counter() - update_start
             progress.checkpoint_target(batch_samples)  # validate before mutating weights
             sample_denominator = batch_samples / world_size
@@ -594,15 +568,31 @@ def main(args: Any) -> None:
             main_loss_value = 0.0
             auxiliary_loss_value = 0.0
             grad_norm = None
-            for micro_step in range(grad_accumulation):
-                is_last = micro_step + 1 == grad_accumulation
-                global_position = progress.optimizer_updates * world_size * grad_accumulation + rank * grad_accumulation + micro_step
-                sample_seed = seed + global_position
+            physical_tokens_local = supervised_tokens_local = padding_tokens_local = 0
+            for micro_step in range(micro_steps):
+                is_last = micro_step + 1 == micro_steps
+                sample_seed = int(np.random.SeedSequence([seed, progress.consumed_samples, rank, micro_step])
+                                  .generate_state(1)[0])
                 torch.manual_seed(sample_seed)
                 torch.cuda.manual_seed_all(sample_seed)
                 model.set_requires_gradient_sync(is_last, recurse=True)
                 model.set_is_last_backward(is_last)
-                micro_data, micro_labels = _prepare_microbatch((data, labels), micro_step)
+                real_microbatch = micro_step < len(raw_microbatches)
+                raw = raw_microbatches[micro_step] if real_microbatch else padding_batch
+                data, labels = move_to_device(raw)
+                count = data.pop("num_samples") if real_microbatch else 0
+                data.pop("num_samples", None)
+                for name in ("sample_ids", "samples_per_microbatch", "worker_state_key_list",
+                             "worker_state_dict_list", "worker_state_custom_infos_list"):
+                    data.pop(name, None)
+                if data.pop("is_empty_data_list", False):
+                    raise ValueError("SFT received an invalid empty physical sequence")
+                physical_tokens_local += data["input_ids"].numel()
+                padding_tokens_local += data.pop("num_padding_tokens") if count else data["input_ids"].numel()
+                data.pop("num_padding_tokens", None)
+                if count:
+                    supervised_tokens_local += int((labels != -100).sum().item())
+                micro_data, micro_labels = _prepare_microbatch((data, labels), 0)
                 micro_data["sample_loss_denominator"] = sample_denominator
                 output, _mtp_outputs, *_extra = model(**micro_data)
                 loss_weight = micro_data.pop("loss_weight", None)
@@ -615,7 +605,7 @@ def main(args: Any) -> None:
                 auxiliary = _numeric_extra_losses(tuple(_extra))
                 # Both branches already divide by the entire update's sample
                 # count. Padding microbatches participate in collectives only.
-                if samples_per_microbatch[micro_step] == 0:
+                if count == 0:
                     loss = loss * 0.0
                     auxiliary = auxiliary * 0.0
                 total = loss + auxiliary
@@ -661,6 +651,9 @@ def main(args: Any) -> None:
                 "physical_tokens": _distributed_sum(physical_tokens_local),
                 "supervised_tokens": _distributed_sum(supervised_tokens_local),
                 "samples": batch_samples,
+                "batch_samples": batch_samples_target,
+                "accumulation_microbatches": micro_steps,
+                "padding_tokens": _distributed_sum(padding_tokens_local),
                 "data_seconds": _distributed_max(data_seconds),
             }
             if report_path is not None and before_samples >= benchmark_warmup_samples:
@@ -730,7 +723,7 @@ def main(args: Any) -> None:
             "model_path": gpc.config.model.model_name_or_path,
             "data_meta": gpc.config.data.meta_path,
             "sequence_length": int(gpc.config.data.seq_len),
-            "gradient_accumulation": grad_accumulation,
+            "batch_samples": batch_samples_target,
             "activation_checkpoint_fraction": float(gpc.config.model.checkpoint),
             "bf16_compute": True,
             "bf16_gradient_reduction": True,

@@ -20,17 +20,21 @@ uneven packing do not increase a sample's total weight. Zero-image samples
 contribute zero to the visual branch and remain in the sample denominator.
 Padding copies have zero loss and do not advance exposure.
 
-The SFT reader shuffles global annotation row indices by seed and epoch before
-sharding across ranks and workers. Equal ordered source ids give the two arms
-the same semantic permutation despite different response sizes. Byte offsets
-are indexed in memory without rewriting annotation files. The packer decodes
-each row once; malformed or oversized supervision raises instead of silently
-skipping data. The packer drains its buffers and terminates at the end of each finite epoch.
-Exhausted ranks execute zero-loss collective padding until all ranks exhaust;
-readers never restart independently. `SFT_SAMPLE_AUDIT_DIR` optionally records
-the raw sample ids consumed by each update and rank, excluding padding.
-Real-data acceptance must compare these journals with the sealed selection;
-the exposure clock alone is not coverage.
+`batch_samples` is the required global number of original examples per
+optimizer update. No packed-sequence count or fixed accumulation-step count
+sets the training batch. The reader globally shuffles annotation indices by
+seed and epoch, defines sample batches, and only then shards and packs their
+members. Equal source ids and seeds therefore give both arms the same batch
+membership despite different response sizes. Partial epoch/final batches use
+only their actual remainder; `max_samples` is exact.
+
+Byte offsets are indexed in memory without rewriting annotations. Each row
+is decoded once; malformed or oversized supervision raises. Packing stays
+inside the sample batch and pads physical sequences only to the necessary
+kernel alignment. Accumulation adapts to the required FSDP forwards; ranks
+with fewer physical sequences contribute zero-loss padding calls. These
+calls do not add examples. `SFT_SAMPLE_AUDIT_DIR` records actual ids per rank
+and update so membership, duplicates and omissions can be checked directly.
 
 The preset disables text, image, and joint CFG-drop augmentation: deleting a
 condition from DiVR cold-start data would delete authored reasoning and change
@@ -43,6 +47,7 @@ Required inputs:
 | `MODEL_NAME_OR_PATH` | Complete U1.5 Hugging Face checkpoint |
 | `VOCAB_FILE`, `TOKENIZER_PATH` | Matching tokenizer directory |
 | `mm_data_path` | U1.5 loader meta JSON |
+| `batch_samples` | Global original examples per optimizer update; explicit, no default |
 | `samples_per_epoch` | Sealed number of raw dataset rows (at least ten) |
 | `max_samples` | Global raw-sample visits; defaults to one epoch |
 | `warmup_samples`, `logging_samples` | Sample-based warmup and logging intervals |
@@ -57,6 +62,7 @@ VOCAB_FILE=/models/SenseNova-U1.5-8B-MoT \
 TOKENIZER_PATH=/models/SenseNova-U1.5-8B-MoT \
 mm_data_path=/datasets/u15/meta.json \
 samples_per_epoch=1185000 \
+batch_samples=${SFT_BATCH_SAMPLES:?set the global original-sample batch} \
 JOB_NAME=u15-full-sft \
 RUN_ROOT=/runs/u15-ti2t-sft \
 bash training/shell/train_u1/U1.5_8B_SFT.sh

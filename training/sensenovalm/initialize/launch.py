@@ -180,31 +180,39 @@ def args_sanity_check():
     if "probe_size" not in data:
         data.probe_size = 1e6
 
-    if "gradient_accumulation" not in data:
-        data.gradient_accumulation = data.micro_num
-        if gpc.is_rank_for_log():
-            logger.info(f"gradient_accumulation size will be setted to {data.micro_num}.")
+    if "batch_samples" in data:
+        if type(data.batch_samples) is not int or data.batch_samples < 1:
+            raise ValueError("batch_samples must be a positive global raw-sample count")
+        if "gradient_accumulation" in data or "GLOBAL_BATCH_SIZE" in gpc.config:
+            raise ValueError("SFT declares batch_samples; packed gradient_accumulation/GLOBAL_BATCH_SIZE are obsolete")
+        data.global_batch_size = data.batch_samples
+        data.batch_size = data.batch_samples
     else:
-        if pp == 1:
+        if "gradient_accumulation" not in data:
+            data.gradient_accumulation = data.micro_num
+            if gpc.is_rank_for_log():
+                logger.info(f"gradient_accumulation size will be setted to {data.micro_num}.")
+        else:
+            if pp == 1:
+                assert (
+                    data.gradient_accumulation == data.micro_num
+                ), "for nopp 'gradient_accumulation' should equal with 'micro_num'"
+
+        data_world_size = gpc.get_world_size(ParallelMode.DATA)
+
+        # `GLOBAL_BATCH_SIZE` in config equals to data.global_batch_size * data.seq_len
+        global_batch_size_without_seqlen = data.micro_bsz * data.micro_num * data_world_size
+        global_batch_size = global_batch_size_without_seqlen * data.seq_len
+        predefine_global_batch_size = gpc.config.get("GLOBAL_BATCH_SIZE", 0)
+        if predefine_global_batch_size != 0:
             assert (
-                data.gradient_accumulation == data.micro_num
-            ), "for nopp 'gradient_accumulation' should equal with 'micro_num'"
+                predefine_global_batch_size == global_batch_size
+            ), f"predefine_global_batch_size:{predefine_global_batch_size}, actual global_batch_size:{global_batch_size}"
 
-    data_world_size = gpc.get_world_size(ParallelMode.DATA)
+        data.global_batch_size = global_batch_size
 
-    # `GLOBAL_BATCH_SIZE` in config equals to data.global_batch_size * data.seq_len
-    global_batch_size_without_seqlen = data.micro_bsz * data.micro_num * data_world_size
-    global_batch_size = global_batch_size_without_seqlen * data.seq_len
-    predefine_global_batch_size = gpc.config.get("GLOBAL_BATCH_SIZE", 0)
-    if predefine_global_batch_size != 0:
-        assert (
-            predefine_global_batch_size == global_batch_size
-        ), f"predefine_global_batch_size:{predefine_global_batch_size}, actual global_batch_size:{global_batch_size}"
-
-    data.global_batch_size = global_batch_size
-
-    # batch_size should be equal with micro_num, should not use it directly
-    data.batch_size = data.micro_num
+        # batch_size should be equal with micro_num, should not use it directly
+        data.batch_size = data.micro_num
 
     if "train_folder" not in data:
         data.train_folder = None
@@ -243,8 +251,11 @@ def args_sanity_check():
     if gpc.is_rank_for_log():
         logger.info("+" * 15 + " Data Info " + "+" * 15)  # pylint: disable=W1201
         logger.info(f"seq_len: {data.seq_len}")
-        logger.info(f"micro_num: {data.micro_num}")
-        logger.info(f"micro_bsz: {data.micro_bsz}")
+        if "batch_samples" in data:
+            logger.info(f"global batch_samples: {data.batch_samples}")
+        else:
+            logger.info(f"micro_num: {data.micro_num}")
+            logger.info(f"micro_bsz: {data.micro_bsz}")
         if data.get("type", None) == "tokenized":
             logger.info(f"packed_length: {data.packed_length}")
             logger.info(f"min_length: {data.min_length}")

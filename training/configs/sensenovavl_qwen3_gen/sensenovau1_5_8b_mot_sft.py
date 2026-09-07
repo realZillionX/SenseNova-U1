@@ -48,7 +48,7 @@ tensor_parallel_mode = "mtp"
 # -----------------------------------------------------------------------------
 lr = float(os.environ['lr'])
 weight_decay = float(os.environ['weight_decay'])
-grad_accm = int(os.environ['grad_accm'])
+batch_samples = int(os.environ['batch_samples'])
 max_samples = int(os.environ['max_samples'])
 samples_per_epoch = int(os.environ['samples_per_epoch'])
 warmup_samples = int(os.environ.get('warmup_samples', max_samples // 100))
@@ -85,20 +85,13 @@ dynamic_image_version = os.environ.get('dynamic_image_version', 'native_resoluti
 down_sample_ratio = float(os.environ.get('down_sample_ratio', 0.5))
 print(f'down_sample_ratio is {down_sample_ratio}')
 
-dataset_replacement = env_bool('dataset_replacement', False)
 dataloader_num_workers = int(os.environ.get('dataloader_num_workers', 8))
 dataloader_prefetch_factor = int(os.environ.get('dataloader_prefetch_factor', 1))
 dataloader_persistent_workers = env_bool('dataloader_persistent_workers', False)
-packed_buffer_max_size = int(os.environ.get('packed_buffer_max_size', 10))
-packed_buffer_stale_threshold = int(os.environ.get('packed_buffer_stale_threshold', 200))
 if dataloader_num_workers < 0:
     raise ValueError('dataloader_num_workers must be non-negative')
 if dataloader_prefetch_factor < 1:
     raise ValueError('dataloader_prefetch_factor must be positive')
-if packed_buffer_max_size < 1:
-    raise ValueError('packed_buffer_max_size must be positive')
-if packed_buffer_stale_threshold < 1:
-    raise ValueError('packed_buffer_stale_threshold must be positive')
 
 # LLM-text mixing (kept as a hook; both `train_u1/*.sh` set the weights to 0).
 llm_data_config = None
@@ -187,15 +180,10 @@ if llm_data_config is not None:
 # -----------------------------------------------------------------------------
 # Checkpoint
 # -----------------------------------------------------------------------------
-CHECKPOINT_EVERY = int(os.environ.get("checkpoint_every", "100"))
-if CHECKPOINT_EVERY < 1:
-    raise ValueError("checkpoint_every must be positive")
-
 ckpt = dict(
     # The shared config validator expects this object, while the FSDP2 runner
     # owns model-only DCP checkpoints directly.
     enable_save_ckpt=False,
-    checkpoint_every=CHECKPOINT_EVERY,
 )
 
 
@@ -206,7 +194,8 @@ data = dict(
     type="multimodal_streaming",
     use_packed_ds=True,
     seq_len=SEQ_LEN,
-    micro_num=grad_accm,
+    batch_samples=batch_samples,
+    # The model consumes one physical packed sequence per forward call.
     micro_bsz=1,
     pack_sample_into_one=False,
     max_samples=max_samples,
@@ -245,13 +234,10 @@ data = dict(
     # packing
     num_images_expected=num_imgs,
     max_packed_tokens=SEQ_LEN,
-    max_buffer_size=packed_buffer_max_size,
-    packed_buffer_stale_threshold=packed_buffer_stale_threshold,
     log_freq=1000,
     strict_mode=False,
     split_data_chunk=True,
     data_augment=False,
-    replacement=dataset_replacement,
     # LLM-text mixing
     llm_data_config=llm_data_config,
     llm_data_weights=llm_data_weights,
