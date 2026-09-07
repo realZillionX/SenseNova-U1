@@ -1212,6 +1212,9 @@ class LazySupervisedDataset(Dataset):
             if not len(ret["input_ids"]) or len(ret["input_ids"]) != len(ret["labels"]):
                 raise ValueError("empty or misaligned supervision")
             ret["type_ids"] = torch.zeros_like(ret["input_ids"]) + self.type_id
+            ret["sample_ids"] = [str(data_item.get(
+                "sample_id", f"{self.ds_name}:{self._state_dict['line_shift']}"
+            ))]
             return ret
         except Exception as exc:
             raise ValueError(

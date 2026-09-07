@@ -12,6 +12,7 @@ class SampleMeanTest(unittest.TestCase):
     def test_collator_excludes_padding_copies_from_sample_count_and_weights(self):
         feature = {
             "already_packed": True,
+            "sample_ids": ["first", "second"],
             "input_ids": torch.tensor([3, 4, 5, 3, 6, 7, 8, 9]),
             "labels": torch.tensor([-100, 4, 5, -100, 6, 7, 8, 9]),
             "type_ids": torch.zeros(8, dtype=torch.long),
@@ -24,6 +25,7 @@ class SampleMeanTest(unittest.TestCase):
             micro_num=2, len2weight=lambda count: 1 / count if count else 0,
         )
         self.assertEqual(data["num_samples"], 2)
+        self.assertEqual(data["sample_ids"], ["first", "second"])
         self.assertEqual(data["samples_per_microbatch"], [2, 0])
         self.assertEqual(sum(data["loss_weight"][0]), 2)
         self.assertEqual(sum(data["loss_weight"][1]), 0)

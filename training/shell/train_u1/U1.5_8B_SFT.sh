@@ -63,7 +63,7 @@ fi
 export num_imgs=${num_imgs:-144}
 export seq_len=${seq_len:-8192}
 export max_sample_tokens=${max_sample_tokens:-$seq_len}
-export dataset_replacement=true
+export dataset_replacement=false
 export dataloader_num_workers=${dataloader_num_workers:-8}
 export dataloader_prefetch_factor=${dataloader_prefetch_factor:-1}
 export dataloader_persistent_workers=${dataloader_persistent_workers:-false}

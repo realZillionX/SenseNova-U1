@@ -1032,17 +1032,11 @@ class PackedDataset(IterableDataset):
 
                     return None
             else:
-                logger.error(f"{self.worker_id=} Fail to get any data from {self.datasets[current_dataset_idx].ds_name}!")
+                # A finite epoch must drain its pack buffers and terminate.
+                # Restarting any worker here duplicates its rows while slower
+                # workers/ranks still hold unconsumed rows from this epoch.
                 self.dataset_weight[current_dataset_idx] = 0.0
-
-
-                # if len(self.datasets) == 0:
-                if all(weight == 0 for weight in self.dataset_weight):
-                    logger.info(f"[Worker id {self.worker_id}] All Datasets are exhausted, restart them.")
-                    self.dataset_weight = [w for w in self.dataset_weight_orig]
-                    self.dataset_iter_list = [iter(d) for d in self.datasets]
-
-                return None # self.next_data(np.random.choice(len(self.datasets)))
+                return None
 
         current_ds_name = self.datasets[current_dataset_idx].ds_name
 
@@ -1460,6 +1454,12 @@ class PackedDataset(IterableDataset):
         dynamic_weight_interval = 100  # re-compute every N iterations
         dynamic_weight_counter = 0
         while True:
+            if not any(self.dataset_weight):
+                for buffer in buffer_max_len_list + buffer_list:
+                    if self.strict_mode:
+                        buffer = self.pad_buffer(buffer)
+                    yield self.postprocess_buffer(buffer)
+                return
             # Periodically adjust dataset_weight by remaining sample ratio
             dynamic_weight_counter += 1
             if (dynamic_weight_counter - 1) % dynamic_weight_interval == 0:
@@ -1533,7 +1533,7 @@ class PackedDataset(IterableDataset):
                     f"num images of a buffer ({len(buffer_list[0]['pixel_values'])}) "
                     f"is larger than num_images_expected({self.num_images_expected})"
                 )
-                buffer_list.pop(0)
+                raise ValueError("packed sample exceeds the image slot budget")
 
             while (
                 len(buffer_list) > 0
@@ -1805,6 +1805,7 @@ def u15_packed_collate_fn(
     worker_state_custom_infos_list = []
 
     num_samples = 0
+    sample_ids = []
     samples_per_microbatch = []
     num_padding_tokens = 0
 
@@ -1866,6 +1867,11 @@ def u15_packed_collate_fn(
         feat['loss_weight'] = curr_loss_weight
 
         sample_count = len(curr_cu_seqlens) - 1 if feat_idx < num_features else 0
+        identities = feat.pop("sample_ids", None)
+        if identities is not None and len(identities) != len(curr_cu_seqlens) - 1:
+            raise ValueError("packed sample identities disagree with attention segments")
+        if feat_idx < num_features and identities is not None:
+            sample_ids.extend(identities)
         num_samples += sample_count
         samples_per_microbatch.append(sample_count)
 
@@ -1966,6 +1972,7 @@ def u15_packed_collate_fn(
         "indexes": indexes,
         "type_ids": type_ids,
         "num_samples": num_samples,
+        "sample_ids": sample_ids,
         "samples_per_microbatch": samples_per_microbatch,
         "num_padding_tokens": num_padding_tokens,
         "worker_state_key_list": worker_state_key_list,

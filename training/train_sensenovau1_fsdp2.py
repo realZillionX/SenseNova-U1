@@ -506,16 +506,48 @@ def main(args: Any) -> None:
         )
     ).expanduser().resolve()
     iterator = iter(train_dl)
+    previous_batch = None
+    epoch = 0
+    seen_sample_ids: set[str] = set()
+    audit_root = os.environ.get("SFT_SAMPLE_AUDIT_DIR")
+    audit_stream = None
+    if audit_root:
+        audit_path = Path(audit_root)
+        audit_path.mkdir(parents=True, exist_ok=True)
+        audit_stream = (audit_path / f"rank-{rank:05d}.jsonl").open("x", encoding="utf-8")
     launch_time = time.strftime("%Y-%m-%d_%H-%M-%S")
     with training_profile(bool(args.profiling), start_time=launch_time) as profiler:
         while not progress.done:
             torch.cuda.synchronize()
             update_start = time.perf_counter()
+            active = True
             try:
                 raw_batch = next(iterator)
+                previous_batch = raw_batch
             except StopIteration:
-                iterator = iter(train_dl)
-                raw_batch = next(iterator)
+                # Exhausted ranks still execute a zero-loss copy to keep FSDP
+                # collectives aligned until every rank drains this epoch.
+                active = False
+                raw_batch = previous_batch
+            samples_local = int(raw_batch[0]["num_samples"]) if active else 0
+            batch_samples = int(_distributed_sum(samples_local))
+            if not batch_samples:
+                if progress.consumed_samples != (epoch + 1) * progress.samples_per_epoch:
+                    raise RuntimeError("finite SFT epoch sample coverage differs from sealed row count")
+                epoch += 1
+                seen_sample_ids.clear()
+                # Worker processes receive the explicit common epoch, including
+                # when non-persistent DataLoader workers are recreated.
+                for dataset in train_dl.dataset.datasets_orig:
+                    dataset.annotation_epoch = epoch
+                if getattr(train_dl, "persistent_workers", False):
+                    iterator = train_dl.restart_workers()
+                else:
+                    iterator = iter(train_dl)
+                previous_batch = None
+                continue
+            if raw_batch is None:
+                raise RuntimeError("SFT rank has no input row for collective padding")
             raw_batch = move_to_device(raw_batch)
             data, labels = raw_batch
             data.pop("worker_state_key_list", None)
@@ -524,15 +556,21 @@ def main(args: Any) -> None:
             if data.pop("is_empty_data_list", False):
                 raise RuntimeError("SFT input exhausted and produced an empty packed row")
             physical_tokens_local = int(data["input_ids"].numel())
-            supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) else 0
-            samples_local = int(data.pop("num_samples", 0))
+            supervised_tokens_local = int((labels != -100).sum().item()) if isinstance(labels, Tensor) and active else 0
+            data.pop("num_samples")
+            sample_ids = data.pop("sample_ids") if active else []
+            data.pop("sample_ids", None)
+            if len(sample_ids) != samples_local:
+                raise ValueError("SFT sample identity count differs from the exposure clock")
+            if len(set(sample_ids)) != len(sample_ids) or seen_sample_ids.intersection(sample_ids):
+                raise ValueError("SFT consumed a duplicate sample within one finite epoch")
             samples_per_microbatch = data.pop("samples_per_microbatch")
+            if not active:
+                samples_per_microbatch = [0] * grad_accumulation
             if len(samples_per_microbatch) != grad_accumulation or sum(samples_per_microbatch) != samples_local:
                 raise ValueError("packed microbatch sample counts disagree with the exposure clock")
             data.pop("num_padding_tokens", None)
-            # The collator excludes padding copies and reports raw packed samples.
-            # Attention/padding segments are not a substitute for this count.
-            batch_samples = int(_distributed_sum(samples_local))
+            data_seconds = time.perf_counter() - update_start
             progress.checkpoint_target(batch_samples)  # validate before mutating weights
             sample_denominator = batch_samples / world_size
             lr_ratio = progress.learning_rate_ratio(
@@ -596,6 +634,11 @@ def main(args: Any) -> None:
             profiler.step()
             before_samples = progress.consumed_samples
             checkpoint_target = progress.advance(batch_samples)
+            seen_sample_ids.update(sample_ids)
+            if audit_stream is not None:
+                audit_stream.write(json.dumps({"epoch": epoch, "update": progress.optimizer_updates,
+                                               "sample_ids": sample_ids}) + "\n")
+                audit_stream.flush()
             record = {
                 "consumed_samples": progress.consumed_samples,
                 "max_samples": progress.max_samples,
@@ -609,6 +652,7 @@ def main(args: Any) -> None:
                 "physical_tokens": _distributed_sum(physical_tokens_local),
                 "supervised_tokens": _distributed_sum(supervised_tokens_local),
                 "samples": batch_samples,
+                "data_seconds": _distributed_max(data_seconds),
             }
             if report_path is not None and before_samples >= benchmark_warmup_samples:
                 records.append(record)
@@ -637,6 +681,8 @@ def main(args: Any) -> None:
     peak_memory = _distributed_max(float(torch.cuda.max_memory_allocated()))
     final_moments = _parameter_moments(model)
     checkpoint_result = None
+    if audit_stream is not None:
+        audit_stream.close()
     if _env_bool("SFT_BENCHMARK_CHECKPOINT", False):
         benchmark_parent = report_path.parent if report_path is not None else checkpoint_root
         checkpoint = benchmark_parent / "fsdp2-checkpoint.tmp"
