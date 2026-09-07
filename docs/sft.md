@@ -23,13 +23,14 @@ Padding copies have zero loss and do not advance exposure.
 `batch_samples` is the required global number of original examples per
 optimizer update. No packed-sequence count or fixed accumulation-step count
 sets the training batch. The reader globally shuffles annotation indices by
-seed and epoch, defines sample batches, and only then shards and packs their
-members. Equal source ids and seeds therefore give both arms the same batch
+seed and epoch, defines sample batches, and only then assigns and packs their
+members. Metadata-only work estimates balance ranks without decoding media
+on ranks that do not consume the sample. Equal source ids and seeds therefore give both arms the same batch
 membership despite different response sizes. Partial epoch/final batches use
 only their actual remainder; `max_samples` is exact.
 
 Byte offsets are indexed in memory without rewriting annotations. Each row
-is decoded once; malformed or oversized supervision raises. Packing stays
+is fully decoded once; malformed or oversized supervision raises. Packing stays
 inside the sample batch and pads physical sequences only to the necessary
 kernel alignment. Accumulation adapts to the required FSDP forwards; ranks
 with fewer physical sequences contribute zero-loss padding calls. These
@@ -112,3 +113,9 @@ System probes set `max_samples`, `SFT_BENCHMARK_REPORT` and optionally
 wall times, loss, gradient norms and peak HBM. `SFT_BENCHMARK_ONLY=true`
 suppresses DCP/HF publication, requires a report, and forbids HF output; it is
 never a formal training run.
+
+GPU visibility masks are node-local allocation identities. Every trainer rank
+checks its visible device count and H200 type and, when sample auditing is
+enabled, records its hostname, GPU UUID and memory beside the sample journal.
+Shared software-runtime validation does not require different nodes to expose
+the same GPU UUIDs.

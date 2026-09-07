@@ -2,9 +2,19 @@
 from bisect import bisect_right
 from contextlib import ExitStack
 import mmap
+import json
 from torch.utils.data import IterableDataset, get_worker_info
-from sensenovalm.data.sample_batch import sample_batches
+from sensenovalm.data.sample_batch import sample_batches, balance_rows
 from sensenovavl.data.dataset_interleaved_iterable import PackedDataset
+
+
+def estimate_sample_work(line):
+    """Cheap metadata-only placement estimate; never used for truncation or loss."""
+    item = json.loads(line)
+    text = sum(len(turn.get("value", "")) for turn in item.get("conversations", []))
+    images = item.get("image", item.get("images", []))
+    image_count = len(images) if isinstance(images, list) else int(bool(images))
+    return max(1, text // 4 + 512 * image_count, len(line) // 8)
 
 
 class SampleBatchDataset(IterableDataset):
@@ -62,14 +72,22 @@ class SampleBatchDataset(IterableDataset):
                 stream = stack.enter_context(open(dataset.annotation_file, 'rb'))
                 maps.append(stack.enter_context(mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)))
 
-            def decode(index):
+            def locate(index):
                 dataset_index = bisect_right(self.ends, index)
                 start = self.ends[dataset_index - 1] if dataset_index else 0
                 row = index - start
                 dataset = self.datasets[dataset_index]
-                dataset._state_dict['line_shift'] = row + 1
                 offsets = dataset._annotation_offsets
-                sample = dataset.get_sample(maps[dataset_index][offsets[row]:offsets[row + 1]])
+                line = maps[dataset_index][offsets[row]:offsets[row + 1]]
+                return dataset, row, line
+
+            def estimate(index):
+                return estimate_sample_work(locate(index)[2])
+
+            def decode(index):
+                dataset, row, line = locate(index)
+                dataset._state_dict['line_shift'] = row + 1
+                sample = dataset.get_sample(line)
                 sample.pop('meta_info', None)
                 return sample
 
@@ -77,7 +95,9 @@ class SampleBatchDataset(IterableDataset):
                                         max_samples=self.max_samples, seed=self.seed,
                                         rank=self.rank, world_size=self.world_size,
                                         worker_id=worker_id, num_workers=workers):
-                samples = [decode(index) for index in batch.rows]
+                assignments = balance_rows(batch.global_rows, [estimate(index) for index in batch.global_rows],
+                                           self.world_size)
+                samples = [decode(index) for index in assignments[self.rank]]
                 # A partial final batch can have no real sample on a rank. A
                 # legal zero-loss example keeps the common FSDP hook sequence.
                 padded_rank = not samples

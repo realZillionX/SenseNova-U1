@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from sensenovalm.data.sample_batch import sample_batches, optimizer_updates
+from sensenovalm.data.sample_batch import sample_batches, optimizer_updates, balance_rows
 
 
 class SampleBatchesTest(unittest.TestCase):
@@ -45,6 +45,15 @@ class SampleBatchesTest(unittest.TestCase):
             self.assertEqual(sum(item[2] for item in actual), budget)
             self.assertTrue(all(0 < item[2] <= batch for item in actual))
         self.assertEqual(optimizer_updates(rows=3792, batch_samples=128, max_samples=3792), 30)
+
+    def test_cost_balancing_keeps_the_batch_and_reduces_uneven_rank_work(self):
+        rows = list(range(8)); costs = [9, 1, 8, 1, 7, 1, 6, 1]
+        assignments = balance_rows(rows, costs, 2)
+        self.assertEqual(sorted(i for rank in assignments for i in rank), rows)
+        loads = [sum(costs[i] for i in rank) for rank in assignments]
+        old_loads = [sum(costs[rank::2]) for rank in range(2)]
+        self.assertLess(max(loads), max(old_loads))
+        self.assertEqual(sum(loads), sum(costs))
 
 
 if __name__ == '__main__':

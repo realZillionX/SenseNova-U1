@@ -13,6 +13,7 @@ import json
 import os
 import random
 import shutil
+import socket
 import statistics
 import subprocess
 import time
@@ -60,6 +61,9 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
 def _require_h200() -> str:
     if not torch.cuda.is_available():
         raise RuntimeError("SenseNova training requires NVIDIA H200 GPUs")
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", dist.get_world_size()))
+    if torch.cuda.device_count() != local_world_size:
+        raise RuntimeError("visible GPU count differs from the declared local training ranks")
     name = torch.cuda.get_device_name(torch.cuda.current_device())
     if "H200" not in name.upper():
         raise RuntimeError(f"SenseNova training supports only NVIDIA H200, found {name!r}")
@@ -452,6 +456,17 @@ def main(args: Any) -> None:
     if os.environ.get("SFT_RESUME_CHECKPOINT"):
         raise ValueError("SFT checkpoints contain model weights only; start a fresh run")
     gpu_name = _require_h200()
+    if os.environ.get("SFT_SAMPLE_AUDIT_DIR"):
+        hardware_root = Path(os.environ["SFT_SAMPLE_AUDIT_DIR"]).parent / "hardware"
+        hardware_root.mkdir(parents=True, exist_ok=True)
+        properties = torch.cuda.get_device_properties(torch.cuda.current_device())
+        with (hardware_root / f"rank-{rank:05d}.json").open("x", encoding="utf-8") as stream:
+            json.dump({"hostname": socket.gethostname(), "rank": rank, "world_size": world_size,
+                       "local_rank": torch.cuda.current_device(), "gpu": gpu_name,
+                       "uuid": str(getattr(properties, "uuid", "")),
+                       "memory_bytes": properties.total_memory,
+                       "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                       "nvidia_visible_devices": os.environ.get("NVIDIA_VISIBLE_DEVICES")}, stream, indent=2)
     seed = int(args.seed)
     _seed_everything(seed)
     gpc.config.data.seed = seed
