@@ -306,6 +306,7 @@ def _save_training_checkpoint(
 ) -> Path:
     import torch.distributed.checkpoint as dcp
 
+    started = time.perf_counter()
     rank = dist.get_rank()
     name = "final" if progress.done else f"samples-{progress.consumed_samples:012d}"
     target = root / name
@@ -340,6 +341,16 @@ def _save_training_checkpoint(
         )
         os.rename(staging, target)
     dist.barrier()
+    seconds = _distributed_max(time.perf_counter() - started)
+    if rank == 0:
+        print(json.dumps({
+            "component": "sensenova_u15.sft_fsdp2",
+            "event": "checkpoint_saved",
+            "consumed_samples": progress.consumed_samples,
+            "checkpoint_target_samples": checkpoint_target_samples,
+            "checkpoint": str(target),
+            "seconds": seconds,
+        }, sort_keys=True), flush=True)
     return target
 
 
