@@ -321,6 +321,13 @@ def _save_training_checkpoint(
             "checkpoint_target_samples": checkpoint_target_samples,
             "world_size": dist.get_world_size(),
             "model_only": True,
+            "conversion_config": {
+                "vit_cfg": {"num_hidden_layers": int(gpc.config.model.vit_cfg.num_hidden_layers)},
+                "num_layers": int(gpc.config.model.num_layers),
+                "moe_kwargs": {key: int(gpc.config.model.moe_kwargs.get(key, default))
+                               for key, default in (("first_k_dense_replace", 0),
+                                                    ("num_experts", 1), ("gen_num_experts", 1))},
+            },
         }
         (staging / "checkpoint.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -408,6 +415,7 @@ def _publish_hf_checkpoint(model: nn.Module, *, target: Path, base_model: Path) 
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for HF publication marker: {marker}")
+            time.sleep(0.2)
             time.sleep(10)
 
 
@@ -580,6 +588,7 @@ def main(args: Any) -> None:
             for group in optimizer.param_groups:
                 group["lr"] = float(gpc.config.adam.lr) * lr_ratio
 
+            gpc.config.batch_count = progress.optimizer_updates
             optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
             main_loss_value = 0.0

@@ -579,7 +579,7 @@ def convert(src: str, tgt: str, typ: str, extras_from: str | None = None) -> Non
             for orig_k, new_k in tqdm(pairs, desc=desc):
                 merged = merge_wp_shards(shards, orig_k)
                 merged = maybe_reduce_norm(orig_k, merged, num_wp)
-                cur_states[new_k] = merged.contiguous().clone()
+                cur_states[new_k] = merged.to(dtype=torch.bfloat16).contiguous().clone()
                 index_dict[new_k] = slice_name
         save_file(cur_states, slice_path)
         size_mb = os.path.getsize(slice_path) / (1024 * 1024)
@@ -609,7 +609,7 @@ def convert(src: str, tgt: str, typ: str, extras_from: str | None = None) -> Non
             for hf_key in expert_states:
                 index_dict[hf_key] = slice_name
 
-            save_file(expert_states, slice_path)
+            save_file({key: value.to(dtype=torch.bfloat16) for key, value in expert_states.items()}, slice_path)
             size_mb = os.path.getsize(slice_path) / (1024 * 1024)
             print(
                 f"      wrote {slice_name}  layer={actual_L}, "

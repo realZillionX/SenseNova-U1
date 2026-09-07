@@ -86,6 +86,21 @@ are not resumed. Final ordinary policy weights are
 atomically published as a complete Hugging Face safetensors directory for RL
 and serving. Killing a run does not produce this final publication.
 
+A committed DCP can also be exported independently on CPU with
+the following command:
+
+```bash
+PYTHONPATH=training python training/tools/export_sft_checkpoint.py \
+  --checkpoint <committed-directory> --target <new-HF-directory> \
+  --base-model <base-checkpoint>
+```
+
+`--latest-from <checkpoint root>` selects
+the latest complete boundary and ignores staging. Checkpoint metadata carries
+the conversion configuration and original/actual sample budgets. Both live
+and independent publication cast FP32 optimizer master weights to BF16 for
+the HF checkpoint; DCP retains the full model masters.
+
 System probes set `max_samples`, `SFT_BENCHMARK_REPORT` and optionally
 `SFT_BENCHMARK_WARMUP_SAMPLES`. Reports contain actual sample counts, update
 wall times, loss, gradient norms and peak HBM. `SFT_BENCHMARK_ONLY=true`

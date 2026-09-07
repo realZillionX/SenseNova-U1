@@ -1214,55 +1214,6 @@ class SenseNovaVLChatMoTModel(PreTrainedModel):
             und_cu_seqlens = _build_cu_seqlens_from_doc_ids(document_ids_packed[und_mask])
             und_image_inds = (modality_indicators_packed[und_mask] != -1).view(1, -1)
 
-            log_every = 50
-            batch_count = int(getattr(gpc.config, "batch_count", 0))
-            if gpc.is_rank_for_log() and batch_count % log_every == 0:
-                logger.info(
-                    "[moe-pack] step=%s total=%s gen=%s und=%s gen_cu_last=%s und_cu_last=%s und_img=%s",
-                    batch_count,
-                    input_ids_packed.shape[1],
-                    gen_input_ids.shape[1],
-                    und_input_ids.shape[1],
-                    int(gen_cu_seqlens[-1].item()) if gen_cu_seqlens.numel() > 0 else 0,
-                    int(und_cu_seqlens[-1].item()) if und_cu_seqlens.numel() > 0 else 0,
-                    int(und_image_inds.sum().item()) if und_image_inds.numel() > 0 else 0,
-                )
-            # All-rank diagnostic: gather und stats across DP ranks (only on log steps)
-            if batch_count % log_every == 0:
-                _und_img_local = torch.tensor(
-                    [int(und_image_inds.sum().item()) if und_image_inds.numel() > 0 else 0],
-                    dtype=torch.long, device=input_ids_packed.device,
-                )
-                # count non-padding und tokens: segments where input_ids are not all-zero
-                _und_cu = und_cu_seqlens
-                _und_valid = 0
-                for _i in range(len(_und_cu) - 1):
-                    if not torch.all(und_input_ids[0][_und_cu[_i]:_und_cu[_i+1]] == 0):
-                        _und_valid += (_und_cu[_i+1] - _und_cu[_i]).item()
-                _und_valid_t = torch.tensor([_und_valid], dtype=torch.long, device=input_ids_packed.device)
-                _und_total_t = torch.tensor([und_input_ids.shape[1]], dtype=torch.long, device=input_ids_packed.device)
-
-                _world = torch.distributed.get_world_size()
-                _local_stats = torch.stack([_und_img_local, _und_valid_t, _und_total_t]).view(3)  # [3]
-                _all_stats = [torch.zeros(3, dtype=torch.long, device=input_ids_packed.device) for _ in range(_world)]
-                torch.distributed.all_gather(_all_stats, _local_stats)
-                if gpc.is_rank_for_log():
-                    _imgs = [s[0].item() for s in _all_stats]
-                    _valids = [s[1].item() for s in _all_stats]
-                    _totals = [s[2].item() for s in _all_stats]
-                    _zero_img_ranks = sum(1 for x in _imgs if x == 0)
-                    logger.info(
-                        "[moe-pack-allrank] step=%s und_img_per_rank=%s "
-                        "zero_img_ranks=%s/%s "
-                        "und_valid_tokens: sum=%s min=%s max=%s "
-                        "und_total_tokens: sum=%s",
-                        batch_count,
-                        _imgs,
-                        _zero_img_ranks, _world,
-                        sum(_valids), min(_valids), max(_valids),
-                        sum(_totals),
-                    )
-
             flex_mask_for_llm = flex_mask
             padlen_for_llm = padlen
             if self.tp_mode == "isp" and self.parallel_tensor_size > 1:
