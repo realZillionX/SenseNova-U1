@@ -121,7 +121,8 @@ checkpoint boundaries. Its `training_seconds` clock excludes validation and
 checkpoint I/O. The default writer retains the ordinary ten-save contract;
 an experimental writer policy must be declared in that experiment.
 `tools.sft_validation.SampleValidation` evaluates fixed held-out sample IDs
-with fixed image-noise seeds, preserves training RNGs and mode, and performs
+with fixed image-noise seeds, preserves training RNGs and mode, restores all
+FSDP parameter shards after no-grad inference, and performs
 no backward pass. It reports per-sample text and image objective losses,
 not generation quality or verifier correctness. Batch-size decisions require
 validation progress versus sample exposure and time, not throughput alone.

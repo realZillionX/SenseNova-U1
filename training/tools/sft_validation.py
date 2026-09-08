@@ -22,9 +22,18 @@ def validation_state(model, devices):
             model.eval()
             yield
     finally:
+        # SFT keeps the root unsharded after forward for its backward pass.
+        # A no-grad validation has no backward to release that temporary view.
+        from torch.distributed.fsdp import FSDPModule
+        from torch.distributed.tensor import DTensor
+        for module in reversed(tuple(model.modules())):
+            if isinstance(module, FSDPModule):
+                module.reshard()
         model.train(training)
         random.setstate(python_state)
         np.random.set_state(numpy_state)
+        if isinstance(model, FSDPModule) and any(not isinstance(p, DTensor) for p in model.parameters()):
+            raise RuntimeError('validation left an unsharded model parameter')
 
 
 def aggregate_samples(records, expected_ids, seeds):

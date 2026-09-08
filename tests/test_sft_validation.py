@@ -1,5 +1,6 @@
 import random
 import unittest
+from unittest.mock import patch
 import numpy as np
 import torch
 
@@ -7,6 +8,22 @@ from tools.sft_validation import aggregate_samples, validation_state
 
 
 class SftValidationTest(unittest.TestCase):
+    def test_validation_releases_inference_only_fsdp_views(self):
+        calls = []
+        class Sharded(torch.nn.Module):
+            def __init__(self, name):
+                torch.nn.Module.__init__(self)
+                self.name = name
+            def reshard(self):
+                calls.append(self.name)
+        model = Sharded('root')
+        model.child = Sharded('child')
+        with patch('torch.distributed.fsdp.FSDPModule', Sharded):
+            with validation_state(model, []):
+                self.assertFalse(model.training)
+        self.assertEqual(calls, ['child', 'root'])
+        self.assertTrue(model.training)
+
     def test_validation_restores_rng_mode_and_keeps_parameters_and_gradients(self):
         model = torch.nn.Linear(3, 2).train()
         model.weight.grad = torch.ones_like(model.weight)
