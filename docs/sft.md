@@ -115,6 +115,17 @@ wall times, loss, gradient norms and peak HBM. `SFT_BENCHMARK_ONLY=true`
 suppresses DCP/HF publication, requires a report, and forbids HF output; it is
 never a formal training run.
 
+Research adapters can pass `validation_callback` and `checkpoint_writer` to
+the trainer's `main`. Validation runs before training and at completed sample
+checkpoint boundaries. Its `training_seconds` clock excludes validation and
+checkpoint I/O. The default writer retains the ordinary ten-save contract;
+an experimental writer policy must be declared in that experiment.
+`tools.sft_validation.SampleValidation` evaluates fixed held-out sample IDs
+with fixed image-noise seeds, preserves training RNGs and mode, and performs
+no backward pass. It reports per-sample text and image objective losses,
+not generation quality or verifier correctness. Batch-size decisions require
+validation progress versus sample exposure and time, not throughput alone.
+
 GPU visibility masks are node-local allocation identities. Every trainer rank
 checks its visible device count and H200 type and, when sample auditing is
 enabled, records its hostname, GPU UUID and memory beside the sample journal.

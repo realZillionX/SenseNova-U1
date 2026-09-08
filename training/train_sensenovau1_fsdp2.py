@@ -463,7 +463,7 @@ def _forge_revision() -> str:
     ).strip()
 
 
-def main(args: Any) -> None:
+def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_training_checkpoint) -> None:
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     if os.environ.get("SFT_RESUME_CHECKPOINT"):
@@ -535,6 +535,9 @@ def main(args: Any) -> None:
     dist.barrier()
 
     initial_moments = _parameter_moments(model) if report_path is not None else None
+    training_seconds = 0.0
+    if validation_callback is not None:
+        validation_callback(model, criterion, progress, training_seconds)
     torch.cuda.reset_peak_memory_stats()
     records: list[dict[str, Any]] = []
     checkpoint_root = Path(
@@ -649,6 +652,7 @@ def main(args: Any) -> None:
             optimizer.step()
             torch.cuda.synchronize()
             seconds = _distributed_max(time.perf_counter() - update_start)
+            training_seconds += seconds
             loss_metrics = torch.tensor(
                 [loss_value, main_loss_value, auxiliary_loss_value],
                 device=torch.cuda.current_device(),
@@ -702,12 +706,14 @@ def main(args: Any) -> None:
                     flush=True,
                 )
             if not benchmark_only and checkpoint_target is not None:
-                _save_training_checkpoint(
+                checkpoint_writer(
                     root=checkpoint_root,
                     progress=progress,
                     checkpoint_target_samples=checkpoint_target,
                     model=model,
                 )
+                if validation_callback is not None:
+                    validation_callback(model, criterion, progress, training_seconds)
 
     peak_memory = _distributed_max(float(torch.cuda.max_memory_allocated()))
     final_moments = _parameter_moments(model) if report_path is not None else None
