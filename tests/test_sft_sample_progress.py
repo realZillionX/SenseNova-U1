@@ -24,7 +24,9 @@ class SampleProgressTest(unittest.TestCase):
                 progress = SampleProgress(**asdict(progress))
             if progress.done:
                 break
-        self.assertEqual(targets, [11, 21, 31, 42, 52, 62, 73, 83, 93, 103, 114, 124, 134, 145, 155, 165, 176, 186, 196, 206])
+        self.assertEqual(
+            targets, [11, 21, 31, 42, 52, 62, 73, 83, 93, 103, 114, 124, 134, 145, 155, 165, 176, 186, 196, 206]
+        )
 
     def test_large_batch_cannot_fabricate_checkpoint_points(self):
         progress = SampleProgress(100, 100)
@@ -33,7 +35,10 @@ class SampleProgressTest(unittest.TestCase):
         self.assertEqual(progress.consumed_samples, 0)
 
     def test_formal_dataset_and_partial_final_epoch(self):
-        self.assertEqual(SampleProgress(1185000, 1185000).targets, (118500, 237000, 355500, 474000, 592500, 711000, 829500, 948000, 1066500, 1185000))
+        self.assertEqual(
+            SampleProgress(1185000, 1185000).targets,
+            (118500, 237000, 355500, 474000, 592500, 711000, 829500, 948000, 1066500, 1185000),
+        )
         self.assertEqual(SampleProgress(100, 60).targets, (10, 20, 30, 40, 50, 60))
         self.assertEqual(SampleProgress(100, 65).targets, (10, 20, 30, 40, 50, 60, 65))
 

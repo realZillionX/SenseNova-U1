@@ -33,7 +33,6 @@ from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
 from sensenovalm.train.fsdp import initialize_unit_mtp_communicators, training_profile
 from sensenovalm.utils.common import move_to_device, parse_args
 from sensenovavl.data import build_train_loader_with_data_type
-from sensenovavl.train.pipeline import get_model
 from sensenovavl.utils.utils import check_image_fn, init_pil
 from torch import Tensor, nn
 
@@ -490,6 +489,8 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
         raise ValueError(f"SFT accepts sample counts only; remove obsolete settings: {sorted(obsolete)}")
     progress = SampleProgress(int(gpc.config.data.samples_per_epoch), int(gpc.config.data.max_samples))
     train_dl, _dataset_types = build_train_loader_with_data_type()
+    from sensenovavl.train.pipeline import get_model
+
     model = get_model(gpc.config.model, gpc.config.data).to(torch.cuda.current_device())
     # The checkpoint-specific model constructs parallel-aware linear modules
     # even when their process group has size one. Register the resulting no-op

@@ -2,43 +2,21 @@
 
 from __future__ import annotations
 
-import ast
 import json
-import os
 import tempfile
 import unittest
-from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+import train_sensenovau1_fsdp2 as sft
+from sensenovalm.data.sample_progress import SampleProgress
 from torch.distributed.checkpoint import FileSystemReader
 
 from sensenova_u1.rl import trainer
 from sensenova_u1.rl.budget import BudgetLedger
 from sensenova_u1.rl.full_parameter import DistributedContext, load_dcp
-from sensenovalm.data.sample_progress import SampleProgress
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def sft_writer():
-    # The runner's top-level imports require H200 kernels; execute its actual
-    # serialization functions without importing the model/loader runtime.
-    path = ROOT / "training/train_sensenovau1_fsdp2.py"
-    tree = ast.parse(path.read_text())
-    selected = [
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name in {"_dcp_state", "_save_training_checkpoint"}
-    ]
-    namespace = {
-        "torch": torch, "dist": torch.distributed, "json": json, "os": os,
-        "asdict": asdict, "Path": Path,
-    }
-    exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), "exec"), namespace)
-    return namespace["_save_training_checkpoint"]
 
 
 class ModelCheckpointTest(unittest.TestCase):
@@ -57,7 +35,6 @@ class ModelCheckpointTest(unittest.TestCase):
             torch.testing.assert_close(value, expected[name], rtol=0, atol=0)
 
     def test_sft_writes_only_model_and_sample_metadata(self):
-        writer = sft_writer()
         model = torch.nn.Linear(3, 2)
         progress = SampleProgress(100, 100)
         with (
@@ -65,17 +42,41 @@ class ModelCheckpointTest(unittest.TestCase):
             patch.object(torch.distributed, "get_rank", return_value=0),
             patch.object(torch.distributed, "get_world_size", return_value=1),
             patch.object(torch.distributed, "barrier"),
+            patch.object(sft, "_distributed_max", side_effect=lambda value: value),
+            patch.object(
+                sft,
+                "gpc",
+                SimpleNamespace(
+                    config=SimpleNamespace(
+                        data=SimpleNamespace(batch_samples=10),
+                        model=SimpleNamespace(
+                            vit_cfg=SimpleNamespace(num_hidden_layers=1), num_layers=1, moe_kwargs={}
+                        ),
+                    )
+                ),
+            ),
         ):
             for count in range(10, 101, 10):
                 target = progress.advance(10)
-                path = writer(
-                    root=Path(folder), progress=progress,
-                    checkpoint_target_samples=target, model=model,
+                path = sft._save_training_checkpoint(
+                    root=Path(folder),
+                    progress=progress,
+                    checkpoint_target_samples=target,
+                    model=model,
                 )
                 self.assertEqual(set(p.name for p in path.iterdir()), {"dcp", "checkpoint.json"})
                 payload = json.loads((path / "checkpoint.json").read_text())
                 self.assertIs(payload["model_only"], True)
                 self.assertEqual(payload["consumed_samples"], count)
+                self.assertEqual(payload["batch_samples"], 10)
+                self.assertEqual(
+                    payload["conversion_config"],
+                    {
+                        "vit_cfg": {"num_hidden_layers": 1},
+                        "num_layers": 1,
+                        "moe_kwargs": {"first_k_dense_replace": 0, "num_experts": 1, "gen_num_experts": 1},
+                    },
+                )
                 self.assert_model_roundtrip(path, model)
             self.assertEqual(len(list(Path(folder).iterdir())), 10)
 
@@ -89,8 +90,12 @@ class ModelCheckpointTest(unittest.TestCase):
         ):
             plan = SimpleNamespace(run_dir=Path(folder), digest="producer-plan")
             path = trainer.save_checkpoint(
-                plan=plan, step=50, model=model, ledger=BudgetLedger(),
-                policy_version="policy-50", context=context,
+                plan=plan,
+                step=50,
+                model=model,
+                ledger=BudgetLedger(),
+                policy_version="policy-50",
+                context=context,
             )
             self.assertEqual(set(p.name for p in path.iterdir()), {"dcp", "trainer_state.json", "COMMIT"})
             saved = trainer.latest_checkpoint(plan, context=context)

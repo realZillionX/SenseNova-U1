@@ -3,9 +3,9 @@ from __future__ import annotations
 import unittest
 
 import torch
-from sensenovavl.data.dataset_interleaved_iterable import u15_packed_collate_fn
 from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
 from sensenovalm.model.losses.sample_mean import sample_mean_sum
+from sensenovavl.data.dataset_interleaved_iterable import u15_packed_collate_fn
 
 
 class SampleMeanTest(unittest.TestCase):
@@ -16,13 +16,20 @@ class SampleMeanTest(unittest.TestCase):
             "input_ids": torch.tensor([3, 4, 5, 3, 6, 7, 8, 9]),
             "labels": torch.tensor([-100, 4, 5, -100, 6, 7, 8, 9]),
             "type_ids": torch.zeros(8, dtype=torch.long),
-            "cu_seqlens": [0, 3, 8], "indexes": [0, 1, 2, 0, 1, 2, 3, 4],
-            "worker_state_key": "worker0", "worker_state_dict": {},
+            "cu_seqlens": [0, 3, 8],
+            "indexes": [0, 1, 2, 0, 1, 2, 3, 4],
+            "worker_state_key": "worker0",
+            "worker_state_dict": {},
         }
         data, labels = u15_packed_collate_fn(
-            [feature], max_item_length=16, img_start_token_id=100,
-            img_token_id=101, img_end_token_id=102, ignored_token_ids=[],
-            micro_num=2, len2weight=lambda count: 1 / count if count else 0,
+            [feature],
+            max_item_length=16,
+            img_start_token_id=100,
+            img_token_id=101,
+            img_end_token_id=102,
+            ignored_token_ids=[],
+            micro_num=2,
+            len2weight=lambda count: 1 / count if count else 0,
         )
         self.assertEqual(data["num_samples"], 2)
         self.assertEqual(data["sample_ids"], ["first", "second"])
@@ -52,7 +59,9 @@ class SampleMeanTest(unittest.TestCase):
                     labels = torch.cat([torch.full((lengths[i],), i % 2) for i in batch])
                     weights = [1 / lengths[i] for i in batch for _ in range(lengths[i])]
                     rank_loss = rank_loss + criterion(
-                        packed, labels, loss_weight=weights,
+                        packed,
+                        labels,
+                        loss_weight=weights,
                         sample_denominator=3 / len(partitions),
                     )
                 rank_losses.append(rank_loss)

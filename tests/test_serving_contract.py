@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -88,9 +88,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("FORGE_SERVING_REPLICA_ID_OFFSET", launcher)
         self.assertIn("FORGE_SERVING_STAGGER_SECONDS", launcher)
         self.assertIn("torch.cuda.device_count()", launcher)
-        self.assertIn(
-            'device_pair="${VISIBLE_GPUS[$((GPUS_PER_REPLICA * local_index))]}"', launcher
-        )
+        self.assertIn('device_pair="${VISIBLE_GPUS[$((GPUS_PER_REPLICA * local_index))]}"', launcher)
         self.assertIn('MOVA_RL_TRACE_DIR="$TRACE_ROOT/replica-$replica_id"', launcher)
         self.assertIn("MOVA_RL_LOCAL_REPLICA_ID=$local_index", launcher)
         self.assertIn('--port "$port"', launcher)
@@ -143,7 +141,9 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("libibverbs1 ibverbs-providers librdmacm1 rdma-core", dockerfile)
 
     def test_modality_launch_allocates_every_gpu_without_unused_image_workers(self):
-        version = subprocess.check_output(["bash", "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], text=True).strip()
+        version = subprocess.check_output(
+            ["bash", "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], text=True
+        ).strip()
         if tuple(map(int, version.split("."))) < (4, 3):
             self.skipTest("production launcher requires Bash >= 4.3; execute on Linux")
         for modality, width in [("ti2t", 1), ("ti2ti", 2)]:
@@ -151,31 +151,49 @@ class ServingContractTest(unittest.TestCase):
                 root = Path(directory)
                 stub = root / "python"
                 log = root / "calls.jsonl"
-                stub.write_text("#!" + sys.executable + "\n" + "import os,sys,json,time\n"
+                stub.write_text(
+                    "#!" + sys.executable + "\n" + "import os,sys,json,time\n"
                     "with open(os.environ['CALL_LOG'],'a') as f: f.write(json.dumps({'args':sys.argv[1:],'gpu':os.environ['CUDA_VISIBLE_DEVICES']})+'\\n')\n"
-                    "if '-m' in sys.argv: time.sleep(1)\n")
+                    "if '-m' in sys.argv: time.sleep(1)\n"
+                )
                 stub.chmod(0o755)
-                env = dict(os.environ, PYTHON_BIN=str(stub), MODEL_ROOT=str(root),
-                           SOURCE_ROOT=str(ROOT), FORGE_LIGHTLLM_ROOT=str(ROOT / 'serving/third_party/LightLLM'),
-                           CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6,7', FORGE_SERVING_MODALITY=modality,
-                           CALL_LOG=str(log), PREFLIGHT_OUTPUT_DIR=str(root))
-                for key in ('FORGE_SERVING_REPLICAS','FORGE_SERVING_REPLICA_ID_OFFSET','FORGE_SERVING_STAGGER_SECONDS'):
+                env = dict(
+                    os.environ,
+                    PYTHON_BIN=str(stub),
+                    MODEL_ROOT=str(root),
+                    SOURCE_ROOT=str(ROOT),
+                    FORGE_LIGHTLLM_ROOT=str(ROOT / "serving/third_party/LightLLM"),
+                    CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7",
+                    FORGE_SERVING_MODALITY=modality,
+                    CALL_LOG=str(log),
+                    PREFLIGHT_OUTPUT_DIR=str(root),
+                )
+                for key in (
+                    "FORGE_SERVING_REPLICAS",
+                    "FORGE_SERVING_REPLICA_ID_OFFSET",
+                    "FORGE_SERVING_STAGGER_SECONDS",
+                ):
                     env.pop(key, None)
-                result = subprocess.run(['bash', str(ROOT/'scripts/rl_engine/launch_server.sh')],
-                                        env=env, capture_output=True, text=True, timeout=20)
+                result = subprocess.run(
+                    ["bash", str(ROOT / "scripts/rl_engine/launch_server.sh")],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
-                servers = [c for c in calls if '-m' in c['args']]
+                servers = [c for c in calls if "-m" in c["args"]]
                 self.assertEqual(len(servers), 8 // width)
-                self.assertEqual(sorted(int(g) for c in servers for g in c['gpu'].split(',')), list(range(8)))
+                self.assertEqual(sorted(int(g) for c in servers for g in c["gpu"].split(",")), list(range(8)))
                 for c in servers:
-                    self.assertEqual(len(c['gpu'].split(',')), width)
-                    self.assertEqual('--enable_multimodal_x2i' in c['args'], modality=='ti2ti')
-                    self.assertEqual(c['args'][c['args'].index('--sensenova_modality')+1], modality)
-                    self.assertEqual(c['args'][c['args'].index('--max_req_total_len')+1], '16384')
+                    self.assertEqual(len(c["gpu"].split(",")), width)
+                    self.assertEqual("--enable_multimodal_x2i" in c["args"], modality == "ti2ti")
+                    self.assertEqual(c["args"][c["args"].index("--sensenova_modality") + 1], modality)
+                    self.assertEqual(c["args"][c["args"].index("--max_req_total_len") + 1], "16384")
                 for c in calls:
-                    if '--expected-gpus' in c['args']:
-                        self.assertEqual(c['args'][c['args'].index('--expected-gpus')+1], str(width))
+                    if "--expected-gpus" in c["args"]:
+                        self.assertEqual(c["args"][c["args"].index("--expected-gpus") + 1], str(width))
 
 
 if __name__ == "__main__":

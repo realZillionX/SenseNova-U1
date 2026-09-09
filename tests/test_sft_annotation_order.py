@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sensenovalm.data.annotation_order import annotation_offsets, indexed_lines, shard_order
-from sensenovavl.data.multimodal_dataset import LazySupervisedDataset
 from sensenovavl.data.dataset_interleaved_iterable import PackedDataset
+from sensenovavl.data.multimodal_dataset import LazySupervisedDataset
 
 
 class AnnotationOrderTest(unittest.TestCase):
@@ -17,8 +17,10 @@ class AnnotationOrderTest(unittest.TestCase):
             orders = []
             for modality in ("ti2t", "ti2ti"):
                 path = Path(folder) / f"{modality}.jsonl"
-                path.write_text("\n".join(json.dumps({"sample_id": i, "response": modality * (i + 1)})
-                                           for i in range(101)), encoding="utf-8")
+                path.write_text(
+                    "\n".join(json.dumps({"sample_id": i, "response": modality * (i + 1)}) for i in range(101)),
+                    encoding="utf-8",
+                )
                 offsets = annotation_offsets(path)
                 shards = []
                 for shard in range(8):

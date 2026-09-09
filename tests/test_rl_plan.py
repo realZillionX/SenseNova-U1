@@ -52,9 +52,13 @@ class RlPlanTest(unittest.TestCase):
 
     def test_modality_defaults_are_resolved_but_explicit_ablation_survives(self) -> None:
         common = dict(
-            run_dir=Path("run"), prompts=Path("prompts"), policy_init=Path("model"),
-            reward_command=("reward",), reward_dimension_names=("correct",),
-            reward_weights=(1.0,), max_steps=2,
+            run_dir=Path("run"),
+            prompts=Path("prompts"),
+            policy_init=Path("model"),
+            reward_command=("reward",),
+            reward_dimension_names=("correct",),
+            reward_weights=(1.0,),
+            max_steps=2,
         )
         for modality, image, mse in (("ti2t", 0.0, 0.0), ("ti2ti", 1.0, 0.01)):
             plan = RlPlan(**common, modality=modality)
@@ -62,8 +66,9 @@ class RlPlanTest(unittest.TestCase):
             self.assertEqual((restored.image_objective_weight, restored.velocity_mse_weight), (image, mse))
             self.assertEqual(restored.text_kl_beta, 0.04)
             self.assertTrue(restored.activation_checkpointing)
-        ablation = RlPlan(**common, modality="ti2ti", text_kl_beta=0.0,
-                          velocity_mse_weight=0.0, activation_checkpointing=False)
+        ablation = RlPlan(
+            **common, modality="ti2ti", text_kl_beta=0.0, velocity_mse_weight=0.0, activation_checkpointing=False
+        )
         restored = RlPlan.from_dict(ablation.to_dict())
         self.assertEqual((restored.text_kl_beta, restored.velocity_mse_weight), (0.0, 0.0))
         self.assertFalse(restored.activation_checkpointing)
