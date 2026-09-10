@@ -48,6 +48,7 @@ from .objective import (
     compute_uni_gdpo_loss,
 )
 from .plan import RlPlan
+from .sampling import prompt_batch_indices
 from .policy_runtime import (
     ImageEvent,
     U15Policy,
@@ -274,14 +275,12 @@ class SenseNovaRlvrRows(Sequence[PromptRow]):
 
 
 def scheduled_prompt_batch(
-    batch_index: int, rows: Sequence[PromptRow], *, prompts_per_batch: int
+    batch_index: int, rows: Sequence[PromptRow], *, prompts_per_batch: int, seed: int
 ) -> tuple[PromptRow, ...]:
-    if type(batch_index) is not int or batch_index < 0:
-        raise ValueError("batch_index must be a non-negative integer")
-    if not rows or prompts_per_batch < 2:
-        raise ValueError("GDPO batches require rows and at least two prompts")
-    start = batch_index * prompts_per_batch
-    return tuple(rows[(start + offset) % len(rows)] for offset in range(prompts_per_batch))
+    indices = prompt_batch_indices(
+        batch_index, count=len(rows), prompts_per_batch=prompts_per_batch, seed=seed
+    )
+    return tuple(rows[index] for index in indices)
 
 
 def _combine_rewards(batches: Sequence[RewardBatch]) -> RewardBatch:
@@ -1616,7 +1615,9 @@ def run_training_loop(
                 results = execute_on_policy_batch(
                     batch_index=batch_index,
                     plan=plan,
-                    rows=scheduled_prompt_batch(batch_index, rows, prompts_per_batch=plan.prompts_per_batch),
+                    rows=scheduled_prompt_batch(
+                        batch_index, rows, prompts_per_batch=plan.prompts_per_batch, seed=plan.seed
+                    ),
                     policy=policy,
                     optimizer=optimizer,
                     generator=generator,
@@ -1712,6 +1713,7 @@ def _run_plan(plan: RlPlan, context: DistributedContext) -> None:
     rows = SenseNovaRlvrRows(plan.prompts)
     if any(row.modality != plan.modality for row in rows):
         raise ValueError("RL prompt asset crossed independent arms")
+    prompt_batch_indices(0, count=len(rows), prompts_per_batch=plan.prompts_per_batch, seed=plan.seed)
     _seed_process(plan.seed)
     policy = U15PolicyRuntime.load(plan, device=context.device)
     optimizer = torch.optim.AdamW(

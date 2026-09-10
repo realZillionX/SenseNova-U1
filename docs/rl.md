@@ -24,6 +24,14 @@ Each JSONL row uses schema `sensenova.u15.forge.prompt.v1`:
 
 Relative media paths resolve against the prompt file.
 
+All prompt rows form one pool. Each exposure epoch globally shuffles row
+indices with `random.Random(plan.seed + epoch)`, then takes full prompt batches
+without replacement. The incomplete tail is dropped and the next epoch
+reshuffles the entire pool. At least one full batch of distinct prompts is
+required. Paired arms with the same ordered sample IDs, seed and batch size
+consume the same sample sequence regardless of modality, rank or rollout RNG.
+The prompt file remains in canonical order; shuffling only changes consumption.
+
 ## Reward provider
 
 `reward_command` starts one persistent downstream process. Forge writes one
