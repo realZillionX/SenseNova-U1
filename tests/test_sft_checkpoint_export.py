@@ -13,7 +13,7 @@ from tools.export_sft_checkpoint import export_checkpoint, latest_checkpoint
 
 
 class CheckpointExportTest(unittest.TestCase):
-    def checkpoint(self, root, count=301):
+    def checkpoint(self, root, count=251):
         path = root / f"samples-{count:012d}"
         path.mkdir()
         weights = {"weight": torch.arange(12, dtype=torch.float32).reshape(3, 4), "bias": torch.tensor([1.0, 2.0, 3.0])}
@@ -26,7 +26,7 @@ class CheckpointExportTest(unittest.TestCase):
             consumed_samples=count,
             optimizer_updates=10,
             last_update_samples=31,
-            checkpoint_target_samples=(count // 100) * 100,
+            checkpoint_target_samples=(count // 250) * 250,
             world_size=8,
             model_only=True,
             conversion_config={"vit_cfg": {"num_hidden_layers": 1}, "num_layers": 1},
@@ -52,7 +52,7 @@ class CheckpointExportTest(unittest.TestCase):
             self.assertEqual(latest_checkpoint(root), checkpoint)
             with patch("tools.export_sft_checkpoint.convert", side_effect=self.convert):
                 result = export_checkpoint(checkpoint, root / "hf", root / "base")
-            self.assertEqual(result["consumed_samples"], 301)
+            self.assertEqual(result["consumed_samples"], 251)
             self.assertEqual(result["max_samples"], 1000)
             actual = load_file(root / "hf/model.safetensors")
             for key in expected:

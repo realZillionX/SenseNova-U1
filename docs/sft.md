@@ -77,10 +77,10 @@ prefetch and padding copies do not advance it. An exposure epoch is
 Warmup, constant/cosine learning-rate progress, stopping, and logs use samples.
 Optimizer update counts exist only for execution and checkpoint metadata.
 
-Every full exposure epoch saves ten checkpoints at the first completed update
-reaching each 10% boundary through 100% of its raw-sample count. Integer targets
+Every full exposure epoch saves four checkpoints at the first completed update
+reaching each 25% boundary through 100% of its raw-sample count. Integer targets
 round upward independently, preventing cadence drift when the row count is not
-divisible by ten. The epoch-end checkpoint is the tenth save, not an eleventh.
+divisible by four. The epoch-end checkpoint is the fourth save, not a fifth.
 A partial final epoch also saves its final sample boundary. Metadata records
 both the target and actual sample count; an update can overshoot a target by
 less than its raw batch size. Crossing two targets in one update is rejected

@@ -13,7 +13,7 @@ SampleProgress = progress_module.SampleProgress
 
 
 class SampleProgressTest(unittest.TestCase):
-    def test_packing_metadata_preserves_ten_targets_per_epoch(self):
+    def test_packing_metadata_preserves_four_targets_per_epoch(self):
         progress = SampleProgress(103, 206)
         targets = []
         for batch_samples in [3, 7, 2, 6, 9] * 10:
@@ -25,7 +25,7 @@ class SampleProgressTest(unittest.TestCase):
             if progress.done:
                 break
         self.assertEqual(
-            targets, [11, 21, 31, 42, 52, 62, 73, 83, 93, 103, 114, 124, 134, 145, 155, 165, 176, 186, 196, 206]
+            targets, [26, 52, 78, 103, 129, 155, 181, 206]
         )
 
     def test_large_batch_cannot_fabricate_checkpoint_points(self):
@@ -36,11 +36,11 @@ class SampleProgressTest(unittest.TestCase):
 
     def test_formal_dataset_and_partial_final_epoch(self):
         self.assertEqual(
-            SampleProgress(1185000, 1185000).targets,
-            (118500, 237000, 355500, 474000, 592500, 711000, 829500, 948000, 1066500, 1185000),
+            SampleProgress(233000, 233000).targets,
+            (58250, 116500, 174750, 233000),
         )
-        self.assertEqual(SampleProgress(100, 60).targets, (10, 20, 30, 40, 50, 60))
-        self.assertEqual(SampleProgress(100, 65).targets, (10, 20, 30, 40, 50, 60, 65))
+        self.assertEqual(SampleProgress(100, 60).targets, (25, 50, 60))
+        self.assertEqual(SampleProgress(100, 65).targets, (25, 50, 65))
 
 
 if __name__ == "__main__":

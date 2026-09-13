@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import math
 
-CHECKPOINTS_PER_EPOCH = 10
+CHECKPOINTS_PER_EPOCH = 4
 
 
 @dataclass
