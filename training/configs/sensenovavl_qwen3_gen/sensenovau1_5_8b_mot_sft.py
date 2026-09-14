@@ -199,6 +199,7 @@ data = dict(
     micro_bsz=1,
     pack_sample_into_one=False,
     max_samples=max_samples,
+    start_samples=int(os.environ.get("start_samples", "0")),
     samples_per_epoch=samples_per_epoch,
     skip_batches="",
     min_length=50,

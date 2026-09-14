@@ -173,7 +173,7 @@ def get_multimodal_streaming_train_loader_items(data_cfg):   # NOTE:
         max_samples=int(data_cfg.max_samples), seed=int(data_cfg.get("seed", 42)),
         rank=gpc.get_local_rank(ParallelMode.DATA), world_size=gpc.get_world_size(ParallelMode.DATA),
         max_tokens=data_cfg.max_packed_tokens, max_images=data_cfg.num_images_expected,
-        collate=packed_collate,
+        collate=packed_collate, start_samples=int(data_cfg.get("start_samples", 0)),
     )
     if train_ds.rows != data_cfg.samples_per_epoch:
         raise ValueError("SFT source row count differs from samples_per_epoch")

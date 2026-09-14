@@ -28,6 +28,7 @@ import torch.distributed as dist
 from sensenovalm.core.context import global_context as gpc
 from sensenovalm.data.utils import packed_data_normalizer
 from sensenovalm.data.sample_progress import SampleProgress
+from tools.sft_restart import checkpoint_progress, load_model_checkpoint, load_recovery, save_recovery
 from sensenovalm.initialize.launch import initialize_distributed_env
 from sensenovalm.model.losses.ce_loss import FlashGPTLMLoss
 from sensenovalm.train.fsdp import initialize_unit_mtp_communicators, training_profile
@@ -312,6 +313,10 @@ def _save_training_checkpoint(
     staging = root / f".{name}.staging"
     if rank == 0:
         root.mkdir(parents=True, exist_ok=True)
+        parameter_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+        needed = parameter_bytes * (3 if _env_bool("SFT_SAVE_RECOVERY", False) else 1) + 16 * 1024**3
+        if shutil.disk_usage(root).free < needed:
+            raise OSError(f"SFT checkpoint needs {needed} bytes of free model/recovery headroom")
         if target.exists() or staging.exists():
             raise FileExistsError(f"refusing to overwrite SFT checkpoint {name}")
         staging.mkdir()
@@ -326,6 +331,9 @@ def _save_training_checkpoint(
             "checkpoint_target_samples": checkpoint_target_samples,
             "world_size": dist.get_world_size(),
             "model_only": True,
+            "restart": {"initial_checkpoint": os.environ.get("SFT_INITIAL_CHECKPOINT"),
+                        "initial_samples": int(os.environ.get("start_samples", "0")),
+                        "optimizer_reinitialized": bool(os.environ.get("SFT_INITIAL_CHECKPOINT")) and not bool(os.environ.get("SFT_INITIAL_RECOVERY"))},
             "batch_samples": int(gpc.config.data.batch_samples),
             "conversion_config": {
                 "vit_cfg": {"num_hidden_layers": int(gpc.config.model.vit_cfg.num_hidden_layers)},
@@ -488,6 +496,22 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
     if obsolete:
         raise ValueError(f"SFT accepts sample counts only; remove obsolete settings: {sorted(obsolete)}")
     progress = SampleProgress(int(gpc.config.data.samples_per_epoch), int(gpc.config.data.max_samples))
+    initial_checkpoint = os.environ.get("SFT_INITIAL_CHECKPOINT")
+    initial_recovery = os.environ.get("SFT_INITIAL_RECOVERY")
+    start_samples = int(gpc.config.data.get("start_samples", 0))
+    if bool(start_samples) != bool(initial_checkpoint) or (initial_recovery and not initial_checkpoint):
+        raise ValueError("SFT restart checkpoint and sample cursor must be declared together")
+    if initial_checkpoint:
+        previous, metadata = checkpoint_progress(Path(initial_checkpoint))
+        if previous.samples_per_epoch != progress.samples_per_epoch or previous.consumed_samples != start_samples:
+            raise ValueError("SFT restart checkpoint disagrees with its dataset/sample cursor")
+        if not start_samples < progress.max_samples:
+            raise ValueError("SFT restart must leave a positive training budget")
+        if metadata.get("batch_samples") != int(gpc.config.data.batch_samples):
+            raise ValueError("SFT restart must preserve the original sample batch")
+        progress.consumed_samples = previous.consumed_samples
+        progress.optimizer_updates = previous.optimizer_updates
+        progress.last_update_samples = previous.last_update_samples
     train_dl, _dataset_types = build_train_loader_with_data_type()
     from sensenovavl.train.pipeline import get_model
 
@@ -497,6 +521,8 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
     # MTP communicators before FSDP2 takes ownership of parameter sharding.
     initialize_unit_mtp_communicators(model)
     model, wrapped_modules = _shard_model(model)
+    if initial_checkpoint:
+        load_model_checkpoint(model, Path(initial_checkpoint))
     model.train()
 
     parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
@@ -508,6 +534,13 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
         weight_decay=float(gpc.config.adam.weight_decay),
         fused=_env_bool("FSDP2_FUSED_ADAMW", True),
     )
+    if initial_recovery:
+        load_recovery(model=model, optimizer=optimizer, recovery=Path(initial_recovery),
+                      progress=progress, seed=seed, batch_samples=int(gpc.config.data.batch_samples))
+    if initial_checkpoint and rank == 0:
+        print(json.dumps({"component": "sensenova_u15.sft_fsdp2", "event": "restart_loaded",
+                          "checkpoint": initial_checkpoint, "consumed_samples": start_samples,
+                          "optimizer_reinitialized": not bool(initial_recovery)}), flush=True)
     criterion = FlashGPTLMLoss(
         parallel_output=gpc.config.model.parallel_output,
         label_smoothing=gpc.config.loss.label_smoothing,
@@ -524,7 +557,7 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
         raise ValueError("benchmark warmup must leave measured samples")
     warmup_samples = int(gpc.config.lr_scheduler.warmup_samples)
     logging_samples = _env_int("logging_samples", 1, minimum=1)
-    last_logged_samples = 0
+    last_logged_samples = progress.consumed_samples
     batch_samples_target = int(gpc.config.data.batch_samples)
     if batch_samples_target < world_size:
         raise ValueError("batch_samples must provide at least one sample per H200 rank")
@@ -548,7 +581,7 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
         )
     ).expanduser().resolve()
     iterator = iter(train_dl)
-    epoch = 0
+    epoch = progress.consumed_samples // progress.samples_per_epoch
     seen_sample_ids: set[str] = set()
     audit_root = os.environ.get("SFT_SAMPLE_AUDIT_DIR")
     audit_stream = None
@@ -707,12 +740,16 @@ def main(args: Any, *, validation_callback=None, checkpoint_writer=_save_trainin
                     flush=True,
                 )
             if not benchmark_only and checkpoint_target is not None:
-                checkpoint_writer(
+                committed = checkpoint_writer(
                     root=checkpoint_root,
                     progress=progress,
                     checkpoint_target_samples=checkpoint_target,
                     model=model,
                 )
+                if _env_bool("SFT_SAVE_RECOVERY", False):
+                    save_recovery(root=checkpoint_root.parent / "recovery", model=model, optimizer=optimizer,
+                                  progress=progress, model_checkpoint=committed, seed=seed,
+                                  batch_samples=batch_samples_target)
                 if validation_callback is not None:
                     validation_callback(model, criterion, progress, training_seconds)
 

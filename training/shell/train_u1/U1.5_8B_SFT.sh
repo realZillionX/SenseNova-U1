@@ -52,6 +52,7 @@ export logging_samples=${logging_samples:-1}
 # The production H200 profile keeps this conservative recomputation level so
 # native-resolution outliers retain ample headroom.
 export activation_checkpoint_fraction=${activation_checkpoint_fraction:-0.75}
+export SFT_SAVE_RECOVERY=${SFT_SAVE_RECOVERY:-true}
 export SFT_CHECKPOINT_ROOT=${SFT_CHECKPOINT_ROOT:-"${RUN_ROOT:-RUN}/${JOB_NAME:-unset}/checkpoints"}
 if [[ ${SFT_BENCHMARK_ONLY:-false} == true ]]; then
     unset SFT_HF_OUTPUT

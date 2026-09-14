@@ -19,7 +19,8 @@ def estimate_sample_work(line):
 
 class SampleBatchDataset(IterableDataset):
     def __init__(self, *, datasets, batch_samples, max_samples, seed, rank,
-                 world_size, max_tokens, max_images, collate):
+                 world_size, max_tokens, max_images, collate, start_samples=0):
+        self.start_samples = start_samples
         self.datasets = datasets
         self.batch_samples, self.max_samples, self.seed = batch_samples, max_samples, seed
         self.rank, self.world_size = rank, world_size
@@ -96,7 +97,7 @@ class SampleBatchDataset(IterableDataset):
             for batch in sample_batches(rows=self.rows, batch_samples=self.batch_samples,
                                         max_samples=self.max_samples, seed=self.seed,
                                         rank=self.rank, world_size=self.world_size,
-                                        worker_id=worker_id, num_workers=workers):
+                                        worker_id=worker_id, num_workers=workers, start_samples=self.start_samples):
                 assignments = balance_rows(batch.global_rows, [estimate(index) for index in batch.global_rows],
                                            self.world_size)
                 samples = [decode(index) for index in assignments[self.rank]]

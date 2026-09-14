@@ -50,7 +50,7 @@ Required inputs:
 | `VOCAB_FILE`, `TOKENIZER_PATH` | Matching tokenizer directory |
 | `mm_data_path` | U1.5 loader meta JSON |
 | `batch_samples` | Global original examples per optimizer update; explicit, no default |
-| `samples_per_epoch` | Sealed number of raw dataset rows (at least ten) |
+| `samples_per_epoch` | Sealed number of raw dataset rows (at least four) |
 | `max_samples` | Global raw-sample visits; defaults to one epoch |
 | `warmup_samples`, `logging_samples` | Sample-based warmup and logging intervals |
 | `JOB_NAME` | New run namespace |
@@ -89,8 +89,11 @@ before changing weights: reduce the batch or increase the epoch size.
 All committed checkpoints are retained for downstream evaluation. Intermediate
 DCP directories use `samples-<actual count>`; the final DCP uses `final`, with its
 sample count in `checkpoint.json`. Each contains full-model parameter shards
-only. Optimizer, scheduler, EMA and RNG are not serialized; interrupted runs
-are not resumed. Final ordinary policy weights are
+only. Optimizer and RNG state are stored separately when `SFT_SAVE_RECOVERY=true`
+(the public launcher default). The `recovery/latest.json` pointer names one
+committed optimizer/RNG generation paired with its model checkpoint. A new
+generation is committed before the previous optimizer state is removed;
+periodic model checkpoints remain independently available for evaluation. Final ordinary policy weights are
 atomically published as a complete Hugging Face safetensors directory for RL
 and serving. Killing a run does not produce this final publication.
 
@@ -118,7 +121,7 @@ never a formal training run.
 Research adapters can pass `validation_callback` and `checkpoint_writer` to
 the trainer's `main`. Validation runs before training and at completed sample
 checkpoint boundaries. Its `training_seconds` clock excludes validation and
-checkpoint I/O. The default writer retains the ordinary ten-save contract;
+checkpoint I/O. The default writer retains the four-checkpoints-per-epoch contract;
 an experimental writer policy must be declared in that experiment.
 `tools.sft_validation.SampleValidation` evaluates fixed held-out sample IDs
 with fixed image-noise seeds, preserves training RNGs and mode, restores all
@@ -141,3 +144,14 @@ at least one batch of warmup and recording. Traces live under
 `SFT_PROFILE_ROOT` and are diagnostic artifacts. The progress clock advances
 before the profiler selects the next window. Timing reports use the
 nearest-rank definition for P95.
+
+A continuation sets `SFT_INITIAL_CHECKPOINT` to a committed model DCP and
+`start_samples` to its exact consumed-sample count. The loader preserves the
+global seed/epoch permutation and resumes at the next optimizer batch, including
+partial epoch tails. Learning-rate and stop budgets use the cumulative sample
+clock. Model-only continuation recreates AdamW and is explicitly a warm start,
+not an uninterrupted optimizer trajectory. `SFT_INITIAL_RECOVERY` additionally
+restores the paired optimizer and per-rank RNG states, with the same world size,
+seed and sample batch. The adapter must seal the source model, recovery and
+producer lineage; MOSTAR snapshots recovery inputs so rolling retirement cannot
+change a child run initialization.

@@ -13,7 +13,7 @@ class SampleBatch:
 
 
 def sample_batches(*, rows, batch_samples, max_samples, seed, rank=0, world_size=1,
-                   worker_id=0, num_workers=1):
+                   worker_id=0, num_workers=1, start_samples=0):
     """Yield a worker's ordered rank-local share of global sample batches.
 
     Each epoch is a fresh global permutation. Batch membership depends only on
@@ -27,11 +27,16 @@ def sample_batches(*, rows, batch_samples, max_samples, seed, rank=0, world_size
             raise ValueError(f"{name} must be a positive integer")
     if not 0 <= rank < world_size or not 0 <= worker_id < num_workers:
         raise ValueError("sample batch rank/worker is outside its topology")
+    if type(start_samples) is not int or not 0 <= start_samples < max_samples:
+        raise ValueError("start_samples must be inside the declared sample budget")
+    if start_samples % rows % batch_samples:
+        raise ValueError("start_samples must be a completed optimizer batch boundary")
     batch_index = 0
-    for epoch in range((max_samples + rows - 1) // rows):
+    for epoch in range(start_samples // rows, (max_samples + rows - 1) // rows):
         order = np.random.default_rng(np.random.SeedSequence([seed, epoch])).permutation(rows)
         limit = min(rows, max_samples - epoch * rows)
-        for start in range(0, limit, batch_samples):
+        first = start_samples % rows if epoch == start_samples // rows else 0
+        for start in range(first, limit, batch_samples):
             end = min(start + batch_samples, limit)
             if batch_index % num_workers == worker_id:
                 yield SampleBatch(epoch, epoch * rows + start, end - start,
