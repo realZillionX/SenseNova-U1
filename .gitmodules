@@ -3,4 +3,4 @@
 	url = https://github.com/realZillionX/LightLLM.git
 [submodule "serving/third_party/LightX2V"]
 	path = serving/third_party/LightX2V
-	url = https://github.com/expectqwq/LightX2V.git
+	url = https://github.com/realZillionX/LightX2V.git
