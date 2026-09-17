@@ -43,6 +43,8 @@ class ModelCheckpointTest(unittest.TestCase):
             patch.object(torch.distributed, "get_world_size", return_value=1),
             patch.object(torch.distributed, "barrier"),
             patch.object(sft, "_distributed_max", side_effect=lambda value: value),
+            # The roundtrip checks the writer, independently of runner capacity.
+            patch.object(sft.shutil, "disk_usage", return_value=SimpleNamespace(free=1024**4)),
             patch.object(
                 sft,
                 "gpc",
@@ -58,6 +60,8 @@ class ModelCheckpointTest(unittest.TestCase):
         ):
             for count in range(10, 101, 10):
                 target = progress.advance(10)
+                if target is None:
+                    continue
                 path = sft._save_training_checkpoint(
                     root=Path(folder),
                     progress=progress,
@@ -68,6 +72,7 @@ class ModelCheckpointTest(unittest.TestCase):
                 payload = json.loads((path / "checkpoint.json").read_text())
                 self.assertIs(payload["model_only"], True)
                 self.assertEqual(payload["consumed_samples"], count)
+                self.assertEqual(payload["checkpoint_target_samples"], target)
                 self.assertEqual(payload["batch_samples"], 10)
                 self.assertEqual(
                     payload["conversion_config"],
@@ -78,7 +83,26 @@ class ModelCheckpointTest(unittest.TestCase):
                     },
                 )
                 self.assert_model_roundtrip(path, model)
-            self.assertEqual(len(list(Path(folder).iterdir())), 10)
+            self.assertEqual(len(list(Path(folder).iterdir())), len(progress.targets))
+
+    def test_sft_rejects_insufficient_disk_before_writing_checkpoint(self):
+        model = torch.nn.Linear(3, 2)
+        progress = SampleProgress(100, 100)
+        target = progress.advance(30)
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(torch.distributed, "get_rank", return_value=0),
+            patch.object(sft.shutil, "disk_usage", return_value=SimpleNamespace(free=0)),
+            patch("torch.distributed.checkpoint.save") as save,
+            patch.object(torch.distributed, "barrier") as barrier,
+        ):
+            with self.assertRaisesRegex(OSError, "free model/recovery headroom"):
+                sft._save_training_checkpoint(
+                    root=Path(folder), progress=progress, checkpoint_target_samples=target, model=model
+                )
+            save.assert_not_called()
+            barrier.assert_not_called()
+            self.assertEqual(list(Path(folder).iterdir()), [])
 
     def test_rl_writes_only_model_and_budget_metadata(self):
         model = torch.nn.Linear(3, 2)

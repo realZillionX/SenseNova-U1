@@ -29,4 +29,4 @@ jobs:
           uv pip install --no-sources -e . pytest
           .venv/bin/python -c "import torch; assert torch.version.cuda is None"
       - run: .venv/bin/python -m compileall -q src training scripts examples/serving tests
-      - run: .venv/bin/python -m pytest -q tests
+      - run: .venv/bin/python -m pytest -q tests serving/third_party/LightLLM/unit_tests/server/test_trajectory_budget.py

@@ -6,8 +6,11 @@ from sensenova_u1.rl.sampling import prompt_batch_indices
 
 class PromptSamplingTest(unittest.TestCase):
     def epoch(self, epoch, *, count=24, batch=8, seed=42):
-        return [index for step in range(epoch * (count // batch), (epoch + 1) * (count // batch))
-                for index in prompt_batch_indices(step, count=count, prompts_per_batch=batch, seed=seed)]
+        return [
+            index
+            for step in range(epoch * (count // batch), (epoch + 1) * (count // batch))
+            for index in prompt_batch_indices(step, count=count, prompts_per_batch=batch, seed=seed)
+        ]
 
     def test_full_pool_is_shuffled_without_replacement_each_epoch(self):
         first, second = self.epoch(0), self.epoch(1)

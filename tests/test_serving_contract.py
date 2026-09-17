@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import ast
+import hashlib
 import importlib.util
 import json
 import os
@@ -9,8 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "serving" / "configs" / "neopp_u15_forge_512.json"
@@ -18,9 +18,7 @@ CONFIG = ROOT / "serving" / "configs" / "neopp_u15_forge_512.json"
 
 class ServingContractTest(unittest.TestCase):
     def test_cfg_profiles_match_neopp_guidance_semantics(self) -> None:
-        spec = importlib.util.spec_from_file_location(
-            "forge_preflight", ROOT / "scripts/rl_engine/preflight.py"
-        )
+        spec = importlib.util.spec_from_file_location("forge_preflight", ROOT / "scripts/rl_engine/preflight.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         guided = json.loads(CONFIG.read_text())
@@ -42,7 +40,8 @@ class ServingContractTest(unittest.TestCase):
     def test_zero_cfg_executes_only_the_conditional_prediction(self) -> None:
         source = ROOT / "serving/third_party/LightX2V/lightx2v/models/networks/neopp/model.py"
         method = next(
-            node for node in ast.walk(ast.parse(source.read_text()))
+            node
+            for node in ast.walk(ast.parse(source.read_text()))
             if isinstance(node, ast.FunctionDef) and node.name == "_infer_t2i_i2i"
         )
         namespace = {}
@@ -50,13 +49,19 @@ class ServingContractTest(unittest.TestCase):
         for scale, expected_calls, expected in ((0.0, [True], 2.0), (1.0, [True], 2.0), (4.0, [True, False], -7.0)):
             with self.subTest(scale=scale):
                 calls = []
+
                 def infer(inputs, pre_infer_out, conditional):
                     calls.append(conditional)
                     return 2.0 if conditional else 5.0
+
                 model = SimpleNamespace(
                     scheduler=SimpleNamespace(timesteps=[0.5], step_index=0),
-                    cfg_interval=(-1, 2), cfg_scale=scale, seq_p_group=None, config={},
-                    _infer_cond_uncond=infer, cfg_norm_func=lambda value, conditional: value,
+                    cfg_interval=(-1, 2),
+                    cfg_scale=scale,
+                    seq_p_group=None,
+                    config={},
+                    _infer_cond_uncond=infer,
+                    cfg_norm_func=lambda value, conditional: value,
                 )
                 value = namespace["_infer_t2i_i2i"](model, None, SimpleNamespace(image_embeds=object()))
                 self.assertEqual(calls, expected_calls)

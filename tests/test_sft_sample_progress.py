@@ -24,9 +24,7 @@ class SampleProgressTest(unittest.TestCase):
                 progress = SampleProgress(**asdict(progress))
             if progress.done:
                 break
-        self.assertEqual(
-            targets, [26, 52, 78, 103, 129, 155, 181, 206]
-        )
+        self.assertEqual(targets, [26, 52, 78, 103, 129, 155, 181, 206])
 
     def test_large_batch_cannot_fabricate_checkpoint_points(self):
         progress = SampleProgress(100, 100)

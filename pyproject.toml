@@ -57,7 +57,7 @@ dependencies = [
 #   uv pip install /path/to/flash_attn-2.8.3+cu12torch28cxx11abitrue-cp312-cp312-*.whl
 flash = ["flash-attn==2.8.3"]
 dev = [
-    "ruff",
+    "ruff==0.14.4",
     "pytest",
     "pre-commit",
     "tomli>=2; python_version < '3.11'",

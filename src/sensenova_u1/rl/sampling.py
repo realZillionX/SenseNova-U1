@@ -1,7 +1,7 @@
 """Deterministic global prompt permutations, shared by both training arms."""
 
-from functools import lru_cache
 import random
+from functools import lru_cache
 
 
 @lru_cache(maxsize=2)
@@ -11,9 +11,7 @@ def _epoch_order(count: int, seed: int, epoch: int) -> tuple[int, ...]:
     return tuple(order)
 
 
-def prompt_batch_indices(
-    batch_index: int, *, count: int, prompts_per_batch: int, seed: int
-) -> tuple[int, ...]:
+def prompt_batch_indices(batch_index: int, *, count: int, prompts_per_batch: int, seed: int) -> tuple[int, ...]:
     """Draw full batches without replacement; reshuffle the entire pool each epoch.
 
     A remainder smaller than one batch is dropped before the next permutation.
@@ -29,4 +27,4 @@ def prompt_batch_indices(
     batches_per_epoch = count // prompts_per_batch
     epoch, position = divmod(batch_index, batches_per_epoch)
     start = position * prompts_per_batch
-    return _epoch_order(count, seed, epoch)[start:start + prompts_per_batch]
+    return _epoch_order(count, seed, epoch)[start : start + prompts_per_batch]

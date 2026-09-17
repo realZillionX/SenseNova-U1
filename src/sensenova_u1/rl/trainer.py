@@ -48,13 +48,13 @@ from .objective import (
     compute_uni_gdpo_loss,
 )
 from .plan import RlPlan
-from .sampling import prompt_batch_indices
 from .policy_runtime import (
     ImageEvent,
     U15Policy,
     U15PolicyRollout,
     U15PolicyRuntime,
 )
+from .sampling import prompt_batch_indices
 from .types import RewardBatch
 from .weight_publisher import (
     ServingWeightPublisher,
@@ -277,9 +277,7 @@ class SenseNovaRlvrRows(Sequence[PromptRow]):
 def scheduled_prompt_batch(
     batch_index: int, rows: Sequence[PromptRow], *, prompts_per_batch: int, seed: int
 ) -> tuple[PromptRow, ...]:
-    indices = prompt_batch_indices(
-        batch_index, count=len(rows), prompts_per_batch=prompts_per_batch, seed=seed
-    )
+    indices = prompt_batch_indices(batch_index, count=len(rows), prompts_per_batch=prompts_per_batch, seed=seed)
     return tuple(rows[index] for index in indices)
 
 
