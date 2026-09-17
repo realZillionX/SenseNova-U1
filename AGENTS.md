@@ -1,7 +1,7 @@
-# SenseNova-U1.5-8B-MoT Forge contract
+# SenseNova-U1 Forge contract
 
-This repository is an independent, checkpoint-specific framework for
-SenseNova-U1.5-8B-MoT.
+The `realZillionX/SenseNova-U1` fork provides a checkpoint-specific Forge
+framework for SenseNova-U1.5-8B-MoT.
 
 - `training/` owns H200-only full-parameter FSDP2 SFT, model-only DCP checkpoints, rolling optimizer/RNG recovery, and
   atomic Hugging Face safetensors publication.

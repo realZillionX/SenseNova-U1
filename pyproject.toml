@@ -64,8 +64,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/realZillionX/SenseNova-U1.5-8B-MoT-Forge"
-Repository = "https://github.com/realZillionX/SenseNova-U1.5-8B-MoT-Forge"
+Homepage = "https://github.com/realZillionX/SenseNova-U1"
+Repository = "https://github.com/realZillionX/SenseNova-U1"
 
 [project.scripts]
 sensenova-forge = "sensenova_u1.cli:main"

@@ -3,8 +3,8 @@
 Clone Forge and initialize the serving engines:
 
 ```bash
-git clone git@github.com:realZillionX/SenseNova-U1.5-8B-MoT-Forge.git
-cd SenseNova-U1.5-8B-MoT-Forge
+git clone https://github.com/realZillionX/SenseNova-U1.git
+cd SenseNova-U1
 git submodule update --init --recursive \
   serving/third_party/LightLLM serving/third_party/LightX2V
 ```

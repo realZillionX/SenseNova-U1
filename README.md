@@ -1,4 +1,4 @@
-# SenseNova-U1.5-8B-MoT Forge
+# SenseNova-U1 — Forge for SenseNova-U1.5-8B-MoT
 
 <p align="center">
   <a href="https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT"><img src="https://img.shields.io/badge/🤗%20Model-SenseNova--U1.5--8B--MoT-yellow" alt="Model"></a>

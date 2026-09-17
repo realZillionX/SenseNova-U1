@@ -93,7 +93,7 @@ def check_checkpoint_compatibility(config_or_dict: Any) -> None:
         raise RuntimeError(
             f"This checkpoint requires SenseNova-U1.5 Forge >= {required}, "
             f"but the installed version is {__version__}. "
-            "Please upgrade SenseNova-U1.5-8B-MoT-Forge."
+            "Please upgrade the SenseNova-U1 Forge package."
         )
 
 
