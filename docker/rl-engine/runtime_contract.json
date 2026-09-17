@@ -14,7 +14,7 @@
   "sources": {
     "forge": "build-arg:FORGE_COMMIT",
     "lightllm": "7223f408d0b403617c009fe908ebc4ce337cb9d1",
-    "lightx2v": "5f2a9d159db66ef076870b76f4b02c5f81091e14"
+    "lightx2v": "06c8f8eb6e1c9d00fd1c42c2937f725e1e337c06"
   },
   "overlays": {
     "lightllm_sensenova_policy": {

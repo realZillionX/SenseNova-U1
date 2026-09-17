@@ -180,19 +180,28 @@ class ServingContractTest(unittest.TestCase):
         api_start = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py").read_text()
         self.assertIn("get_shm_port_args(create=True)", api_start)
         port_source = ROOT / "serving/third_party/LightLLM/lightllm/utils/shm_port_args.py"
-        port_class = next(node for node in ast.parse(port_source.read_text()).body
-                          if isinstance(node, ast.ClassDef) and node.name == "ShmPortArgs")
-        project_ports = {"x2i_port", "http_server_port_for_x2i", "x2i_worker_nccl_port",
-                         "x2i_worker_task_port", "rl_control_response_port"}
+        port_class = next(
+            node
+            for node in ast.parse(port_source.read_text()).body
+            if isinstance(node, ast.ClassDef) and node.name == "ShmPortArgs"
+        )
+        project_ports = {
+            "x2i_port",
+            "http_server_port_for_x2i",
+            "x2i_worker_nccl_port",
+            "x2i_worker_task_port",
+            "rl_control_response_port",
+        }
         namespace = {}
-        methods = [node for node in port_class.body
-                   if isinstance(node, ast.FunctionDef) and node.name in project_ports]
+        methods = [node for node in port_class.body if isinstance(node, ast.FunctionDef) and node.name in project_ports]
         for method in methods:
             method.decorator_list = []
         exec(compile(ast.Module(body=methods, type_ignores=[]), str(port_source), "exec"), namespace)
         allocations = {}
+
         def allocate(name):
             return allocations.setdefault(name, 10000 + len(allocations))
+
         port_manager = SimpleNamespace(_get_from_args_or_alloc=allocate)
         first = {name: namespace[name](port_manager) for name in sorted(project_ports)}
         self.assertEqual(len(set(first.values())), len(project_ports))

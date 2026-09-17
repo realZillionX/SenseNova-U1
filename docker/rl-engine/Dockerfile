@@ -3,7 +3,7 @@ FROM ${BASE_IMAGE}
 
 ARG FORGE_COMMIT=uncommitted
 ARG LIGHTLLM_COMMIT=7223f408d0b403617c009fe908ebc4ce337cb9d1
-ARG LIGHTX2V_COMMIT=5f2a9d159db66ef076870b76f4b02c5f81091e14
+ARG LIGHTX2V_COMMIT=06c8f8eb6e1c9d00fd1c42c2937f725e1e337c06
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential git ca-certificates python3.12 python3.12-dev python3.12-venv \
