@@ -109,6 +109,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash scripts/rl_engine/launch_server.sh
 ```
 
+The default image profile uses CFG=4. To disable guidance, set
+`X2V_CONFIG=serving/configs/neopp_u15_forge_512_cfg0.json` and include
+`image_config.guidance_scale=0.0` in requests. The pinned NeoPP implementation
+uses only the conditional prediction when the scale is at most 1; preflight
+checks that `enable_cfg` agrees with this behavior. Request parameters override
+the image profile's scale, so clients must explicitly send the selected value.
+
 Run the same launcher on any number of serving nodes. Give each node the next
 global `FORGE_SERVING_REPLICA_ID_OFFSET`; private LightLLM ports use only the
 node-local replica index, so global replica ids do not impose a cluster-size cap.

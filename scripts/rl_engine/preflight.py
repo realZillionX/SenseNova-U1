@@ -8,6 +8,7 @@ import ctypes
 import importlib.util
 import inspect
 import json
+import math
 import os
 import platform
 import subprocess
@@ -183,6 +184,17 @@ def _serving_x2v_config(path: str | None) -> dict[str, object]:
     except (OSError, TypeError, json.JSONDecodeError) as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
+
+
+def _serving_cfg_error(config: dict[str, object]) -> str | None:
+    scale = config.get("cfg_scale")
+    enabled = config.get("enable_cfg")
+    if type(scale) not in (int, float) or not math.isfinite(scale) or scale < 0:
+        return "LightX2V cfg_scale must be a finite non-negative number"
+    # NeoPP uses the conditional prediction alone for scales <= 1.
+    if type(enabled) is not bool or enabled != (scale > 1):
+        return "LightX2V enable_cfg must agree with cfg_scale > 1"
+    return None
 
 
 def main() -> None:
@@ -388,8 +400,10 @@ def main() -> None:
     x2v_payload = serving_x2v_config["config"]
     if serving_x2v_config["error"] or not isinstance(x2v_payload, dict):
         errors.append(f"LightX2V serving config is unavailable: {serving_x2v_config['error']}")
-    elif x2v_payload.get("enable_cfg") is not True or x2v_payload.get("cfg_scale") != 4.0:
-        errors.append("ordinary LightX2V serving config must preserve the U1.5 CFG profile")
+    else:
+        cfg_error = _serving_cfg_error(x2v_payload)
+        if cfg_error:
+            errors.append(cfg_error)
     if args.require_rdma and not rdma["available"]:
         errors.append(f"multi-node RL serving requires libibverbs.so.1 and a visible InfiniBand/RoCE device: {rdma}")
     if payload["runtime_manifest"]["requirements_sha256"] is None:

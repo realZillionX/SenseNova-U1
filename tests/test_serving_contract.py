@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import ast
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +17,51 @@ CONFIG = ROOT / "serving" / "configs" / "neopp_u15_forge_512.json"
 
 
 class ServingContractTest(unittest.TestCase):
+    def test_cfg_profiles_match_neopp_guidance_semantics(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "forge_preflight", ROOT / "scripts/rl_engine/preflight.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        guided = json.loads(CONFIG.read_text())
+        unguided = json.loads(CONFIG.with_name("neopp_u15_forge_512_cfg0.json").read_text())
+        self.assertEqual(unguided, {**guided, "cfg_scale": 0.0, "enable_cfg": False})
+        for config in (guided, unguided, {**unguided, "cfg_scale": 1.0}):
+            self.assertIsNone(module._serving_cfg_error(config))
+        for config in (
+            {**guided, "enable_cfg": False},
+            {**unguided, "enable_cfg": True},
+            {**unguided, "cfg_scale": -1},
+            {**unguided, "cfg_scale": float("nan")},
+            {**unguided, "cfg_scale": float("inf")},
+            {**unguided, "cfg_scale": False},
+        ):
+            with self.subTest(config=config):
+                self.assertIsNotNone(module._serving_cfg_error(config))
+
+    def test_zero_cfg_executes_only_the_conditional_prediction(self) -> None:
+        source = ROOT / "serving/third_party/LightX2V/lightx2v/models/networks/neopp/model.py"
+        method = next(
+            node for node in ast.walk(ast.parse(source.read_text()))
+            if isinstance(node, ast.FunctionDef) and node.name == "_infer_t2i_i2i"
+        )
+        namespace = {}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+        for scale, expected_calls, expected in ((0.0, [True], 2.0), (1.0, [True], 2.0), (4.0, [True, False], -7.0)):
+            with self.subTest(scale=scale):
+                calls = []
+                def infer(inputs, pre_infer_out, conditional):
+                    calls.append(conditional)
+                    return 2.0 if conditional else 5.0
+                model = SimpleNamespace(
+                    scheduler=SimpleNamespace(timesteps=[0.5], step_index=0),
+                    cfg_interval=(-1, 2), cfg_scale=scale, seq_p_group=None, config={},
+                    _infer_cond_uncond=infer, cfg_norm_func=lambda value, conditional: value,
+                )
+                value = namespace["_infer_t2i_i2i"](model, None, SimpleNamespace(image_embeds=object()))
+                self.assertEqual(calls, expected_calls)
+                self.assertEqual(value, expected)
+
     def test_launcher_uses_the_sealed_forge_profile(self) -> None:
         launcher = (ROOT / "scripts" / "rl_engine" / "launch_server.sh").read_text()
         self.assertIn("serving/configs/neopp_u15_forge_512.json", launcher)
@@ -131,7 +179,7 @@ class ServingContractTest(unittest.TestCase):
         self.assertIn("supports only NVIDIA H200", preflight)
         self.assertIn('parser.add_argument("--require-rdma", action="store_true")', preflight)
         self.assertIn('parser.add_argument("--x2v-config")', preflight)
-        self.assertIn("must preserve the U1.5 CFG profile", preflight)
+        self.assertIn("_serving_cfg_error(x2v_payload)", preflight)
         self.assertIn('"ttl_seconds": trace_ttl_seconds', preflight)
         api_http = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_http.py").read_text()
         self.assertIn('"oldest_trace_age_seconds": oldest_trace_age_seconds', api_http)
