@@ -22,7 +22,7 @@ export FORGE_LIGHTX2V_ROOT=$LIGHTX2V_ROOT
 export FORGE_COMMIT=$(git -C "$SOURCE_ROOT" rev-parse HEAD)
 export FORGE_LIGHTLLM_COMMIT=$(git -C "$LIGHTLLM_SOURCE_ROOT" rev-parse HEAD)
 export FORGE_LIGHTX2V_COMMIT=$(git -C "$LIGHTX2V_ROOT" rev-parse HEAD)
-export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE_OVERRIDE:-sensenova-u15-forge:unified-v8}
+export FORGE_RUNTIME_IMAGE=${FORGE_RUNTIME_IMAGE_OVERRIDE:-sensenova-u15-forge:unified-v9}
 
 bash "$SOURCE_ROOT/docker/rl-engine/build_runtime.sh" "$SOURCE_ROOT"
 

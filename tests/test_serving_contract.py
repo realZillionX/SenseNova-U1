@@ -50,14 +50,15 @@ class ServingContractTest(unittest.TestCase):
             with self.subTest(scale=scale):
                 calls = []
 
-                def infer(inputs, pre_infer_out, conditional):
-                    calls.append(conditional)
-                    return 2.0 if conditional else 5.0
+                def infer(inputs, pre_infer_out, infer_condition):
+                    calls.append(infer_condition)
+                    return 2.0 if infer_condition else 5.0
 
                 model = SimpleNamespace(
                     scheduler=SimpleNamespace(timesteps=[0.5], step_index=0),
                     cfg_interval=(-1, 2),
                     cfg_scale=scale,
+                    enable_cfg=scale > 1,
                     seq_p_group=None,
                     config={},
                     _infer_cond_uncond=infer,
@@ -177,9 +178,25 @@ class ServingContractTest(unittest.TestCase):
         rl_models = (ROOT / "serving/third_party/LightLLM/lightllm/server/rl_models.py").read_text()
         self.assertIn("max_sequence_length: int = Field(default=8192", rl_models)
         api_start = (ROOT / "serving/third_party/LightLLM/lightllm/server/api_start.py").read_text()
-        self.assertIn('os.getenv("MOVA_RL_LOCAL_REPLICA_ID", "0")', api_start)
-        self.assertIn("internal_port_start = 10000 + local_replica_id * 2048", api_start)
-        self.assertIn("from_port_num=internal_port_start", api_start)
+        self.assertIn("get_shm_port_args(create=True)", api_start)
+        port_source = ROOT / "serving/third_party/LightLLM/lightllm/utils/shm_port_args.py"
+        port_class = next(node for node in ast.parse(port_source.read_text()).body
+                          if isinstance(node, ast.ClassDef) and node.name == "ShmPortArgs")
+        project_ports = {"x2i_port", "http_server_port_for_x2i", "x2i_worker_nccl_port",
+                         "x2i_worker_task_port", "rl_control_response_port"}
+        namespace = {}
+        methods = [node for node in port_class.body
+                   if isinstance(node, ast.FunctionDef) and node.name in project_ports]
+        for method in methods:
+            method.decorator_list = []
+        exec(compile(ast.Module(body=methods, type_ignores=[]), str(port_source), "exec"), namespace)
+        allocations = {}
+        def allocate(name):
+            return allocations.setdefault(name, 10000 + len(allocations))
+        port_manager = SimpleNamespace(_get_from_args_or_alloc=allocate)
+        first = {name: namespace[name](port_manager) for name in sorted(project_ports)}
+        self.assertEqual(len(set(first.values())), len(project_ports))
+        self.assertEqual(first, {name: namespace[name](port_manager) for name in sorted(project_ports)})
         preflight = (ROOT / "scripts" / "rl_engine" / "preflight.py").read_text()
         self.assertIn("supports only NVIDIA H200", preflight)
         self.assertIn('parser.add_argument("--require-rdma", action="store_true")', preflight)

@@ -2,8 +2,8 @@ ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
 ARG FORGE_COMMIT=uncommitted
-ARG LIGHTLLM_COMMIT=03b0efd5679dd664f731d010e7a0505340dfe699
-ARG LIGHTX2V_COMMIT=a46d6c4d0dc00659c597078f86fb34c1d5b0f481
+ARG LIGHTLLM_COMMIT=7223f408d0b403617c009fe908ebc4ce337cb9d1
+ARG LIGHTX2V_COMMIT=5f2a9d159db66ef076870b76f4b02c5f81091e14
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential git ca-certificates python3.12 python3.12-dev python3.12-venv \
@@ -13,7 +13,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 
 ENV PATH=/opt/sensenova-forge-py312/bin:${PATH} \
     PYTHON_BIN=/opt/sensenova-forge-py312/bin/python \
-    FORGE_RUNTIME_IMAGE=sensenova-u15-forge:unified-v8 \
+    FORGE_RUNTIME_IMAGE=sensenova-u15-forge:unified-v9 \
     FORGE_ROOT=/workspace/sensenova-forge \
     FORGE_COMMIT=${FORGE_COMMIT} \
     FORGE_LIGHTLLM_COMMIT=${LIGHTLLM_COMMIT} \

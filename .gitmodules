@@ -1,6 +1,8 @@
 [submodule "serving/third_party/LightLLM"]
 	path = serving/third_party/LightLLM
 	url = https://github.com/realZillionX/LightLLM.git
+	branch = main
 [submodule "serving/third_party/LightX2V"]
 	path = serving/third_party/LightX2V
 	url = https://github.com/realZillionX/LightX2V.git
+	branch = main

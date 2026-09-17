@@ -16,7 +16,9 @@ Forge is a checkpoint-specific, high-performance stack for full-parameter
 supervised fine-tuning, verifiable reinforcement learning, and production
 inference of **SenseNova-U1.5-8B-MoT**. SFT and GDPO/UniGDPO use PyTorch 2.8
 FSDP2, while text/image trajectories are served through pinned LightLLM +
-LightX2V engines. The complete stack runs in one H200-only runtime.
+LightX2V engines. Both dependencies use the `main` branches of
+`realZillionX/LightLLM` and `realZillionX/LightX2V`, directly forked from ModelTC;
+gitlinks pin the exact commits for reproducibility. The complete stack runs in one H200-only runtime.
 
 ## Highlights
 
@@ -67,7 +69,7 @@ git submodule update --init --recursive \
 ### 2. Full-parameter SFT
 
 SFT, RL, and serving share the repository-root Torch 2.8/CUDA 12.8 lock and
-the `sensenova-u15-forge:unified-v8` image. Production runs require H200.
+the `sensenova-u15-forge:unified-v9` image. Production runs require H200.
 
 ```bash
 uv sync --locked
@@ -100,7 +102,7 @@ continues to use the paired TI2TI topology:
 ```bash
 docker build -f docker/rl-engine/Dockerfile \
   --build-arg FORGE_COMMIT="$(git rev-parse HEAD)" \
-  -t sensenova-u15-forge:unified-v8 .
+  -t sensenova-u15-forge:unified-v9 .
 
 MODEL_ROOT=/models/SenseNova-U1.5-8B-MoT \
 FORGE_REQUIRE_RDMA=true \
@@ -117,8 +119,8 @@ checks that `enable_cfg` agrees with this behavior. Request parameters override
 the image profile's scale, so clients must explicitly send the selected value.
 
 Run the same launcher on any number of serving nodes. Give each node the next
-global `FORGE_SERVING_REPLICA_ID_OFFSET`; private LightLLM ports use only the
-node-local replica index, so global replica ids do not impose a cluster-size cap.
+global `FORGE_SERVING_REPLICA_ID_OFFSET`; private LightLLM, image-worker, and
+RL-control ports use the shared per-server allocator, independently of global replica ids.
 On storage-constrained cold starts, set `FORGE_SERVING_STAGGER_SECONDS` to a
 nonzero integer to delay each local replica after the previous launch while
 preserving the same final GPU topology and endpoints.
