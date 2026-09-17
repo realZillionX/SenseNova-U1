@@ -198,6 +198,8 @@ The runtime and every training entry fail closed on non-H200 hardware.
 
 ## Documentation
 
+Upstream reference: [SenseNova-U1.5 technical report](https://github.com/OpenSenseNova/SenseNova-U1/blob/f9e5a684262efd5c49c9239735fe269ffb984045/docs/pdf/SenseNOVA_U1_5.pdf).
+
 - [Installation](docs/installation.md)
 - [Full-parameter SFT](docs/sft.md)
 - [GDPO / UniGDPO](docs/rl.md)

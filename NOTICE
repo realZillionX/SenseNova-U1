@@ -3,7 +3,8 @@ Copyright (c) Forge contributors
 
 Licensed under the Apache License, Version 2.0. This distribution includes or
 derives from components whose copyrights and licenses remain with their
-respective authors, including InternEvo, InternVL, PyTorch, Transformers,
+respective authors, including OpenSenseNova/SenseNova-U1, InternEvo, InternVL,
+PyTorch, Transformers,
 Flash-Attention, Ring-Flash-Attention, LightLLM, LightX2V, ColossalAI,
 DeepSpeed, FastChat, NVIDIA Apex, Megatron-LM, OpenMMLab, and timm.
 
