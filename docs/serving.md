@@ -70,11 +70,12 @@ after its rollout group returns, then deleted; disconnect cleanup is also
 eager. Formal serving seals the measured TTL with margin rather than silently
 inheriting the fallback.
 
-LightLLM reserves 80% of its post-weight memory for KV cache by default. The
-remaining headroom is part of the online-publication contract: a paused server
-must still receive a full-parameter bucket without OOM. Override
-`LIGHTLLM_MEM_FRACTION` only after measuring both rollout capacity and the
-largest planned weight bucket.
+LightLLM sizes its KV pool from currently free GPU memory minus
+`(1 - LIGHTLLM_MEM_FRACTION)` times total device memory. The default fraction
+is 0.80. Other resident engines therefore reduce KV capacity in colocate mode;
+record the profiled token capacity as well as the fraction in comparisons.
+The remaining headroom must cover inference transients and, for RL, the largest
+planned online weight-publication bucket.
 
 Missing LightLLM Triton kernel configurations are adaptively tuned during the
 existing startup warmup (`LIGHTLLM_TRITON_AUTOTUNE_LEVEL=1`) and reused for
