@@ -18,9 +18,11 @@ framework for SenseNova-U1.5-8B-MoT.
 - SFT, RL, and serving share the repository-root Torch 2.8/CUDA 12.8 runtime;
   do not introduce a second training environment or non-H200 execution path.
 - Ordinary serving declares `FORGE_SERVING_MODALITY`: TI2T uses one GPU per
-  replica with input vision and no LightX2V worker; TI2TI uses two GPUs per
-  replica with its image generator. An eight-GPU node therefore runs eight
-  TI2T replicas or four TI2TI replicas.
+  replica with input vision and no LightX2V worker; TI2TI defaults to two GPUs per
+  replica (`FORGE_X2I_DEPLOY_MODE=separate`). Ordinary inference can use
+  `colocate` for one GPU per replica, with both engines resident. Seal the
+  layout and memory fraction in performance comparisons. RL online weight
+  publication continues to require separate mode.
 - Serving has one total trajectory limit, `max_sequence_length`: all input and
   output text/image tokens share it, and server capacity equals it. Ordinary
   serving starts at 16384 and RL at 8192; both allow at most 10 generated images,

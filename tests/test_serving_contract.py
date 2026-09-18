@@ -225,7 +225,7 @@ class ServingContractTest(unittest.TestCase):
         ).strip()
         if tuple(map(int, version.split("."))) < (4, 3):
             self.skipTest("production launcher requires Bash >= 4.3; execute on Linux")
-        for modality, width in [("ti2t", 1), ("ti2ti", 2)]:
+        for modality, mode, width in [("ti2t", "separate", 1), ("ti2ti", "separate", 2), ("ti2ti", "colocate", 1)]:
             with self.subTest(modality=modality), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 stub = root / "python"
@@ -244,6 +244,7 @@ class ServingContractTest(unittest.TestCase):
                     FORGE_LIGHTLLM_ROOT=str(ROOT / "serving/third_party/LightLLM"),
                     CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7",
                     FORGE_SERVING_MODALITY=modality,
+                    FORGE_X2I_DEPLOY_MODE=mode,
                     CALL_LOG=str(log),
                     PREFLIGHT_OUTPUT_DIR=str(root),
                 )

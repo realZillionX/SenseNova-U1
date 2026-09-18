@@ -56,15 +56,25 @@ MAX_SEQUENCE_LENGTH=${MAX_SEQUENCE_LENGTH:-16384}
 export FORGE_MAX_SEQUENCE_LENGTH="$MAX_SEQUENCE_LENGTH"
 # The H200-only runtime reserves twenty percent of HBM for online publication,
 # CUDA graphs, and transient kernels while keeping a large KV cache.
-LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.80}
+export LIGHTLLM_MEM_FRACTION=${LIGHTLLM_MEM_FRACTION:-0.80}
 # Adaptive level 1 tunes only missing kernels during the existing warmup and
 # reuses the selected config for steady-state serving.
 export LIGHTLLM_TRITON_AUTOTUNE_LEVEL=${LIGHTLLM_TRITON_AUTOTUNE_LEVEL:-1}
 
 export FORGE_SERVING_MODALITY=${FORGE_SERVING_MODALITY:-ti2ti}
+export FORGE_X2I_DEPLOY_MODE=${FORGE_X2I_DEPLOY_MODE:-separate}
+case "$FORGE_X2I_DEPLOY_MODE" in
+  separate|colocate) ;;
+  *) echo "FORGE_X2I_DEPLOY_MODE must be separate or colocate" >&2; exit 2 ;;
+esac
 case "$FORGE_SERVING_MODALITY" in
   ti2t) GPUS_PER_REPLICA=1 ;;
-  ti2ti) GPUS_PER_REPLICA=2 ;;
+  ti2ti)
+    if [[ "$FORGE_X2I_DEPLOY_MODE" == colocate ]]; then
+      GPUS_PER_REPLICA=1
+    else
+      GPUS_PER_REPLICA=2
+    fi ;;
   *) echo "FORGE_SERVING_MODALITY must be ti2t or ti2ti" >&2; exit 2 ;;
 esac
 IFS=',' read -r -a VISIBLE_GPUS <<< "$CUDA_VISIBLE_DEVICES"
@@ -110,8 +120,10 @@ launch_replica() {
   local device_pair="${VISIBLE_GPUS[$((GPUS_PER_REPLICA * local_index))]}"
   local image_args=()
   if [[ "$FORGE_SERVING_MODALITY" == ti2ti ]]; then
-    device_pair+=",${VISIBLE_GPUS[$((2 * local_index + 1))]}"
-    image_args=(--enable_multimodal_x2i --x2i_server_deploy_mode separate
+    if [[ "$FORGE_X2I_DEPLOY_MODE" == separate ]]; then
+      device_pair+=",${VISIBLE_GPUS[$((2 * local_index + 1))]}"
+    fi
+    image_args=(--enable_multimodal_x2i --x2i_server_deploy_mode "$FORGE_X2I_DEPLOY_MODE"
                 --x2i_server_used_gpus 1 --x2v_gen_model_config "$X2V_CONFIG")
   fi
   local preflight_output

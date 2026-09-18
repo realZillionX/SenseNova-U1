@@ -323,6 +323,8 @@ def main() -> None:
         "gpu_count": torch.cuda.device_count(),
         "max_sequence_length": int(os.getenv("FORGE_MAX_SEQUENCE_LENGTH", "16384")),
         "serving_modality": os.getenv("FORGE_SERVING_MODALITY", "ti2ti"),
+        "x2i_deploy_mode": os.getenv("FORGE_X2I_DEPLOY_MODE", "separate"),
+        "lightllm_mem_fraction": float(os.getenv("LIGHTLLM_MEM_FRACTION", "0.80")),
         "max_generated_images": 0 if os.getenv("FORGE_SERVING_MODALITY") == "ti2t" else 10,
         "gpu_names": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
         "nccl": nccl_version,
