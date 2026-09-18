@@ -221,10 +221,11 @@ def main() -> None:
     try:
         if args.allow_no_gpu:
             os.environ.setdefault("SKIP_PLATFORM_CHECK", "1")
-        from lightx2v.pipeline import _ensure_runner_registered
+        from lightx2v.models.runners.runner_factory import RUNNER_MODULES
         from lightx2v.utils.registry_factory import RUNNER_REGISTER
 
-        _ensure_runner_registered("neopp")
+        importlib.import_module("lightx2v.common.ops")
+        importlib.import_module(RUNNER_MODULES["neopp"])
         runner_class = RUNNER_REGISTER["neopp"]
         neo_runner = {
             "available": True,
