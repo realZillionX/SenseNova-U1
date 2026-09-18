@@ -2,7 +2,7 @@ ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
 ARG FORGE_COMMIT=uncommitted
-ARG LIGHTLLM_COMMIT=6b2b6311bb8dc990c8f98d93772b259378aed124
+ARG LIGHTLLM_COMMIT=f08f12b5ec243f63f02b46f83b587c9a952f99bb
 ARG LIGHTX2V_COMMIT=06c8f8eb6e1c9d00fd1c42c2937f725e1e337c06
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
