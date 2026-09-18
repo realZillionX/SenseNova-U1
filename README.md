@@ -94,8 +94,11 @@ publishes the ordinary policy weights as a complete HF directory. See
 Build the self-contained Torch 2.8/CUDA 12.8 runtime. Ordinary inference
 selects `FORGE_SERVING_MODALITY=ti2t` for one replica per GPU (input vision
 and text decoding, without an image-generation worker), or `ti2ti` for
-two-GPU LightLLM/LightX2V replicas. Eight GPUs therefore provide eight TI2T
-replicas or four TI2TI replicas. The launcher uses every visible GPU by
+two-GPU LightLLM/LightX2V replicas by default. Ordinary TI2TI inference can
+set `FORGE_X2I_DEPLOY_MODE=colocate` to keep both engines on one GPU. Eight GPUs
+provide eight TI2T replicas, four separate TI2TI replicas, or eight colocated
+TI2TI replicas. Seal the layout, memory fraction, and request concurrency when
+comparing performance; RL weight publication requires separate mode. The launcher uses every visible GPU by
 default and exposes consecutive HTTP ports. RDMA online weight publication
 continues to use the paired TI2TI topology:
 

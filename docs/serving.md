@@ -1,10 +1,15 @@
 # LightLLM + LightX2V serving
 
-Production inference uses two pinned engines under `serving/third_party` in
-each GPU pair:
+TI2TI inference uses two pinned engines under `serving/third_party`. The
+default `FORGE_X2I_DEPLOY_MODE=separate` places each replica on a GPU pair:
 
 - GPU 0: LightLLM text decode, multimodal encode, KV cache and scheduling;
 - GPU 1: LightX2V NeoPP image transitions.
+
+Ordinary inference also supports `FORGE_X2I_DEPLOY_MODE=colocate`, with both
+engines resident on one GPU per replica. Measure memory headroom and seal
+`LIGHTLLM_MEM_FRACTION`, replica count, and request concurrency for comparisons.
+Online RL weight publication requires separate mode.
 
 They expose one OpenAI-compatible HTTP server. TI2TI stops a text span on the
 image-action token, generates an image, re-encodes it, and resumes text under
@@ -22,7 +27,8 @@ bash scripts/rl_engine/launch_server.sh
 ```
 
 If `CUDA_VISIBLE_DEVICES` is absent, the launcher uses all devices visible to
-the container. It creates `0/1, 2/3, ...` LightLLM/LightX2V pairs. Multi-node
+the container. Separate mode creates `0/1, 2/3, ...` LightLLM/LightX2V pairs;
+colocate mode creates one complete TI2TI replica per GPU. Multi-node
 serving runs the same launcher per node and assigns consecutive global ids via
 `FORGE_SERVING_REPLICA_ID_OFFSET`; private ports remain node-local.
 
